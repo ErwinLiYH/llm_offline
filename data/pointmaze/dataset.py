@@ -1,4 +1,6 @@
+import json
 import os
+import pickle
 import threading
 import numpy as np
 import torch
@@ -30,6 +32,7 @@ class PointMazeDataset(BaseOfflineDataset):
         tokenizer: PreTrainedTokenizerBase,
         max_length: int = 512,
         num_workers: int = 8,
+        cache_dir: str | None = None,
     ):
         super().__init__()
         self.variant = variant
@@ -37,13 +40,27 @@ class PointMazeDataset(BaseOfflineDataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.num_workers = num_workers
+        self.cache_dir = cache_dir
 
         self._local = threading.local()
         self._samples: list[dict] = []
         self.load(variant, split)
 
     # ------------------------------------------------------------------
+    def _cache_path(self, variant: str, split: str) -> str | None:
+        if self.cache_dir is None:
+            return None
+        fname = f"pointmaze-{variant}-{split}.pkl"
+        return os.path.join(self.cache_dir, fname)
+
     def load(self, variant: str, split: str):
+        cache_path = self._cache_path(variant, split)
+        if cache_path and os.path.exists(cache_path):
+            print(f"[dataset] Loading cached dataset from {cache_path}")
+            with open(cache_path, "rb") as f:
+                self._samples = pickle.load(f)
+            return
+
         meta = POINTMAZE_VARIANTS[variant]
         dataset = minari.load_dataset(meta["dataset_id"], download=True)
         templates = load_templates("pointmaze", variant)
@@ -57,8 +74,8 @@ class PointMazeDataset(BaseOfflineDataset):
         else:
             episodes = all_episodes[n_train:]
 
-        def process_episode(episode) -> list[dict]:
-            samples = []
+        def process_episode(episode) -> list[tuple[dict, dict]]:
+            results = []
             obs_arr = episode.observations["observation"]   # (T+1, 4)
             goal_arr = episode.observations["desired_goal"] # (T+1, 2)
             actions = episode.actions                       # (T, 2)
@@ -71,8 +88,10 @@ class PointMazeDataset(BaseOfflineDataset):
                 action_text = formatting.format_action(action)
                 for template in templates:
                     prompt = template.format(obs_text=obs_text)
-                    samples.append(self._tokenize(prompt, action_text))
-            return samples
+                    token_sample = self._tokenize(prompt, action_text)
+                    text_record = {"prompt": prompt, "action": action_text}
+                    results.append((text_record, token_sample))
+            return results
 
         num_workers = min(os.cpu_count() or 1, self.num_workers)
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
@@ -81,8 +100,23 @@ class PointMazeDataset(BaseOfflineDataset):
                 total=len(episodes),
                 desc=f"Tokenizing [{split}]",
             ))
-        for episode_samples in futures:
-            self._samples.extend(episode_samples)
+
+        text_records = []
+        for episode_results in futures:
+            for text_record, token_sample in episode_results:
+                text_records.append(text_record)
+                self._samples.append(token_sample)
+
+        if cache_path:
+            os.makedirs(self.cache_dir, exist_ok=True)
+            with open(cache_path, "wb") as f:
+                pickle.dump(self._samples, f)
+            print(f"[dataset] Saved dataset cache to {cache_path}")
+            jsonl_path = cache_path.replace(".pkl", ".jsonl")
+            with open(jsonl_path, "w") as f:
+                for record in text_records:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            print(f"[dataset] Saved human-readable cache to {jsonl_path}")
 
     # ------------------------------------------------------------------
     def _get_local_tokenizer(self):

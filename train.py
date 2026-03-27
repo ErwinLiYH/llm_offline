@@ -48,6 +48,7 @@ def train_single_variant(config: dict, variant: str, model, tokenizer, device: t
         tokenizer=tokenizer,
         max_length=config["max_length"],
         num_workers=config.get("dataset_workers", 8),
+        cache_dir=config.get("dataset_cache_dir"),
     )
     val_dataset = DatasetCls(
         variant=variant,
@@ -55,6 +56,7 @@ def train_single_variant(config: dict, variant: str, model, tokenizer, device: t
         tokenizer=tokenizer,
         max_length=config["max_length"],
         num_workers=config.get("dataset_workers", 8),
+        cache_dir=config.get("dataset_cache_dir"),
     )
     print(f"[train] Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
 
