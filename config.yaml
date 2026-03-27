@@ -3,10 +3,11 @@ train_mode: single        # single | all
 variant: open             # used only when train_mode=single
 
 model_name: Qwen/Qwen3-0.6B
+checkpoint_root: checkpoints  # root directory for saved checkpoints
 
 learning_rate: 1e-4
 num_epochs: 3
-batch_size: 32
+batch_size: 64
 max_length: 512
 
 lora_r: 16

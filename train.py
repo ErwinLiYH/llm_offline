@@ -26,8 +26,9 @@ def parse_args():
 
 def get_checkpoint_dir(config: dict, variant: str) -> str:
     slug = get_model_slug(config["model_name"])
+    root = config.get("checkpoint_root", "checkpoints")
     return os.path.join(
-        "checkpoints",
+        root,
         config["env_family"],
         slug,
         config["train_mode"],
