@@ -23,12 +23,13 @@ templates:
 
     Structure: A 5x7 open arena with walls on all four sides and a large unobstructed interior region.
 
-    Current observation (4-dimensional state vector):
+    Current observation (6-dimensional state vector):
     {obs_text}
 
     Observation semantics:
       x, y    — 2D position of the point mass in the maze
       vx, vy  — 2D velocity of the point mass
+      gx, gy  — 2D goal position (desired_goal)
 
     Action space (2-dimensional continuous force vector):
       ax — horizontal force component, range [-1, 1]
@@ -46,7 +47,7 @@ templates:
       # . . . . . #
       # . . . . . #
       # # # # # # #
-    State:
+    State (x, y: position; vx, vy: velocity; gx, gy: goal position):
     {obs_text}
     Output action [ax, ay] in [-1, 1] as two comma-separated floats. No extra text.
     Action:
@@ -62,7 +63,7 @@ templates:
 
     It's a 5x7 open arena — no internal walls, just the outer boundary. The reward is sparse: I only get a reward when I reach the goal.
 
-    Here is my current state:
+    Here is my current state (x, y: position; vx, vy: velocity; gx, gy: goal position):
     {obs_text}
 
     I can apply a 2D force [ax, ay] where each component is between -1 and 1.
@@ -92,12 +93,13 @@ templates:
 
     结构说明：5行×7列的开放竞技场，四周为墙壁，内部无障碍物。
 
-    当前观测（4维状态向量）：
+    当前观测（6维状态向量）：
     {obs_text}
 
     观测语义：
       x, y   — 质点在迷宫中的二维位置
       vx, vy — 质点的二维速度
+      gx, gy — 目标位置（desired_goal）
 
     动作空间（2维连续力向量）：
       ax — 水平力分量，范围 [-1, 1]
@@ -115,7 +117,7 @@ templates:
       # . . . . . #
       # . . . . . #
       # # # # # # #
-    当前状态：
+    当前状态（x, y：位置；vx, vy：速度；gx, gy：目标位置）：
     {obs_text}
     输出动作 [ax, ay]，范围 [-1, 1]，格式：两个逗号分隔的浮点数，无多余文字。
     动作：

@@ -35,12 +35,13 @@ templates:
 
     Structure: An 11x12 large maze with a dense, intricate network of corridors and walls. The agent must plan a long-horizon path through complex internal structure.
 
-    Current observation (4-dimensional state vector):
+    Current observation (6-dimensional state vector):
     {obs_text}
 
     Observation semantics:
       x, y    — 2D position of the point mass in the maze
       vx, vy  — 2D velocity of the point mass
+      gx, gy  — 2D goal position (desired_goal)
 
     Action space (2-dimensional continuous force vector):
       ax — horizontal force component, range [-1, 1]
@@ -64,7 +65,7 @@ templates:
       # . # . . # . . . # . #
       # . . . # . . # . . . #
       # # # # # # # # # # # #
-    State:
+    State (x, y: position; vx, vy: velocity; gx, gy: goal position):
     {obs_text}
     Output action [ax, ay] in [-1, 1] as two comma-separated floats. No extra text.
     Action:
@@ -86,7 +87,7 @@ templates:
 
     This is an 11x12 large maze with a dense network of corridors. Finding the goal requires long-horizon planning through complex internal structure. The reward is sparse: I only get rewarded when I actually reach the goal.
 
-    Here is my current state:
+    Here is my current state (x, y: position; vx, vy: velocity; gx, gy: goal position):
     {obs_text}
 
     I can apply a 2D force [ax, ay] where each component is between -1 and 1.
@@ -128,12 +129,13 @@ templates:
 
     结构说明：11行×12列的大型迷宫，内部走廊与墙壁交织成复杂网络，需要智能体进行长程规划。
 
-    当前观测（4维状态向量）：
+    当前观测（6维状态向量）：
     {obs_text}
 
     观测语义：
       x, y   — 质点在迷宫中的二维位置
       vx, vy — 质点的二维速度
+      gx, gy — 目标位置（desired_goal）
 
     动作空间（2维连续力向量）：
       ax — 水平力分量，范围 [-1, 1]
@@ -157,7 +159,7 @@ templates:
       # . # . . # . . . # . #
       # . . . # . . # . . . #
       # # # # # # # # # # # #
-    当前状态：
+    当前状态（x, y：位置；vx, vy：速度；gx, gy：目标位置）：
     {obs_text}
     输出动作 [ax, ay]，范围 [-1, 1]，格式：两个逗号分隔的浮点数，无多余文字。
     动作：
