@@ -1,8 +1,9 @@
 import os
+import threading
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedTokenizerBase, AutoTokenizer
 from concurrent.futures import ThreadPoolExecutor
 
 import minari
@@ -37,6 +38,7 @@ class PointMazeDataset(BaseOfflineDataset):
         self.max_length = max_length
         self.num_workers = num_workers
 
+        self._local = threading.local()
         self._samples: list[dict] = []
         self.load(variant, split)
 
@@ -83,15 +85,24 @@ class PointMazeDataset(BaseOfflineDataset):
             self._samples.extend(episode_samples)
 
     # ------------------------------------------------------------------
+    def _get_local_tokenizer(self):
+        """Return a thread-local tokenizer instance (fast tokenizers are not thread-safe)."""
+        if not hasattr(self._local, "tokenizer"):
+            self._local.tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer.name_or_path, trust_remote_code=True
+            )
+        return self._local.tokenizer
+
     def _tokenize(self, prompt: str, action_text: str) -> dict:
-        prompt_ids = self.tokenizer(
+        tok = self._get_local_tokenizer()
+        prompt_ids = tok(
             prompt,
             add_special_tokens=True,
         ).input_ids
         prompt_len = len(prompt_ids)
 
         full_text = prompt + action_text
-        full_enc = self.tokenizer(
+        full_enc = tok(
             full_text,
             add_special_tokens=True,
             max_length=self.max_length,
