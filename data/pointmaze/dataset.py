@@ -1,7 +1,9 @@
+import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
+from concurrent.futures import ThreadPoolExecutor
 
 import minari
 from tqdm import tqdm
@@ -26,12 +28,14 @@ class PointMazeDataset(BaseOfflineDataset):
         split: str,
         tokenizer: PreTrainedTokenizerBase,
         max_length: int = 512,
+        num_workers: int = 8,
     ):
         super().__init__()
         self.variant = variant
         self.split = split
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.num_workers = num_workers
 
         self._samples: list[dict] = []
         self.load(variant, split)
@@ -51,24 +55,32 @@ class PointMazeDataset(BaseOfflineDataset):
         else:
             episodes = all_episodes[n_train:]
 
-        for episode in tqdm(episodes, desc=f"Tokenizing [{split}]"):
+        def process_episode(episode) -> list[dict]:
+            samples = []
             obs_arr = episode.observations["observation"]   # (T+1, 4)
             goal_arr = episode.observations["desired_goal"] # (T+1, 2)
             actions = episode.actions                       # (T, 2)
             T = len(actions)
-
             for t in range(T):
                 obs = obs_arr[t].astype(np.float32)
                 goal = goal_arr[t].astype(np.float32)
                 action = actions[t].astype(np.float32)
-
                 obs_text = formatting.format_obs(obs, goal)
                 action_text = formatting.format_action(action)
-
                 for template in templates:
                     prompt = template.format(obs_text=obs_text)
-                    sample = self._tokenize(prompt, action_text)
-                    self._samples.append(sample)
+                    samples.append(self._tokenize(prompt, action_text))
+            return samples
+
+        num_workers = min(os.cpu_count() or 1, self.num_workers)
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = list(tqdm(
+                executor.map(process_episode, episodes),
+                total=len(episodes),
+                desc=f"Tokenizing [{split}]",
+            ))
+        for episode_samples in futures:
+            self._samples.extend(episode_samples)
 
     # ------------------------------------------------------------------
     def _tokenize(self, prompt: str, action_text: str) -> dict:
