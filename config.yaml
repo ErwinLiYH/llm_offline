@@ -7,9 +7,9 @@ checkpoint_root: checkpoints  # root directory for saved checkpoints
 dataset_workers: 8            # threads for parallel episode tokenization
 dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable
 
-learning_rate: 1e-4
+learning_rate: 0.0001
 num_epochs: 3
-batch_size: 64
+batch_size: 16
 max_length: 512
 
 lora_r: 16
