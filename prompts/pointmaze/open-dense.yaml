@@ -1,0 +1,121 @@
+templates:
+  - |
+    You are an agent controlling a point mass robot in a 2D maze navigation task.
+
+    Environment: PointMaze Open-Dense
+    Task: Navigate the point mass to the target goal position.
+    Reward structure: dense (continuous reward proportional to proximity to the goal)
+
+    Maze layout (1=wall, 0=traversable cell):
+    Raw matrix:
+      [1, 1, 1, 1, 1, 1, 1]
+      [1, 0, 0, 0, 0, 0, 1]
+      [1, 0, 0, 0, 0, 0, 1]
+      [1, 0, 0, 0, 0, 0, 1]
+      [1, 1, 1, 1, 1, 1, 1]
+
+    Visual (# = wall, . = open):
+      # # # # # # #
+      # . . . . . #
+      # . . . . . #
+      # . . . . . #
+      # # # # # # #
+
+    Structure: A 5x7 open arena with walls on all four sides and a large unobstructed interior region. This variant uses dense reward shaping to guide the agent.
+
+    Current observation (4-dimensional state vector):
+    {obs_text}
+
+    Observation semantics:
+      x, y    — 2D position of the point mass in the maze
+      vx, vy  — 2D velocity of the point mass
+
+    Action space (2-dimensional continuous force vector):
+      ax — horizontal force component, range [-1, 1]
+      ay — vertical force component, range [-1, 1]
+
+    Generate the optimal action to move the agent toward the goal position.
+    Output format: two decimal numbers separated by ", " with no extra text, brackets, units, or newlines.
+    Example: 0.35, -0.72
+    Action:
+  - |
+    PointMaze Open-Dense | dense reward
+    Maze (5x7, # = wall):
+      # # # # # # #
+      # . . . . . #
+      # . . . . . #
+      # . . . . . #
+      # # # # # # #
+    State:
+    {obs_text}
+    Output action [ax, ay] in [-1, 1] as two comma-separated floats. No extra text.
+    Action:
+  - |
+    Hey! I'm a point mass robot navigating an open maze with dense reward shaping. I need to reach my goal.
+
+    Here is the maze I'm in (# = wall, . = open space):
+      # # # # # # #
+      # . . . . . #
+      # . . . . . #
+      # . . . . . #
+      # # # # # # #
+
+    It's a 5x7 open arena — no internal walls, just the outer boundary. The reward is dense: I continuously receive reward based on how close I am to the goal.
+
+    Here is my current state:
+    {obs_text}
+
+    I can apply a 2D force [ax, ay] where each component is between -1 and 1.
+    Please tell me what force to apply to move toward the goal. Give me just two numbers separated by a comma, like: 0.35, -0.72
+    Action:
+  - |
+    你正在控制一个二维迷宫中的质点机器人完成导航任务。
+
+    环境：PointMaze Open-Dense（开放迷宫，密集奖励）
+    任务：控制质点到达目标位置。
+    奖励类型：密集奖励（与目标距离持续相关）
+
+    迷宫布局（1=墙壁，0=可通行）：
+    原始矩阵：
+      [1, 1, 1, 1, 1, 1, 1]
+      [1, 0, 0, 0, 0, 0, 1]
+      [1, 0, 0, 0, 0, 0, 1]
+      [1, 0, 0, 0, 0, 0, 1]
+      [1, 1, 1, 1, 1, 1, 1]
+
+    可视化（# = 墙壁，. = 可通行）：
+      # # # # # # #
+      # . . . . . #
+      # . . . . . #
+      # . . . . . #
+      # # # # # # #
+
+    结构说明：5行×7列的开放竞技场，四周为墙壁，内部无障碍物。使用密集奖励塑形引导智能体。
+
+    当前观测（4维状态向量）：
+    {obs_text}
+
+    观测语义：
+      x, y   — 质点在迷宫中的二维位置
+      vx, vy — 质点的二维速度
+
+    动作空间（2维连续力向量）：
+      ax — 水平力分量，范围 [-1, 1]
+      ay — 垂直力分量，范围 [-1, 1]
+
+    请输出最优动作使质点向目标位置移动。
+    输出格式：两个小数，以 ", " 分隔，无括号、无单位、无说明文字。
+    示例：0.35, -0.72
+    动作：
+  - |
+    PointMaze Open-Dense | 密集奖励
+    迷宫（5x7，# = 墙壁）：
+      # # # # # # #
+      # . . . . . #
+      # . . . . . #
+      # . . . . . #
+      # # # # # # #
+    当前状态：
+    {obs_text}
+    输出动作 [ax, ay]，范围 [-1, 1]，格式：两个逗号分隔的浮点数，无多余文字。
+    动作：

@@ -1,0 +1,163 @@
+templates:
+  - |
+    You are an agent controlling a point mass robot in a 2D maze navigation task.
+
+    Environment: PointMaze Large
+    Task: Navigate the point mass to the target goal position.
+    Reward structure: sparse (reward granted only upon reaching the goal)
+
+    Maze layout (1=wall, 0=traversable cell):
+    Raw matrix:
+      [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+      [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]
+      [1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1]
+      [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1]
+      [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1]
+      [1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1]
+      [1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1]
+      [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]
+      [1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1]
+      [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1]
+      [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+    Visual (# = wall, . = open):
+      # # # # # # # # # # # #
+      # . . . . # . . . . . #
+      # . # # . # . # . # . #
+      # . . . . . . # . . . #
+      # . # # # # . # # # . #
+      # . . # . . . . . # . #
+      # # . # . # # # . # . #
+      # . . # . . . # . . . #
+      # . # . . # . . . # . #
+      # . . . # . . # . . . #
+      # # # # # # # # # # # #
+
+    Structure: An 11x12 large maze with a dense, intricate network of corridors and walls. The agent must plan a long-horizon path through complex internal structure.
+
+    Current observation (4-dimensional state vector):
+    {obs_text}
+
+    Observation semantics:
+      x, y    — 2D position of the point mass in the maze
+      vx, vy  — 2D velocity of the point mass
+
+    Action space (2-dimensional continuous force vector):
+      ax — horizontal force component, range [-1, 1]
+      ay — vertical force component, range [-1, 1]
+
+    Generate the optimal action to move the agent toward the goal position.
+    Output format: two decimal numbers separated by ", " with no extra text, brackets, units, or newlines.
+    Example: 0.35, -0.72
+    Action:
+  - |
+    PointMaze Large | sparse reward
+    Maze (11x12, # = wall):
+      # # # # # # # # # # # #
+      # . . . . # . . . . . #
+      # . # # . # . # . # . #
+      # . . . . . . # . . . #
+      # . # # # # . # # # . #
+      # . . # . . . . . # . #
+      # # . # . # # # . # . #
+      # . . # . . . # . . . #
+      # . # . . # . . . # . #
+      # . . . # . . # . . . #
+      # # # # # # # # # # # #
+    State:
+    {obs_text}
+    Output action [ax, ay] in [-1, 1] as two comma-separated floats. No extra text.
+    Action:
+  - |
+    Hey! I'm a point mass robot in a large, complex maze and I need to reach my goal.
+
+    Here is the maze I'm in (# = wall, . = open space):
+      # # # # # # # # # # # #
+      # . . . . # . . . . . #
+      # . # # . # . # . # . #
+      # . . . . . . # . . . #
+      # . # # # # . # # # . #
+      # . . # . . . . . # . #
+      # # . # . # # # . # . #
+      # . . # . . . # . . . #
+      # . # . . # . . . # . #
+      # . . . # . . # . . . #
+      # # # # # # # # # # # #
+
+    This is an 11x12 large maze with a dense network of corridors. Finding the goal requires long-horizon planning through complex internal structure. The reward is sparse: I only get rewarded when I actually reach the goal.
+
+    Here is my current state:
+    {obs_text}
+
+    I can apply a 2D force [ax, ay] where each component is between -1 and 1.
+    Please tell me what force to apply to move toward the goal. Give me just two numbers separated by a comma, like: 0.35, -0.72
+    Action:
+  - |
+    你正在控制一个二维迷宫中的质点机器人完成导航任务。
+
+    环境：PointMaze Large（大型复杂迷宫）
+    任务：控制质点到达目标位置。
+    奖励类型：稀疏奖励（仅到达目标时获得奖励）
+
+    迷宫布局（1=墙壁，0=可通行）：
+    原始矩阵：
+      [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+      [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]
+      [1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1]
+      [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1]
+      [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1]
+      [1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1]
+      [1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1]
+      [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]
+      [1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1]
+      [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1]
+      [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+
+    可视化（# = 墙壁，. = 可通行）：
+      # # # # # # # # # # # #
+      # . . . . # . . . . . #
+      # . # # . # . # . # . #
+      # . . . . . . # . . . #
+      # . # # # # . # # # . #
+      # . . # . . . . . # . #
+      # # . # . # # # . # . #
+      # . . # . . . # . . . #
+      # . # . . # . . . # . #
+      # . . . # . . # . . . #
+      # # # # # # # # # # # #
+
+    结构说明：11行×12列的大型迷宫，内部走廊与墙壁交织成复杂网络，需要智能体进行长程规划。
+
+    当前观测（4维状态向量）：
+    {obs_text}
+
+    观测语义：
+      x, y   — 质点在迷宫中的二维位置
+      vx, vy — 质点的二维速度
+
+    动作空间（2维连续力向量）：
+      ax — 水平力分量，范围 [-1, 1]
+      ay — 垂直力分量，范围 [-1, 1]
+
+    请输出最优动作使质点向目标位置移动。
+    输出格式：两个小数，以 ", " 分隔，无括号、无单位、无说明文字。
+    示例：0.35, -0.72
+    动作：
+  - |
+    PointMaze Large | 稀疏奖励
+    迷宫（11x12，# = 墙壁）：
+      # # # # # # # # # # # #
+      # . . . . # . . . . . #
+      # . # # . # . # . # . #
+      # . . . . . . # . . . #
+      # . # # # # . # # # . #
+      # . . # . . . . . # . #
+      # # . # . # # # . # . #
+      # . . # . . . # . . . #
+      # . # . . # . . . # . #
+      # . . . # . . # . . . #
+      # # # # # # # # # # # #
+    当前状态：
+    {obs_text}
+    输出动作 [ax, ay]，范围 [-1, 1]，格式：两个逗号分隔的浮点数，无多余文字。
+    动作：

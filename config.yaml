@@ -1,0 +1,17 @@
+env_family: pointmaze
+train_mode: single        # single | all
+variant: open             # used only when train_mode=single
+
+model_name: Qwen/Qwen3-0.6B
+
+learning_rate: 1e-4
+num_epochs: 3
+batch_size: 32
+max_length: 512
+
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules: ["q_proj", "v_proj"]
+
+parse_retry_limit: 3

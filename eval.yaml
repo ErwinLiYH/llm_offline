@@ -1,0 +1,5 @@
+model_path: checkpoints/pointmaze/Qwen3-0.6B/single/open/final
+env_family: pointmaze
+variant: open             # variant name, or "all" to evaluate all variants
+num_episodes: 20
+parse_retry_limit: 3

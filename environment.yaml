@@ -1,0 +1,19 @@
+name: llm_offline
+channels:
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pyyaml
+  - pip:
+    - torch --index-url https://download.pytorch.org/whl/cpu
+    - transformers
+    - peft
+    - accelerate
+    - minari
+    - gymnasium
+    - gymnasium-robotics
+    - sentencepiece
+    - protobuf
