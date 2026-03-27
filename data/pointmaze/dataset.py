@@ -4,6 +4,7 @@ from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
 
 import minari
+from tqdm import tqdm
 
 from data.base_dataset import BaseOfflineDataset
 from data.pointmaze.variants import POINTMAZE_VARIANTS
@@ -50,7 +51,7 @@ class PointMazeDataset(BaseOfflineDataset):
         else:
             episodes = all_episodes[n_train:]
 
-        for episode in episodes:
+        for episode in tqdm(episodes, desc=f"Tokenizing [{split}]"):
             obs_arr = episode.observations["observation"]   # (T+1, 4)
             goal_arr = episode.observations["desired_goal"] # (T+1, 2)
             actions = episode.actions                       # (T, 2)

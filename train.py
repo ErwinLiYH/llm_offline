@@ -11,6 +11,7 @@ import shutil
 import yaml
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler, ConcatDataset
+from tqdm import tqdm
 
 from data.registry import get_dataset
 from data.pointmaze.variants import POINTMAZE_VARIANTS
@@ -147,7 +148,8 @@ def _run_training(config, model, train_loader, val_loader, device):
         model.train()
         total_loss = 0.0
         num_batches = 0
-        for batch in train_loader:
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{num_epochs} [train]", leave=False)
+        for batch in pbar:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
@@ -165,6 +167,7 @@ def _run_training(config, model, train_loader, val_loader, device):
 
             total_loss += loss.item()
             num_batches += 1
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
 
         train_loss = total_loss / max(num_batches, 1)
 
@@ -173,7 +176,7 @@ def _run_training(config, model, train_loader, val_loader, device):
         val_loss = 0.0
         val_batches = 0
         with torch.no_grad():
-            for batch in val_loader:
+            for batch in tqdm(val_loader, desc=f"Epoch {epoch}/{num_epochs} [val]", leave=False):
                 input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
                 labels = batch["labels"].to(device)
