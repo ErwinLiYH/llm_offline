@@ -73,7 +73,9 @@ def train_single_variant(config: dict, variant: str, model, tokenizer, device: t
         collate_fn=collate_fn,
     )
 
-    _run_training(config, model, train_loader, val_loader, device)
+    eval_variants = config.get("eval_variants") or [variant]
+    _run_training(config, model, train_loader, val_loader, device,
+                  tokenizer=tokenizer, eval_variants=eval_variants)
 
     checkpoint_dir = get_checkpoint_dir(config, variant)
     _save_checkpoint(config, model, tokenizer, checkpoint_dir)
@@ -136,13 +138,61 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
     )
 
     print(f"[train] Total train samples: {len(combined_train)}, val: {len(combined_val)}")
-    _run_training(config, model, train_loader, val_loader, device)
+    eval_variants = config.get("eval_variants") or []
+    _run_training(config, model, train_loader, val_loader, device,
+                  tokenizer=tokenizer, eval_variants=eval_variants)
 
     checkpoint_dir = get_checkpoint_dir(config, "all")
     _save_checkpoint(config, model, tokenizer, checkpoint_dir)
 
 
-def _run_training(config, model, train_loader, val_loader, device):
+def get_eval_results_dir(config: dict, variant: str) -> str:
+    slug = get_model_slug(config["model_name"])
+    env_family = config["env_family"]
+    train_mode = config["train_mode"]
+    train_variant = config.get("variant", "all")
+    train_tag = f"train={env_family}-{train_variant}-{train_mode}"
+    eval_tag = f"eval={env_family}-{variant}"
+    return os.path.join("results", slug, train_tag, eval_tag)
+
+
+def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_loss, val_loss):
+    import gymnasium_robotics  # noqa: F401
+    from evaluate import evaluate_variant
+    from utils.prompt_loader import load_templates
+
+    eval_config = {
+        "env_family": config["env_family"],
+        "num_episodes": config["eval_num_episodes"],
+        "parse_retry_limit": config.get("parse_retry_limit", 3),
+        "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
+    }
+
+    for variant in variants:
+        print(f"[eval] Epoch {epoch} | variant: {variant}")
+        templates = load_templates(config["env_family"], variant)
+        model.eval()
+        result = evaluate_variant(eval_config, variant, model, tokenizer, device, templates[0])
+        result["train_loss"] = train_loss
+        result["val_loss"] = val_loss
+
+        print(
+            f"[eval] {variant}: mean_return={result['mean_return']:.4f}, "
+            f"success_rate={result['success_rate']:.2%}, "
+            f"mean_steps={result['mean_episode_steps']:.1f}, "
+            f"train_loss={train_loss:.4f}, val_loss={val_loss:.4f}"
+        )
+
+        results_dir = get_eval_results_dir(config, variant)
+        os.makedirs(results_dir, exist_ok=True)
+        result_path = os.path.join(results_dir, f"result_ep{epoch}.json")
+        with open(result_path, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"[eval] Saved: {result_path}")
+
+
+def _run_training(config, model, train_loader, val_loader, device,
+                  tokenizer=None, eval_variants=None):
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config["learning_rate"],
@@ -196,6 +246,10 @@ def _run_training(config, model, train_loader, val_loader, device):
 
         val_loss = val_loss / max(val_batches, 1)
         print(f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
+
+        if config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants:
+            _run_epoch_eval(config, model, tokenizer, device, eval_variants,
+                            epoch=epoch, train_loss=train_loss, val_loss=val_loss)
 
 
 def _save_checkpoint(config, model, tokenizer, checkpoint_dir):

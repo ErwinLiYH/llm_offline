@@ -18,3 +18,9 @@ lora_dropout: 0.05
 lora_target_modules: ["q_proj", "v_proj"]
 
 parse_retry_limit: 3
+
+# Epoch-level environment evaluation
+eval_num_episodes: 20    # episodes per variant per epoch; 0 = disable
+eval_variants: []       # [] = auto (single mode: [variant], all mode: disabled)
+eval_env_kwargs:
+  continuing_task: false

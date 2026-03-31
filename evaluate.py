@@ -44,7 +44,7 @@ def get_results_dir(config: dict) -> str:
         # checkpoints/<train_family>/<model_slug>/<train_mode>/<train_variant>/...
         parts = model_path.replace("\\", "/").rstrip("/").split("/")
         model_slug = parts[2] if len(parts) > 2 else model_path
-        train_tag = "train=" + "-".join(parts[1:4])  # e.g. train=pointmaze-single-open
+        train_tag = f"train={parts[1]}-{parts[4]}-{parts[3]}"  # env_family-variant-train_mode
     else:
         model_slug = get_model_slug(model_path)
         train_tag = "train=pretrained"
@@ -95,6 +95,7 @@ def evaluate_variant(
 
     episode_returns = []
     episode_successes = []
+    episode_steps = []
     total_parse_failures = 0
     total_fallbacks = 0
     total_action_time = 0.0
@@ -107,6 +108,7 @@ def evaluate_variant(
 
         ep_return = 0.0
         ep_success = False
+        ep_steps = 0
         terminated = False
         truncated = False
 
@@ -135,17 +137,19 @@ def evaluate_variant(
             obs = obs_dict["observation"].astype(np.float32)
             goal = obs_dict["desired_goal"].astype(np.float32)
             ep_return += float(reward)
+            ep_steps += 1
 
             if terminated:
                 ep_success = True
 
         episode_returns.append(ep_return)
         episode_successes.append(ep_success)
+        episode_steps.append(ep_steps)
 
         if (ep_idx + 1) % 5 == 0:
             print(
                 f"  [{variant}] episode {ep_idx+1}/{num_episodes} | "
-                f"return={ep_return:.2f} | success={ep_success}"
+                f"return={ep_return:.2f} | steps={ep_steps} | success={ep_success}"
             )
 
     env.close()
@@ -157,6 +161,8 @@ def evaluate_variant(
         "mean_return": float(np.mean(episode_returns)),
         "std_return": float(np.std(episode_returns)),
         "success_rate": float(np.mean(episode_successes)),
+        "mean_episode_steps": float(np.mean(episode_steps)),
+        "std_episode_steps": float(np.std(episode_steps)),
         "total_parse_failures": total_parse_failures,
         "total_fallbacks": total_fallbacks,
         "mean_action_time_ms": round(mean_action_time_ms, 2),
