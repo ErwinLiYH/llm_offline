@@ -28,6 +28,7 @@ results/
 *.npz
 *.pkl
 *.h5
+*.jsonl
 ~/.minari/
 .cache/
 
@@ -55,3 +56,7 @@ Thumbs.db
 
 # Claude Code internal
 .claude/
+
+
+# unsloth cache
+unsloth_compiled_cache/
