@@ -4,6 +4,7 @@ Usage:
     python train.py --config config.yaml
 """
 
+from unsloth import FastLanguageModel
 import argparse
 import os
 import json
@@ -172,10 +173,12 @@ def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_los
         "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
     }
 
+    model.eval()
+    FastLanguageModel.for_inference(model)
+
     for variant in variants:
         print(f"[eval] Epoch {epoch} | variant: {variant}")
         templates = load_templates(config["env_family"], variant)
-        model.eval()
         result = evaluate_variant(eval_config, variant, model, tokenizer, device, templates[0])
         result["train_loss"] = train_loss
         result["val_loss"] = val_loss
@@ -193,6 +196,9 @@ def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_los
         with open(result_path, "w") as f:
             json.dump(result, f, indent=2)
         print(f"[eval] Saved: {result_path}")
+
+    model.train()
+    FastLanguageModel.for_training(model)
 
 
 def _run_training(config, model, train_loader, val_loader, device,

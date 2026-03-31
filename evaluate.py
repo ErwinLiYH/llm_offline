@@ -75,6 +75,27 @@ def generate_action(
     new_tokens = output_ids[0, input_ids.shape[1]:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
+    # --- Fallback: manual greedy loop (bypasses model.generate() entirely) ---
+    # Use if Unsloth's generate causes RoPE shape mismatch on Qwen3:
+    #   RuntimeError: output with shape [1,16,1,128] doesn't match [1,16,N,128]
+    # Root cause: unsloth_fast_generate forces cache_implementation="dynamic"
+    # but fast inference returns list[(K,V)] instead of DynamicCache, causing
+    # Transformers to recompute full-sequence position_ids on decode steps.
+    #
+    # encoded = tokenizer(prompt, return_tensors="pt")
+    # input_ids = encoded.input_ids.to(device)
+    # eos_id = tokenizer.eos_token_id
+    # with torch.inference_mode():
+    #     generated = input_ids
+    #     for _ in range(max_new_tokens):
+    #         outputs = model(input_ids=generated, use_cache=False)
+    #         next_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+    #         generated = torch.cat([generated, next_token], dim=1)
+    #         if next_token.item() == eos_id:
+    #             break
+    # new_tokens = generated[0, input_ids.shape[1]:]
+    # return tokenizer.decode(new_tokens, skip_special_tokens=True)
+
 
 def evaluate_variant(
     config: dict,
