@@ -7,6 +7,7 @@ Usage:
 import argparse
 import json
 import os
+import time
 
 import numpy as np
 import torch
@@ -27,9 +28,28 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_results_dir(model_path: str) -> str:
-    """Mirror checkpoints/ → results/ directory structure."""
-    return model_path.replace("checkpoints/", "results/", 1)
+def get_results_dir(config: dict) -> str:
+    """Build results directory path encoding model, training context, and eval context.
+
+    Fine-tuned checkpoint:
+        results/Qwen3-0.6B/train=pointmaze-single-open/eval=pointmaze-open/
+    Base model (no fine-tuning):
+        results/Qwen3-0.6B/train=pretrained/eval=pointmaze-open/
+    """
+    from model.policy import get_model_slug
+    model_path = config["model_path"]
+    eval_tag = f"eval={config['env_family']}-{config['variant']}"
+
+    if model_path.startswith("checkpoints/") or model_path.startswith("checkpoints\\"):
+        # checkpoints/<train_family>/<model_slug>/<train_mode>/<train_variant>/...
+        parts = model_path.replace("\\", "/").rstrip("/").split("/")
+        model_slug = parts[2] if len(parts) > 2 else model_path
+        train_tag = "train=" + "-".join(parts[1:4])  # e.g. train=pointmaze-single-open
+    else:
+        model_slug = get_model_slug(model_path)
+        train_tag = "train=pretrained"
+
+    return os.path.join("results", model_slug, train_tag, eval_tag)
 
 
 def generate_action(
@@ -40,10 +60,13 @@ def generate_action(
     max_new_tokens: int = 20,
 ) -> str:
     """Run inference and return the generated text (action portion)."""
-    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+    encoded = tokenizer(prompt, return_tensors="pt")
+    input_ids = encoded.input_ids.to(device)
+    attention_mask = encoded.attention_mask.to(device)
     with torch.no_grad():
         output_ids = model.generate(
             input_ids,
+            attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
@@ -67,12 +90,15 @@ def evaluate_variant(
     num_episodes = config["num_episodes"]
     parse_retry_limit = config["parse_retry_limit"]
 
-    env = gym.make(env_id)
+    env_kwargs = config.get("env_kwargs") or {}
+    env = gym.make(env_id, **env_kwargs)
 
     episode_returns = []
     episode_successes = []
     total_parse_failures = 0
     total_fallbacks = 0
+    total_action_time = 0.0
+    total_actions = 0
 
     for ep_idx in range(num_episodes):
         obs_dict, info = env.reset()
@@ -91,7 +117,10 @@ def evaluate_variant(
             # Try to get a valid action, retrying on parse/validate failure
             action = None
             for attempt in range(parse_retry_limit + 1):
+                t0 = time.perf_counter()
                 generated = generate_action(model, tokenizer, prompt, device)
+                total_action_time += time.perf_counter() - t0
+                total_actions += 1
                 parsed_action, success = formatter.parse_action(generated)
                 if success and formatter.validate_action(parsed_action):
                     action = np.clip(parsed_action, -1.0, 1.0)
@@ -121,6 +150,7 @@ def evaluate_variant(
 
     env.close()
 
+    mean_action_time_ms = (total_action_time / total_actions * 1000) if total_actions > 0 else 0.0
     return {
         "variant": variant,
         "num_episodes": num_episodes,
@@ -129,6 +159,7 @@ def evaluate_variant(
         "success_rate": float(np.mean(episode_successes)),
         "total_parse_failures": total_parse_failures,
         "total_fallbacks": total_fallbacks,
+        "mean_action_time_ms": round(mean_action_time_ms, 2),
     }
 
 
@@ -169,7 +200,7 @@ def main():
             f"fallbacks={result['total_fallbacks']}"
         )
 
-    results_dir = get_results_dir(config["model_path"])
+    results_dir = get_results_dir(config)
     os.makedirs(results_dir, exist_ok=True)
     results_path = os.path.join(results_dir, "results.json")
     with open(results_path, "w") as f:

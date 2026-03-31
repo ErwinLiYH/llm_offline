@@ -1,5 +1,10 @@
 model_path: checkpoints/pointmaze/Qwen3-0.6B/single/open/final
+# model_path: Qwen/Qwen3-0.6B
 env_family: pointmaze
 variant: open             # variant name, or "all" to evaluate all variants
 num_episodes: 20
 parse_retry_limit: 3
+
+env_kwargs:
+  continuing_task: false  # false = one goal per episode, terminated on success
+  # max_episode_steps: 300  # uncomment to override default (open/umaze=300, medium=600, large=800)
