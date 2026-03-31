@@ -33,6 +33,7 @@ class PointMazeDataset(BaseOfflineDataset):
         max_length: int = 512,
         num_workers: int = 8,
         cache_dir: str | None = None,
+        max_data_num: int | None = None,
     ):
         super().__init__()
         self.variant = variant
@@ -41,6 +42,7 @@ class PointMazeDataset(BaseOfflineDataset):
         self.max_length = max_length
         self.num_workers = num_workers
         self.cache_dir = cache_dir
+        self.max_data_num = max_data_num
 
         self._local = threading.local()
         self._samples: list[dict] = []
@@ -59,6 +61,9 @@ class PointMazeDataset(BaseOfflineDataset):
             print(f"[dataset] Loading cached dataset from {cache_path}")
             with open(cache_path, "rb") as f:
                 self._samples = pickle.load(f)
+            if self.max_data_num is not None:
+                self._samples = self._samples[: self.max_data_num]
+                print(f"[dataset] max_data_num={self.max_data_num}: using {len(self._samples)} samples")
             return
 
         meta = POINTMAZE_VARIANTS[variant]
@@ -117,6 +122,10 @@ class PointMazeDataset(BaseOfflineDataset):
                 for record in text_records:
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
             print(f"[dataset] Saved human-readable cache to {jsonl_path}")
+
+        if self.max_data_num is not None:
+            self._samples = self._samples[: self.max_data_num]
+            print(f"[dataset] max_data_num={self.max_data_num}: using {len(self._samples)} samples")
 
     # ------------------------------------------------------------------
     def _get_local_tokenizer(self):
