@@ -6,7 +6,7 @@ Usage:
 
 import argparse
 import os
-import shutil
+import json
 
 import yaml
 import torch
@@ -205,6 +205,17 @@ def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
     config_dst = os.path.join(checkpoint_dir, "config.yaml")
     with open(config_dst, "w") as f:
         yaml.dump(config, f)
+
+    # Unsloth rewrites base_model_name_or_path to "unsloth/<model>" in adapter_config.json.
+    # Patch it back to the original model name so offline checkpoint loading works.
+    adapter_cfg_path = os.path.join(checkpoint_dir, "adapter_config.json")
+    if os.path.exists(adapter_cfg_path):
+        with open(adapter_cfg_path) as f:
+            adapter_cfg = json.load(f)
+        adapter_cfg["base_model_name_or_path"] = config["model_name"]
+        with open(adapter_cfg_path, "w") as f:
+            json.dump(adapter_cfg, f, indent=2)
+
     print(f"[train] Checkpoint saved to: {checkpoint_dir}")
 
 
