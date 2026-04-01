@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 LLM Offline RL: behavior cloning on D4RL PointMaze environments using a fine-tuned LLM (via LoRA). Observations and goals are serialized to text; the model predicts actions as plain-text floats. The full design spec is in `DESIGN.md` (Chinese).
 
-**Stack:** PyTorch + HuggingFace Transformers + PEFT (LoRA), Minari (D4RL data), Gymnasium
+**Stack:** PyTorch + HuggingFace Transformers + Unsloth (training acceleration) + PEFT (LoRA), Minari (D4RL data), Gymnasium
 
 ## Commands
 
@@ -77,8 +77,8 @@ prompts/<env_family>/<variant>.yaml  # 5 templates per variant (3 English, 2 Chi
   - *PointMaze:* regex parse of `float, float`, validate each component in `[-1, 1]`, clip and return.
 - **Prompt templates:** 5 per variant (templates 0–2 English: formal/concise/conversational; 3–4 Chinese: formal/concise). Evaluation always uses template 0.
 - **Multi-variant joint training:** weighted sampling by variant sample count to prevent large variants from dominating
-- **Base model config:** `model_name` in `config.yaml` specifies the HuggingFace model ID (e.g. `Qwen/Qwen3-0.6B`, `meta-llama/Llama-3.2-1B`). `model/policy.py` must read this field and pass it to `AutoModelForCausalLM.from_pretrained`. The tokenizer is also loaded from the same `model_name`. Checkpoint paths embed the model name slug (e.g. `checkpoints/pointmaze/Qwen3-0.6B/single/open/final/`) so experiments with different base models don't overwrite each other.
-- **Checkpoint layout:** `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/final/` and `results/` mirrors the same structure; each `final/` contains LoRA adapter weights, tokenizer, and `config.yaml` copy
+- **Base model config:** `model_name` in `config.yaml` specifies the HuggingFace model ID (e.g. `Qwen/Qwen3-0.6B`, `meta-llama/Llama-3.2-1B`). `model/policy.py` loads via `FastLanguageModel.from_pretrained` (Unsloth) for both training and inference. Checkpoint paths embed the model name slug (e.g. `checkpoints/pointmaze/Qwen3-0.6B/single/open/final/`) so experiments with different base models don't overwrite each other.
+- **Checkpoint layout:** `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/ep{N}/` saved after each epoch, plus `final/` at training end. Each directory contains LoRA adapter weights, tokenizer, and `config.yaml` copy. `eval.yaml` defaults to pointing at `final/`.
 - **Results layout:** `results/` mirrors `checkpoints/` structure; records episode return and success rate per variant
 
 ## Not in scope (do not implement)

@@ -8,7 +8,10 @@
 ### 技术栈
 - **基座模型**：`Qwen/Qwen3-0.6B`（HuggingFace 加载，LoRA finetune）
 - **数据集**：D4RL PointMaze 系列（`minari` 库加载）
-- **训练框架**：PyTorch + HuggingFace Transformers + PEFT（LoRA）
+- **训练框架**：PyTorch + HuggingFace Transformers + PEFT（LoRA）+ Unsloth（训练加速）
+
+**依赖版本约束：**
+- `transformers==4.56.1`：Unsloth 2026.3.x 与 transformers 5.x 不兼容（`generate()` 路径中 `DynamicCache` 与 Unsloth fast inference 返回格式冲突，导致 Qwen3 RoPE shape mismatch）。如需升级 transformers，请先验证 `model.generate()` 在 Unsloth 模型上是否正常工作，或切换 `generate_action` 为注释中的 manual greedy fallback。
 
 ---
 
@@ -235,6 +238,9 @@ lora_target_modules: ["q_proj", "v_proj"]
 
 # 评估辅助
 parse_retry_limit: 3     # action 解析失败时的最大重试次数
+
+# Debug（注释掉为正常训练）
+# max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
 ```
 
 对 PointMaze 环境族，共训练以下 9 个模型：
@@ -245,35 +251,118 @@ parse_retry_limit: 3     # action 解析失败时的最大重试次数
 
 ---
 
-### 模型保存结构
+### 路径约定
+
+项目中所有持久化数据遵循统一的路径规范，便于不同实验结果的对比与管理。
+
+---
+
+#### 1. Checkpoint 路径
+
+训练完成后，LoRA adapter 权重、tokenizer、`config.yaml` 副本保存在：
 
 ```
 checkpoints/
-└── pointmaze/
-    ├── single/
-    │   ├── open/
-    │   │   ├── checkpoint-500/
-    │   │   └── final/
-    │   ├── open-dense/
-    │   │   └── final/
-    │   ├── umaze/
-    │   │   └── final/
-    │   ├── umaze-dense/
-    │   │   └── final/
-    │   ├── medium/
-    │   │   └── final/
-    │   ├── medium-dense/
-    │   │   └── final/
-    │   ├── large/
-    │   │   └── final/
-    │   └── large-dense/
-    │       └── final/
-    └── all/
-        ├── checkpoint-500/
-        └── final/
+└── <env_family>/
+    └── <model_slug>/          # HuggingFace model ID 的最后一段，如 Qwen3-0.6B
+        └── <train_mode>/      # single | all
+            └── <variant>/     # 变种名（single 模式）或 "all"（all 模式）
+                ├── ep1/       # epoch 1 结束时保存的中间 checkpoint
+                ├── ep2/
+                ├── ep3/
+                └── final/     # 训练全部结束后保存（与最后一个 epN 内容相同）
+                    ├── adapter_config.json
+                    ├── adapter_model.safetensors
+                    ├── tokenizer.json
+                    ├── tokenizer_config.json
+                    └── config.yaml
 ```
 
-每个 `final/` 下保存：LoRA adapter 权重、tokenizer、训练所用 `config.yaml` 副本。
+**示例：**
+
+| 训练场景 | 路径 |
+|----------|------|
+| Qwen3-0.6B 单独训练 open 变种（epoch 2 中间） | `checkpoints/pointmaze/Qwen3-0.6B/single/open/ep2/` |
+| Qwen3-0.6B 单独训练 open 变种（训练完成） | `checkpoints/pointmaze/Qwen3-0.6B/single/open/final/` |
+| Qwen3-0.6B 联合训练所有变种 | `checkpoints/pointmaze/Qwen3-0.6B/all/all/final/` |
+| Llama-3.2-1B 单独训练 umaze 变种 | `checkpoints/pointmaze/Llama-3.2-1B/single/umaze/final/` |
+
+`model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。
+
+---
+
+#### 2. 数据集缓存路径
+
+Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置，默认 `dataset_cache/`）：
+
+```
+dataset_cache/
+├── <env_family>-<variant>-train.pkl    # 二进制缓存，训练集 token 数据
+├── <env_family>-<variant>-train.jsonl  # 可读文本副本（prompt + action 原文）
+├── <env_family>-<variant>-val.pkl
+└── <env_family>-<variant>-val.jsonl
+```
+
+**示例：** `dataset_cache/pointmaze-open-train.pkl`
+
+- `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
+- `.jsonl` 每行是 `{"prompt": "...", "action": "0.35, -0.72"}`，供人工抽检数据质量
+- 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
+- `max_data_num` 截断发生在 cache 读取之后的内存中，cache 文件始终保存完整数据
+
+---
+
+#### 3. 评估结果路径
+
+评估结果统一保存在 `results/` 下，路径编码了"用哪个模型"、"训练背景"、"在哪个变种上评估"三层信息：
+
+```
+results/
+└── <model_slug>/
+    └── train=<env_family>-<train_variant>-<train_mode>/
+        └── eval=<env_family>-<eval_variant>/
+            ├── results.json          # evaluate.py 完整评估结果
+            ├── result_ep1.json       # 训练 epoch 1 结束后的中间评估
+            ├── result_ep2.json
+            └── ...
+```
+
+**路径字段说明：**
+
+| 字段 | 含义 | 示例 |
+|------|------|------|
+| `model_slug` | 基座模型名 | `Qwen3-0.6B` |
+| `train_variant` | 训练时使用的变种（联合训练为 `all`） | `open`、`all` |
+| `train_mode` | 训练模式 | `single`、`all` |
+| `eval_variant` | 评估时测试的变种 | `open`、`umaze` |
+
+**示例路径：**
+
+| 场景 | 路径 |
+|------|------|
+| 训练 open 变种后评估 open | `results/Qwen3-0.6B/train=pointmaze-open-single/eval=pointmaze-open/results.json` |
+| 训练 open 变种 epoch 2 中间评估 | `results/Qwen3-0.6B/train=pointmaze-open-single/eval=pointmaze-open/result_ep2.json` |
+| 联合训练后评估 umaze | `results/Qwen3-0.6B/train=pointmaze-all-all/eval=pointmaze-umaze/results.json` |
+| 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/eval=pointmaze-open/results.json` |
+
+`evaluate.py` 和 `train.py` 使用同一套路径生成逻辑，确保训练中间评估（`result_epN.json`）与最终评估（`results.json`）落在同一目录下，方便对比。
+
+**结果文件字段：**
+
+```json
+{
+  "variant": "open",
+  "num_episodes": 20,
+  "mean_return": 0.85,
+  "std_return": 0.12,
+  "success_rate": 0.80,
+  "total_parse_failures": 2,
+  "total_fallbacks": 0,
+  "mean_action_time_ms": 241.3,
+  "train_loss": 0.4637,   // 仅 result_epN.json 有
+  "val_loss": 0.4702      // 仅 result_epN.json 有
+}
+```
 
 ---
 
@@ -291,9 +380,12 @@ env_family: pointmaze
 variant: open            # 变种短名，或 "all" 表示评估全部变种
 num_episodes: 20
 parse_retry_limit: 3
+env_kwargs:
+  continuing_task: false # false = 每 episode 一个目标，到达即结束
+  # max_episode_steps: 300  # 可选，覆盖环境默认值
 ```
 
-评估时固定使用模板 0。结果保存到 `results/`，目录结构与 `checkpoints/` 对应，记录每个变种的 episode return 和 success rate。
+`model_path` 可填 checkpoint 路径或 HuggingFace model ID（如 `Qwen/Qwen3-0.6B`），后者用于评估未微调的基座模型。评估时固定使用模板 0（第一个英文模板）。
 
 ---
 
