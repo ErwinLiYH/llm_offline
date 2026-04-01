@@ -1,8 +1,6 @@
 import os
 
 import yaml
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from unsloth import FastLanguageModel
 
 
@@ -43,37 +41,35 @@ def load_model_and_tokenizer(config: dict):
 
 
 def load_from_checkpoint(model_path: str):
-    """Load a model for evaluation.
+    """Load a model for evaluation using Unsloth.
 
-    If model_path contains adapter_config.json, loads as a PEFT LoRA checkpoint
-    (base model + adapters). Otherwise loads the path directly as a base model,
-    allowing evaluation of unmodified HuggingFace models.
+    If model_path contains adapter_config.json, loads as a LoRA checkpoint
+    (reads max_seq_length from the saved config.yaml in the checkpoint directory).
+    Otherwise loads as a plain base model with a default max_seq_length of 2048.
     """
-    import json
     adapter_cfg_path = os.path.join(model_path, "adapter_config.json")
 
     if os.path.exists(adapter_cfg_path):
-        with open(adapter_cfg_path) as f:
-            adapter_cfg = json.load(f)
-        base_model_name = adapter_cfg["base_model_name_or_path"]
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_name,
-            torch_dtype="auto",
-            trust_remote_code=True,
-        )
-        model = PeftModel.from_pretrained(base_model, model_path)
+        saved_config_path = os.path.join(model_path, "config.yaml")
+        if os.path.exists(saved_config_path):
+            with open(saved_config_path) as f:
+                saved_config = yaml.safe_load(f)
+            max_seq_length = saved_config.get("max_length", 2048)
+        else:
+            max_seq_length = 2048
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            torch_dtype="auto",
-            trust_remote_code=True,
-        )
+        max_seq_length = 2048
+
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=model_path,
+        max_seq_length=max_seq_length,
+        dtype=None,
+        load_in_4bit=False,
+        trust_remote_code=True,
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     model.eval()
+    FastLanguageModel.for_inference(model)
     return model, tokenizer
