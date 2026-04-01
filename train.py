@@ -26,17 +26,11 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_checkpoint_dir(config: dict, variant: str) -> str:
+def get_checkpoint_dir(config: dict, variant: str, epoch: int | None = None) -> str:
     slug = get_model_slug(config["model_name"])
     root = config.get("checkpoint_root", "checkpoints")
-    return os.path.join(
-        root,
-        config["env_family"],
-        slug,
-        config["train_mode"],
-        variant,
-        "final",
-    )
+    tag = f"ep{epoch}" if epoch is not None else "final"
+    return os.path.join(root, config["env_family"], slug, config["train_mode"], variant, tag)
 
 
 def train_single_variant(config: dict, variant: str, model, tokenizer, device: torch.device):
@@ -78,7 +72,7 @@ def train_single_variant(config: dict, variant: str, model, tokenizer, device: t
 
     eval_variants = config.get("eval_variants") or [variant]
     _run_training(config, model, train_loader, val_loader, device,
-                  tokenizer=tokenizer, eval_variants=eval_variants)
+                  tokenizer=tokenizer, eval_variants=eval_variants, variant=variant)
 
     checkpoint_dir = get_checkpoint_dir(config, variant)
     _save_checkpoint(config, model, tokenizer, checkpoint_dir)
@@ -145,7 +139,7 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
     print(f"[train] Total train samples: {len(combined_train)}, val: {len(combined_val)}")
     eval_variants = config.get("eval_variants") or []
     _run_training(config, model, train_loader, val_loader, device,
-                  tokenizer=tokenizer, eval_variants=eval_variants)
+                  tokenizer=tokenizer, eval_variants=eval_variants, variant="all")
 
     checkpoint_dir = get_checkpoint_dir(config, "all")
     _save_checkpoint(config, model, tokenizer, checkpoint_dir)
@@ -202,7 +196,7 @@ def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_los
 
 
 def _run_training(config, model, train_loader, val_loader, device,
-                  tokenizer=None, eval_variants=None):
+                  tokenizer=None, eval_variants=None, variant="all"):
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config["learning_rate"],
@@ -256,6 +250,9 @@ def _run_training(config, model, train_loader, val_loader, device,
 
         val_loss = val_loss / max(val_batches, 1)
         print(f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
+
+        epoch_ckpt_dir = get_checkpoint_dir(config, variant, epoch=epoch)
+        _save_checkpoint(config, model, tokenizer, epoch_ckpt_dir)
 
         if config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants:
             _run_epoch_eval(config, model, tokenizer, device, eval_variants,
