@@ -3,6 +3,7 @@ train_mode: single        # single | all
 variant: open             # used only when train_mode=single
 
 model_name: Qwen/Qwen3-0.6B
+load_in_4bit: false       # true = enable Unsloth 4-bit quantized loading
 checkpoint_root: checkpoints  # root directory for saved checkpoints
 dataset_workers: 8            # threads for parallel episode tokenization
 dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable

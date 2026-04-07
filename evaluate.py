@@ -199,7 +199,10 @@ def main():
     print(f"[eval] Using device: {device}")
     print(f"[eval] Loading model from: {config['model_path']}")
 
-    model, tokenizer = load_from_checkpoint(config["model_path"])
+    model, tokenizer = load_from_checkpoint(
+        config["model_path"],
+        load_in_4bit=config.get("load_in_4bit"),
+    )
     model.to(device)
     model.eval()
 

@@ -1,5 +1,6 @@
 model_path: checkpoints/pointmaze/Qwen3-0.6B/single/open/final
 # model_path: Qwen/Qwen3-0.6B
+load_in_4bit: true      # optional override; when omitted, checkpoint eval uses saved training config
 env_family: pointmaze
 variant: open             # variant name, or "all" to evaluate all variants
 num_episodes: 20

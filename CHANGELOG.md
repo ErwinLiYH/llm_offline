@@ -118,3 +118,24 @@ type: project
 - `_run_training` 新增 `variant` 参数（默认 `"all"`），在 val loss 打印后立即调 `_save_checkpoint` 保存当前 epoch 的 checkpoint
 - 路径示例：`checkpoints/pointmaze/Qwen3-0.6B/single/open/ep1`、`ep2`、`ep3`，训练结束后仍保存 `final`
 - `train_single_variant` 和 `train_all_variants` 调用时分别传入对应 `variant` / `"all"`
+
+---
+
+## model/policy.py（2026-04-07）
+
+**新增 Unsloth 4-bit 量化开关：**
+- `load_model_and_tokenizer` 新增读取 `config["load_in_4bit"]`，并透传到 `FastLanguageModel.from_pretrained(..., load_in_4bit=...)`
+- `load_from_checkpoint` 新增 `load_in_4bit: bool | None = None` 参数；若未显式传入，则从 checkpoint 内保存的 `config.yaml` 读取 `load_in_4bit`，默认 `false`
+
+## evaluate.py（2026-04-07）
+
+- `main()` 调用 `load_from_checkpoint(...)` 时新增透传 `config.get("load_in_4bit")`
+- 评估配置现在可以显式控制是否以 Unsloth 4-bit 模式加载模型
+
+## config.yaml（2026-04-07）
+
+- 新增 `load_in_4bit: false` 配置项，用于控制训练时是否启用 Unsloth 4-bit 量化加载
+
+## eval.yaml（2026-04-07）
+
+- 新增 `load_in_4bit: false` 配置项，用于控制评估时是否启用 4-bit 量化加载；若评估的是 LoRA checkpoint，也可不显式设置，回退到 checkpoint 保存的训练配置
