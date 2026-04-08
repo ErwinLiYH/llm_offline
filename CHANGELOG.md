@@ -180,3 +180,22 @@ type: project
 - checkpoint 路径改为 `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/<experiment_id>/epN|final/`
 - 训练时保存到 checkpoint 目录的 `config.yaml` 会包含最终使用的 `experiment_id`
 - 训练期中评估与 `evaluate.py` 的结果路径同步新增 `exp=<experiment_id>` 一层，避免同参数重复实验互相覆盖
+
+---
+
+## data/pointmaze/dataset.py（2026-04-08）
+
+**episode 切分边界现在由单个比例控制：**
+- 使用 `train_data_ratio` 配置项控制 train 使用多少比例的 episodes
+- `val` 自动使用剩余 episodes；`train_data_ratio: 0.9` 就是原来的 9:1
+- dataset cache 文件名中的 split 标记会体现这个比例，例如 `split90`
+
+---
+
+## data/pointmaze/dataset.py / config.yaml（2026-04-08）
+
+**episode 切分改为单个比例配置项：**
+- 新增 `train_data_ratio` 配置项，默认值为 `0.9`
+- train 使用前 `train_data_ratio` 比例的 episodes，val 自动使用剩余 episodes
+- dataset cache 文件名中的 split 标记改为根据当前配置动态生成，如 `split90`
+- 非法配置会直接报错：要求 `0 < train_data_ratio < 1`

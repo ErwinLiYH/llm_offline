@@ -58,6 +58,7 @@ def train_single_variant(config: dict, variant: str, model, tokenizer, device: t
         cache_dir=config.get("dataset_cache_dir"),
         max_data_num=config.get("max_data_num"),
         prompt_template_count=config.get("prompt_template_count", 1),
+        train_data_ratio=config.get("train_data_ratio", 0.9),
     )
     val_dataset = DatasetCls(
         variant=variant,
@@ -68,6 +69,7 @@ def train_single_variant(config: dict, variant: str, model, tokenizer, device: t
         cache_dir=config.get("dataset_cache_dir"),
         max_data_num=config.get("max_data_num"),
         prompt_template_count=config.get("prompt_template_count", 1),
+        train_data_ratio=config.get("train_data_ratio", 0.9),
     )
     print(f"[train] Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
 
@@ -110,6 +112,7 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
                 cache_dir=config.get("dataset_cache_dir"),
                 max_data_num=config.get("max_data_num"),
                 prompt_template_count=config.get("prompt_template_count", 1),
+        train_data_ratio=config.get("train_data_ratio", 0.9),
             )
         )
         val_datasets.append(
@@ -122,6 +125,7 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
                 cache_dir=config.get("dataset_cache_dir"),
                 max_data_num=config.get("max_data_num"),
                 prompt_template_count=config.get("prompt_template_count", 1),
+        train_data_ratio=config.get("train_data_ratio", 0.9),
             )
         )
 

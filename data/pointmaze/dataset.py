@@ -15,6 +15,8 @@ from data.pointmaze import formatting
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from utils.prompt_loader import load_templates, render_template
 
+DEFAULT_TRAIN_DATA_RATIO = 0.9
+
 
 class PointMazeDataset(BaseOfflineDataset):
     """PyTorch Dataset for PointMaze behavior cloning."""
@@ -29,6 +31,7 @@ class PointMazeDataset(BaseOfflineDataset):
         cache_dir: str | None = None,
         max_data_num: int | None = None,
         prompt_template_count: int = 1,
+        train_data_ratio: float = DEFAULT_TRAIN_DATA_RATIO,
     ):
         super().__init__()
         self.variant = variant
@@ -39,16 +42,21 @@ class PointMazeDataset(BaseOfflineDataset):
         self.cache_dir = cache_dir
         self.max_data_num = max_data_num
         self.prompt_template_count = prompt_template_count
+        self.train_data_ratio = train_data_ratio
 
         self._local = threading.local()
         self._samples: list[dict] = []
         self.load(variant, split)
 
+    def _split_tag(self) -> str:
+        train_pct = int(round(self.train_data_ratio * 100))
+        return f"split{train_pct:02d}"
+
     def _cache_path(self, variant: str, split: str) -> str | None:
         if self.cache_dir is None:
             return None
         fname = (
-            f"pointmaze-{variant}-{split}-prompts{self.prompt_template_count}.pkl"
+            f"pointmaze-{variant}-{split}-prompts{self.prompt_template_count}-{self._split_tag()}.pkl"
         )
         return os.path.join(self.cache_dir, fname)
 
@@ -62,6 +70,12 @@ class PointMazeDataset(BaseOfflineDataset):
                 self._samples = self._samples[: self.max_data_num]
                 print(f"[dataset] max_data_num={self.max_data_num}: using {len(self._samples)} samples")
             return
+
+        if not (0.0 < self.train_data_ratio < 1.0):
+            raise ValueError(
+                "Invalid train_data_ratio: expected 0 < train_data_ratio < 1, "
+                f"got train_data_ratio={self.train_data_ratio}"
+            )
 
         meta = POINTMAZE_VARIANTS[variant]
         dataset = minari.load_dataset(meta["dataset_id"], download=True)
@@ -80,8 +94,15 @@ class PointMazeDataset(BaseOfflineDataset):
 
         all_episodes = list(dataset.iterate_episodes())
         n_total = len(all_episodes)
-        n_train = max(1, int(n_total * 0.9))
-        episodes = all_episodes[:n_train] if split == "train" else all_episodes[n_train:]
+        train_end = max(1, int(n_total * self.train_data_ratio))
+        train_end = min(train_end, n_total - 1)
+
+        if split == "train":
+            episodes = all_episodes[:train_end]
+        elif split == "val":
+            episodes = all_episodes[train_end:]
+        else:
+            raise ValueError(f"Unknown split: {split!r}. Expected 'train' or 'val'.")
 
         def process_episode(episode) -> list[tuple[dict, dict]]:
             results = []

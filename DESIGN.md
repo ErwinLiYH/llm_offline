@@ -180,7 +180,7 @@ Action:
 - 每个 timestep 的 `(obs, [goal,] action)` 元组展开为 `prompt_template_count` 条训练样本（对应前 `prompt_template_count` 个共享模板）
 - obs、goal 的序列化方式（精度、格式）由各环境族的 `formatting.py` 中的 `format_obs` 函数定义，结果填入模板占位符
 - action 的目标文本由 `formatting.py` 中的 `format_action` 函数生成
-- train/val 划分在 **episode 级别**进行（9:1），再展开 timestep，避免同一 episode 数据同时出现在 train 和 val 中
+- train/val 划分在 **episode 级别**进行（`train_data_ratio`，默认 `0.9`，即前 90% episode 用于 train，剩余 10% 用于 val），再展开 timestep，避免同一 episode 数据同时出现在 train 和 val 中
 
 ---
 
@@ -271,13 +271,13 @@ Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置
 
 ```
 dataset_cache/
-├── <env_family>-<variant>-train-prompts<N>.pkl    # 二进制缓存，训练集 token 数据
-├── <env_family>-<variant>-train-prompts<N>.jsonl  # 可读文本副本（prompt + action 原文）
-├── <env_family>-<variant>-val-prompts<N>.pkl
-└── <env_family>-<variant>-val-prompts<N>.jsonl
+├── <env_family>-<variant>-train-prompts<N>-split<train_pct>-<val_pct>.pkl    # 二进制缓存，训练集 token 数据
+├── <env_family>-<variant>-train-prompts<N>-split<train_pct>-<val_pct>.jsonl  # 可读文本副本（prompt + action 原文）
+├── <env_family>-<variant>-val-prompts<N>-split<train_pct>-<val_pct>.pkl
+└── <env_family>-<variant>-val-prompts<N>-split<train_pct>-<val_pct>.jsonl
 ```
 
-**示例：** `dataset_cache/pointmaze-open-train-prompts1.pkl`
+**示例：** `dataset_cache/pointmaze-open-train-prompts1-split<train_pct>-<val_pct>.pkl`
 
 - `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
 - `.jsonl` 每行是 `{"prompt": "...", "action": "0.35, -0.72"}`，供人工抽检数据质量
@@ -417,7 +417,7 @@ def validate_action(action) -> bool:
    - *PointMaze 实现*：正则解析 `float, float`，校验各分量在 `[-1, 1]` 内，clip 后返回
    - 其他环境族在各自 `formatting.py` 中实现对应逻辑，格式和校验规则完全自定义
 4. **Obs/Action 序列化（环境族绑定）**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs` 和 `format_action`，不依赖任何全局 formatting 工具
-5. **Episode 级别 train/val 划分**：先按 episode 9:1 划分，再展开 timestep，防止数据泄露
+5. **Episode 级别 train/val 划分**：先按 episode `train_data_ratio`（默认 `0.9`）划分，train 用前 90%，val 用剩余 10%，再展开 timestep，防止数据泄露
 6. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖
 7. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
 

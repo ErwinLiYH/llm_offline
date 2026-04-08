@@ -42,7 +42,7 @@ Key files:
 
 Data flow:
 - dataset
-- episode-level 9:1 train/val split
+- episode-level train/val split using `train_data_ratio` (default 0.9, so train uses the first 90% of episodes and val uses the remaining 10%)
 - per timestep: `format_obs` + `format_action`
 - fill the first `prompt_template_count` templates
 - tokenize with prompt tokens masked out (`labels = -100`)

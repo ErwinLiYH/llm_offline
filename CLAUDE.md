@@ -69,7 +69,7 @@ utils/prompt_loader.py               # Load shared prompt templates for an envir
 prompts/<env_family>/<idx>.txt  # shared prompt templates for that family; PointMaze currently defines 5
 ```
 
-**Data flow:** dataset → episode-level 9:1 train/val split → for each timestep: call `format_obs` + `format_action` from the family's `formatting.py`, fill the first `prompt_template_count` templates, tokenize with loss mask (labels=-100 on prompt, loss only on action target) → `prompt_template_count` samples per timestep.
+**Data flow:** dataset → episode-level train/val split using `train_data_ratio` (default 0.9, so train uses the first 90% of episodes and val uses the remaining 10%) → for each timestep: call `format_obs` + `format_action` from the family's `formatting.py`, fill the first `prompt_template_count` templates, tokenize with loss mask (labels=-100 on prompt, loss only on action target) → `prompt_template_count` samples per timestep.
 
 **Extending to a new environment family:** add `prompts/<family>/`, add `data/<family>/` with `variants.py`, `dataset.py`, and `formatting.py`, register one line in `data/registry.py`. No changes to `train.py` or `evaluate.py`.
 
