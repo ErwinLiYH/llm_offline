@@ -19,7 +19,7 @@ import gymnasium_robotics  # noqa: F401  registers PointMaze envs
 from data.registry import get_formatter
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from model.policy import load_from_checkpoint
-from utils.prompt_loader import load_templates
+from utils.prompt_loader import load_templates, render_template
 
 
 def parse_args():
@@ -135,7 +135,7 @@ def evaluate_variant(
 
         while not (terminated or truncated):
             obs_text = formatter.format_obs(obs, goal)
-            prompt = template.format(obs_text=obs_text)
+            prompt = render_template(template, meta["prompt_vars"], obs_text=obs_text)
 
             # Try to get a valid action, retrying on parse/validate failure
             action = None
@@ -218,7 +218,7 @@ def main():
     for variant in variants_to_eval:
         print(f"\n[eval] Evaluating variant: {variant}")
         # Template 0 is always used for evaluation (first English template)
-        templates = load_templates(env_family, variant)
+        templates = load_templates(env_family)
         template = templates[0]
 
         result = evaluate_variant(config, variant, model, tokenizer, device, template)

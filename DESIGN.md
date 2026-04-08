@@ -17,9 +17,9 @@
 
 ### PointMaze 变种完整列表
 
-定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中，包含所有 8 个变种的 `dataset_id`、`env_id`、`maze_map`、`reward_type`。
+定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中，包含所有 8 个变种的 `dataset_id`、`env_id`、`prompt_vars`。
 
-maze_map 含义：二维整数矩阵，`1` 表示墙壁（不可通行），`0` 表示可通行空地。
+`maze_map` 和 `reward_type` 现在收在每个变种的 `prompt_vars` 中，供共享 prompt 渲染使用。
 
 8 个变种及其信息：
 
@@ -148,63 +148,36 @@ POINTMAZE_VARIANTS = {
 
 #### 核心原则（通用，适用于所有环境族）
 
-- 每个变种对应 **5 个语义完全等价、语言风格不同** 的 prompt 模板，保存在 `prompts/<env_family>/<variant_name>.yaml`
-- 语言分配：**模板 1、2、3 为英文**（正式学术、简洁指令、对话描述三种风格），**模板 4、5 为中文**（正式说明、简洁指令两种风格）
-- 每个 (obs, action) 对针对所有 5 个模板各生成一条训练样本，即每个 timestep 产生 **5 条**训练数据
-- 评估时固定使用模板 0（第一个英文模板），保证可复现
+- 共享风格模板按环境族存放在 `prompts/<env_family>/<idx>.txt`，索引从 `0` 连续编号
+- 每个 variant 只在 `data/<env_family>/variants.py` 中维护自己的 `prompt_vars`，提供环境名、reward 描述、迷宫矩阵/可视化、结构说明等差异化信息
+- 训练时使用前 `prompt_template_count` 个共享模板，因此每个 timestep 产生 `prompt_template_count` 条训练样本
+- 评估时固定使用模板 `0`，保证可复现
+- 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的 `obs_text`；variant 可以提供额外变量，但不能缺少模板实际引用的变量
 
 #### 模板文件格式
 
-```yaml
-# prompts/<env_family>/<variant_name>.yaml
-templates:
-  - |
-    [英文模板1：正式学术风格]
-    ...包含：环境通用说明、变种结构描述、obs 含义与具体值、goal 含义与具体值、action 格式要求与取值范围...
-    Action:
-  - |
-    [英文模板2：简洁指令风格]
-    ...
-    Action:
-  - |
-    [英文模板3：对话描述风格]
-    ...
-    Action:
-  - |
-    [中文模板4：正式说明风格]
-    ...
-    动作：
-  - |
-    [中文模板5：简洁指令风格]
-    ...
-    动作：
+共享模板是纯文本文件，例如：
+
+```text
+# prompts/<env_family>/0.txt
+Environment: {env_name}
+Reward structure: {reward_desc_en}
+Maze:
+{maze_visual}
+Current observation:
+{obs_text}
+Action:
 ```
 
-#### 每个模板必须包含的语义内容（通用要求）
+#### PointMaze 当前实现
 
-每个环境族在设计模板时必须涵盖以下语义，具体措辞和数值格式由该环境族自行定义：
-
-1. **任务描述**：这是什么类型的控制任务
-2. **变种/场景描述**：该变种的结构特征（地图、布局、难度等）
-3. **Observation 语义**：obs 各维度的物理含义，以及当前 obs 的具体数值
-4. **Goal 语义**（如有）：goal 各维度含义，以及当前 goal 的具体数值
-5. **Action 输出格式要求**：格式规范、取值范围、示例。要明确：只输出动作本身，不输出任何多余内容（无单位、无括号、无说明文字、无换行）
-
-> **PointMaze 具体实现**（其他环境族另行定义）：
-> - obs：4 维 `[x, y, vx, vy]`；goal：2 维 `[gx, gy]`；action：2 维力 `[ax, ay]`，范围 `[-1, 1]`
-> - 变种描述包含 maze_map 原始矩阵及结构文字说明
-> - Action 示例：`0.35, -0.72`
-> - Target 格式：`{ax:.2f}, {ay:.2f}`
-
-#### Target 格式（通用规则）
-
-Target 文本格式由各环境族的 `data/<env_family>/formatting.py` 定义（见"代码结构"）。训练时 prompt 部分 labels 设为 `-100`，只对 target 部分计算 loss。
-
----
+- 当前 `prompts/pointmaze/` 下定义了 5 个共享模板：0–2 英文、3–4 中文
+- `POINTMAZE_VARIANTS` 中的每个变种通过 `prompt_vars` 提供：`env_name`、`reward_desc_en`、`reward_desc_zh`、`maze_shape`、`maze_raw_matrix`、`maze_visual`、`structure_desc_en`、`structure_desc_zh`
+- target 文本仍由 `data/pointmaze/formatting.py` 定义，动作格式为 `0.35, -0.72`
 
 ### 数据处理
 
-- 每个 timestep 的 (obs, [goal,] action) 元组展开为 **5 条**训练样本（对应 5 个模板）
+- 每个 timestep 的 `(obs, [goal,] action)` 元组展开为 `prompt_template_count` 条训练样本（对应前 `prompt_template_count` 个共享模板）
 - obs、goal 的序列化方式（精度、格式）由各环境族的 `formatting.py` 中的 `format_obs` 函数定义，结果填入模板占位符
 - action 的目标文本由 `formatting.py` 中的 `format_action` 函数生成
 - train/val 划分在 **episode 级别**进行（9:1），再展开 timestep，避免同一 episode 数据同时出现在 train 和 val 中
@@ -437,7 +410,7 @@ def validate_action(action) -> bool:
 ### 关键实现细节
 
 1. **Loss masking**：labels 中 prompt 部分设为 `-100`
-2. **每 timestep 展开 5 条**：`dataset.py` 构造数据时对每个 timestep 遍历全部 5 个模板，生成 5 条独立样本
+2. **每 timestep 展开 `prompt_template_count` 条**：`dataset.py` 构造数据时对每个 timestep 遍历前 `prompt_template_count` 个共享模板，生成对应数量的独立样本
 3. **Action parsing（环境族绑定）**：evaluate.py 通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 和 `validate_action`。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
    - *PointMaze 实现*：正则解析 `float, float`，校验各分量在 `[-1, 1]` 内，clip 后返回
    - 其他环境族在各自 `formatting.py` 中实现对应逻辑，格式和校验规则完全自定义

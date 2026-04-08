@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Offline Env Support"
+  short_description: "Add env family or variant support to llm_offline"
+  default_prompt: "Use this skill when adding a new environment family or a new variant to the llm_offline project."

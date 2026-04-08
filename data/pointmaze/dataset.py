@@ -4,26 +4,20 @@ import pickle
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import minari
 import numpy as np
 import torch
-from transformers import PreTrainedTokenizerBase, AutoTokenizer
-
-import minari
 from tqdm import tqdm
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from data.base_dataset import BaseOfflineDataset
-from data.pointmaze.variants import POINTMAZE_VARIANTS
 from data.pointmaze import formatting
-from utils.prompt_loader import load_templates
+from data.pointmaze.variants import POINTMAZE_VARIANTS
+from utils.prompt_loader import load_templates, render_template
 
 
 class PointMazeDataset(BaseOfflineDataset):
-    """PyTorch Dataset for PointMaze behavior cloning.
-
-    Loads a Minari offline dataset, splits episodes 9:1 (train/val),
-    and expands each timestep into one sample per selected prompt template.
-    Loss is computed only on the action target tokens (prompt labels = -100).
-    """
+    """PyTorch Dataset for PointMaze behavior cloning."""
 
     def __init__(
         self,
@@ -50,11 +44,12 @@ class PointMazeDataset(BaseOfflineDataset):
         self._samples: list[dict] = []
         self.load(variant, split)
 
-    # ------------------------------------------------------------------
     def _cache_path(self, variant: str, split: str) -> str | None:
         if self.cache_dir is None:
             return None
-        fname = f"pointmaze-{variant}-{split}-prompts{self.prompt_template_count}.pkl"
+        fname = (
+            f"pointmaze-{variant}-{split}-prompts{self.prompt_template_count}.pkl"
+        )
         return os.path.join(self.cache_dir, fname)
 
     def load(self, variant: str, split: str):
@@ -70,7 +65,7 @@ class PointMazeDataset(BaseOfflineDataset):
 
         meta = POINTMAZE_VARIANTS[variant]
         dataset = minari.load_dataset(meta["dataset_id"], download=True)
-        all_templates = load_templates("pointmaze", variant)
+        all_templates = load_templates("pointmaze")
         if self.prompt_template_count < 1:
             raise ValueError(
                 f"prompt_template_count must be >= 1, got {self.prompt_template_count}"
@@ -81,30 +76,26 @@ class PointMazeDataset(BaseOfflineDataset):
                 f"requested {self.prompt_template_count}, available {len(all_templates)}"
             )
         templates = all_templates[: self.prompt_template_count]
+        prompt_vars = meta["prompt_vars"]
 
         all_episodes = list(dataset.iterate_episodes())
         n_total = len(all_episodes)
         n_train = max(1, int(n_total * 0.9))
-
-        if split == "train":
-            episodes = all_episodes[:n_train]
-        else:
-            episodes = all_episodes[n_train:]
+        episodes = all_episodes[:n_train] if split == "train" else all_episodes[n_train:]
 
         def process_episode(episode) -> list[tuple[dict, dict]]:
             results = []
             obs_arr = episode.observations["observation"]
             goal_arr = episode.observations["desired_goal"]
             actions = episode.actions
-            T = len(actions)
-            for t in range(T):
+            for t, action in enumerate(actions):
                 obs = obs_arr[t].astype(np.float32)
                 goal = goal_arr[t].astype(np.float32)
-                action = actions[t].astype(np.float32)
+                action = action.astype(np.float32)
                 obs_text = formatting.format_obs(obs, goal)
                 action_text = formatting.format_action(action)
                 for template in templates:
-                    prompt = template.format(obs_text=obs_text)
+                    prompt = render_template(template, prompt_vars, obs_text=obs_text)
                     token_sample = self._tokenize(prompt, action_text)
                     text_record = {"prompt": prompt, "action": action_text}
                     results.append((text_record, token_sample))
@@ -141,9 +132,7 @@ class PointMazeDataset(BaseOfflineDataset):
             self._samples = self._samples[: self.max_data_num]
             print(f"[dataset] max_data_num={self.max_data_num}: using {len(self._samples)} samples")
 
-    # ------------------------------------------------------------------
     def _get_local_tokenizer(self):
-        """Return a thread-local tokenizer instance (fast tokenizers are not thread-safe)."""
         if not hasattr(self._local, "tokenizer"):
             self._local.tokenizer = AutoTokenizer.from_pretrained(
                 self.tokenizer.name_or_path, trust_remote_code=True
@@ -152,15 +141,11 @@ class PointMazeDataset(BaseOfflineDataset):
 
     def _tokenize(self, prompt: str, action_text: str) -> dict:
         tok = self._get_local_tokenizer()
-        prompt_ids = tok(
-            prompt,
-            add_special_tokens=True,
-        ).input_ids
+        prompt_ids = tok(prompt, add_special_tokens=True).input_ids
         prompt_len = len(prompt_ids)
 
-        full_text = prompt + action_text
         full_enc = tok(
-            full_text,
+            prompt + action_text,
             add_special_tokens=True,
             max_length=self.max_length,
             truncation=True,
@@ -169,7 +154,6 @@ class PointMazeDataset(BaseOfflineDataset):
         attention_mask = full_enc["attention_mask"]
 
         labels = list(input_ids)
-        # Mask prompt tokens from loss
         for i in range(min(prompt_len, len(labels))):
             labels[i] = -100
 
@@ -179,7 +163,6 @@ class PointMazeDataset(BaseOfflineDataset):
             "labels": labels,
         }
 
-    # ------------------------------------------------------------------
     def __len__(self) -> int:
         return len(self._samples)
 
@@ -200,10 +183,7 @@ def collate_fn(batch: list[dict]) -> dict:
     for item in batch:
         seq_len = item["input_ids"].shape[0]
         pad_len = max_len - seq_len
-
-        input_ids_list.append(
-            torch.cat([item["input_ids"], torch.zeros(pad_len, dtype=torch.long)])
-        )
+        input_ids_list.append(torch.cat([item["input_ids"], torch.zeros(pad_len, dtype=torch.long)]))
         attention_mask_list.append(
             torch.cat([item["attention_mask"], torch.zeros(pad_len, dtype=torch.long)])
         )

@@ -178,7 +178,7 @@ def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_los
 
     for variant in variants:
         print(f"[eval] Epoch {epoch} | variant: {variant}")
-        templates = load_templates(config["env_family"], variant)
+        templates = load_templates(config["env_family"])
         result = evaluate_variant(eval_config, variant, model, tokenizer, device, templates[0])
         result["train_loss"] = train_loss
         result["val_loss"] = val_loss

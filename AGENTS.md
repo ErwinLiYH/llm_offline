@@ -37,8 +37,8 @@ Key files:
 - `data/<env_family>/dataset.py`: load data, expand to `prompt_template_count` samples per timestep, tokenize
 - `data/<env_family>/formatting.py`: `format_obs`, `format_action`, `parse_action`, `validate_action`
 - `model/policy.py`: load base model and LoRA adapters
-- `utils/prompt_loader.py`: load prompt templates for a variant
-- `prompts/<env_family>/<variant>.yaml`: prompt templates for that variant; current PointMaze files contain 5
+- `utils/prompt_loader.py`: load shared prompt templates for an environment family
+- `prompts/<env_family>/<idx>.txt`: shared prompt templates for that family; PointMaze currently defines 5
 
 Data flow:
 - dataset
@@ -61,7 +61,7 @@ To add a new environment family:
 - `evaluate.py` uses `registry.get_formatter(env_family)` for `parse_action` and `validate_action`.
 - On parse failure or invalid output, evaluation retries up to `parse_retry_limit`, then falls back to a zero vector and logs fallback metrics.
 - PointMaze actions are parsed from `float, float`, validated in `[-1, 1]`, then clipped.
-- Training uses the first `prompt_template_count` templates from each variant prompt file; evaluation always uses template 0. The current PointMaze prompt files contain 5 templates, but the loader uses however many are actually defined.
+- Training uses the first `prompt_template_count` templates from shared family prompt files; evaluation always uses template 0. PointMaze currently defines 5 templates, but the loader uses however many indexed `.txt` templates are actually present.
 - Multi-variant joint training uses weighted sampling by variant sample count.
 - `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, and how many prompt templates are used for dataset construction via `prompt_template_count`.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/`.
@@ -83,3 +83,17 @@ Migrated Claude project memories are stored at:
 
 Useful environment note:
 - This project uses a micromamba environment named `llm_offline`.
+
+## Codex Skill
+
+This repo includes a project-specific Codex skill for adding new environment families and variants:
+- `skills/llm-offline-env-support/`
+
+To install it into your own Codex setup:
+
+```bash
+mkdir -p ~/.codex/skills
+cp -R skills/llm-offline-env-support ~/.codex/skills/
+```
+
+After that, Codex can use the skill when working on environment-family or variant support in this repo.

@@ -158,3 +158,15 @@ type: project
 ## config.yaml（2026-04-07 续）
 
 - 新增 `prompt_template_count: 1`，默认每个 timestep 仅使用 1 个 prompt 模板构建训练样本
+
+---
+
+## Prompt System（2026-04-08）
+
+**PointMaze prompt 系统改为共享模板 + variant 元数据渲染：**
+- `prompts/pointmaze/` 从按 variant 的 YAML 改为按 family 共享的 `0.txt` 到 `4.txt`
+- `utils/prompt_loader.py` 改为加载 `prompts/<env_family>/<idx>.txt`，要求索引从 0 连续
+- 新增 `render_template(...)`，模板缺失变量时直接报错；允许 variant 提供额外未使用变量
+- `data/pointmaze/variants.py` 为每个 variant 新增 `prompt_vars`，集中定义环境名、reward 描述、迷宫矩阵/可视化、结构说明等渲染变量
+- 训练和评估都改为使用共享 family 模板；评估仍固定使用模板 0
+- 共享模板重构后，旧缓存应手动删除，随后按现有 `prompts<N>` 规则重新生成

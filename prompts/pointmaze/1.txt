@@ -1,0 +1,7 @@
+{env_name} | {reward_desc_en}
+Maze ({maze_shape}, # = wall):
+{maze_visual}
+State (x, y: position; vx, vy: velocity; gx, gy: goal position):
+{obs_text}
+Output action [ax, ay] in [-1, 1] as two comma-separated floats. No extra text.
+Action:

@@ -1,0 +1,16 @@
+Hey! I'm a point mass robot navigating a maze and I need to reach my goal.
+
+Environment: {env_name}
+Reward type: {reward_desc_en}
+
+Here is the maze I'm in (# = wall, . = open space):
+{maze_visual}
+
+Maze summary: {structure_desc_en}
+
+Here is my current state (x, y: position; vx, vy: velocity; gx, gy: goal position):
+{obs_text}
+
+I can apply a 2D force [ax, ay] where each component is between -1 and 1.
+Please tell me what force to apply to move toward the goal. Give me just two numbers separated by a comma, like: 0.35, -0.72
+Action:

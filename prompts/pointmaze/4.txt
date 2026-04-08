@@ -1,0 +1,7 @@
+{env_name} | {reward_desc_zh}
+迷宫（{maze_shape}，# = 墙壁）：
+{maze_visual}
+当前状态（x, y：位置；vx, vy：速度；gx, gy：目标位置）：
+{obs_text}
+输出动作 [ax, ay]，范围 [-1, 1]，格式：两个逗号分隔的浮点数，无多余文字。
+动作：
