@@ -9,12 +9,11 @@ import json
 import os
 import time
 
+import gymnasium as gym
+import gymnasium_robotics  # noqa: F401  registers PointMaze envs
 import numpy as np
 import torch
 import yaml
-
-import gymnasium as gym
-import gymnasium_robotics  # noqa: F401  registers PointMaze envs
 
 from data.registry import get_formatter
 from data.pointmaze.variants import POINTMAZE_VARIANTS
@@ -29,26 +28,20 @@ def parse_args():
 
 
 def get_results_dir(config: dict) -> str:
-    """Build results directory path encoding model, training context, and eval context.
-
-    Fine-tuned checkpoint:
-        results/Qwen3-0.6B/train=pointmaze-single-open/eval=pointmaze-open/
-    Base model (no fine-tuning):
-        results/Qwen3-0.6B/train=pretrained/eval=pointmaze-open/
-    """
+    """Build results directory path encoding model, training context, and eval context."""
     from model.policy import get_model_slug
     model_path = config["model_path"]
     eval_tag = f"eval={config['env_family']}-{config['variant']}"
 
     if model_path.startswith("checkpoints/") or model_path.startswith("checkpoints\\"):
-        # checkpoints/<train_family>/<model_slug>/<train_mode>/<train_variant>/...
         parts = model_path.replace("\\", "/").rstrip("/").split("/")
         model_slug = parts[2] if len(parts) > 2 else model_path
-        train_tag = f"train={parts[1]}-{parts[4]}-{parts[3]}"  # env_family-variant-train_mode
-    else:
-        model_slug = get_model_slug(model_path)
-        train_tag = "train=pretrained"
+        train_tag = f"train={parts[1]}-{parts[4]}-{parts[3]}"
+        exp_tag = f"exp={parts[5]}" if len(parts) > 5 else "exp=unknown"
+        return os.path.join("results", model_slug, train_tag, exp_tag, eval_tag)
 
+    model_slug = get_model_slug(model_path)
+    train_tag = "train=pretrained"
     return os.path.join("results", model_slug, train_tag, eval_tag)
 
 
@@ -71,30 +64,8 @@ def generate_action(
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
         )
-    # Decode only the newly generated tokens
     new_tokens = output_ids[0, input_ids.shape[1]:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
-
-    # --- Fallback: manual greedy loop (bypasses model.generate() entirely) ---
-    # Use if Unsloth's generate causes RoPE shape mismatch on Qwen3:
-    #   RuntimeError: output with shape [1,16,1,128] doesn't match [1,16,N,128]
-    # Root cause: unsloth_fast_generate forces cache_implementation="dynamic"
-    # but fast inference returns list[(K,V)] instead of DynamicCache, causing
-    # Transformers to recompute full-sequence position_ids on decode steps.
-    #
-    # encoded = tokenizer(prompt, return_tensors="pt")
-    # input_ids = encoded.input_ids.to(device)
-    # eos_id = tokenizer.eos_token_id
-    # with torch.inference_mode():
-    #     generated = input_ids
-    #     for _ in range(max_new_tokens):
-    #         outputs = model(input_ids=generated, use_cache=False)
-    #         next_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
-    #         generated = torch.cat([generated, next_token], dim=1)
-    #         if next_token.item() == eos_id:
-    #             break
-    # new_tokens = generated[0, input_ids.shape[1]:]
-    # return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
 
 def evaluate_variant(
@@ -137,7 +108,6 @@ def evaluate_variant(
             obs_text = formatter.format_obs(obs, goal)
             prompt = render_template(template, meta["prompt_vars"], obs_text=obs_text)
 
-            # Try to get a valid action, retrying on parse/validate failure
             action = None
             for attempt in range(parse_retry_limit + 1):
                 t0 = time.perf_counter()
@@ -217,7 +187,6 @@ def main():
     all_results = []
     for variant in variants_to_eval:
         print(f"\n[eval] Evaluating variant: {variant}")
-        # Template 0 is always used for evaluation (first English template)
         templates = load_templates(env_family)
         template = templates[0]
 

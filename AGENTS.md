@@ -64,7 +64,7 @@ To add a new environment family:
 - Training uses the first `prompt_template_count` templates from shared family prompt files; evaluation always uses template 0. PointMaze currently defines 5 templates, but the loader uses however many indexed `.txt` templates are actually present.
 - Multi-variant joint training uses weighted sampling by variant sample count.
 - `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, and how many prompt templates are used for dataset construction via `prompt_template_count`.
-- Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/`.
+- Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/<experiment_id>/`.
 - Results mirror checkpoint structure under `results/`.
 
 ## Out Of Scope

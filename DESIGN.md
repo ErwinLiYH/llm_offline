@@ -240,25 +240,26 @@ checkpoints/
     └── <model_slug>/          # HuggingFace model ID 的最后一段，如 Qwen3-0.6B
         └── <train_mode>/      # single | all
             └── <variant>/     # 变种名（single 模式）或 "all"（all 模式）
-                ├── ep1/       # epoch 1 结束时保存的中间 checkpoint
-                ├── ep2/
-                ├── ep3/
-                └── final/     # 训练全部结束后保存（与最后一个 epN 内容相同）
-                    ├── adapter_config.json
-                    ├── adapter_model.safetensors
-                    ├── tokenizer.json
-                    ├── tokenizer_config.json
-                    └── config.yaml
+                └── <experiment_id>/  # 自动生成或手动指定的实验 ID
+                    ├── ep1/       # epoch 1 结束时保存的中间 checkpoint
+                    ├── ep2/
+                    ├── ep3/
+                    └── final/     # 训练全部结束后保存（与最后一个 epN 内容相同）
+                        ├── adapter_config.json
+                        ├── adapter_model.safetensors
+                        ├── tokenizer.json
+                        ├── tokenizer_config.json
+                        └── config.yaml
 ```
 
 **示例：**
 
 | 训练场景 | 路径 |
 |----------|------|
-| Qwen3-0.6B 单独训练 open 变种（epoch 2 中间） | `checkpoints/pointmaze/Qwen3-0.6B/single/open/ep2/` |
-| Qwen3-0.6B 单独训练 open 变种（训练完成） | `checkpoints/pointmaze/Qwen3-0.6B/single/open/final/` |
-| Qwen3-0.6B 联合训练所有变种 | `checkpoints/pointmaze/Qwen3-0.6B/all/all/final/` |
-| Llama-3.2-1B 单独训练 umaze 变种 | `checkpoints/pointmaze/Llama-3.2-1B/single/umaze/final/` |
+| Qwen3-0.6B 单独训练 open 变种（epoch 2 中间） | `checkpoints/pointmaze/Qwen3-0.6B/single/open/<experiment_id>/ep2/` |
+| Qwen3-0.6B 单独训练 open 变种（训练完成） | `checkpoints/pointmaze/Qwen3-0.6B/single/open/<experiment_id>/final/` |
+| Qwen3-0.6B 联合训练所有变种 | `checkpoints/pointmaze/Qwen3-0.6B/all/all/<experiment_id>/final/` |
+| Llama-3.2-1B 单独训练 umaze 变种 | `checkpoints/pointmaze/Llama-3.2-1B/single/umaze/<experiment_id>/final/` |
 
 `model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。
 
@@ -293,11 +294,12 @@ dataset_cache/
 results/
 └── <model_slug>/
     └── train=<env_family>-<train_variant>-<train_mode>/
-        └── eval=<env_family>-<eval_variant>/
-            ├── results.json          # evaluate.py 完整评估结果
-            ├── result_ep1.json       # 训练 epoch 1 结束后的中间评估
-            ├── result_ep2.json
-            └── ...
+        └── exp=<experiment_id>/
+            └── eval=<env_family>-<eval_variant>/
+                ├── results.json          # evaluate.py 完整评估结果
+                ├── result_ep1.json       # 训练 epoch 1 结束后的中间评估
+                ├── result_ep2.json
+                └── ...
 ```
 
 **路径字段说明：**
@@ -348,7 +350,7 @@ python evaluate.py --config eval.yaml
 通过 `eval.yaml` 控制所有评估配置：
 
 ```yaml
-model_path: checkpoints/pointmaze/Qwen3-0.6B/single/open/final
+model_path: checkpoints/pointmaze/Qwen3-0.6B/single/open/<experiment_id>/final
 env_family: pointmaze
 variant: open            # 变种短名，或 "all" 表示评估全部变种
 num_episodes: 20

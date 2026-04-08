@@ -170,3 +170,13 @@ type: project
 - `data/pointmaze/variants.py` 为每个 variant 新增 `prompt_vars`，集中定义环境名、reward 描述、迷宫矩阵/可视化、结构说明等渲染变量
 - 训练和评估都改为使用共享 family 模板；评估仍固定使用模板 0
 - 共享模板重构后，旧缓存应手动删除，随后按现有 `prompts<N>` 规则重新生成
+
+---
+
+## train.py / evaluate.py（2026-04-08）
+
+**checkpoint 和 results 路径新增实验 ID 层：**
+- 训练配置新增可选 `experiment_id`；若未提供，训练启动时自动生成 8 位短 UUID
+- checkpoint 路径改为 `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/<experiment_id>/epN|final/`
+- 训练时保存到 checkpoint 目录的 `config.yaml` 会包含最终使用的 `experiment_id`
+- 训练期中评估与 `evaluate.py` 的结果路径同步新增 `exp=<experiment_id>` 一层，避免同参数重复实验互相覆盖

@@ -45,7 +45,7 @@ parse_retry_limit: 3
 
 `eval.yaml` — evaluation configuration:
 ```yaml
-model_path: checkpoints/pointmaze/Qwen3-0.6B/single/open/final
+model_path: checkpoints/pointmaze/Qwen3-0.6B/single/open/<experiment_id>/final
 load_in_4bit: false      # optional override; when omitted, checkpoint eval uses saved training config
 env_family: pointmaze
 variant: open             # variant name, or "all" to evaluate all variants
@@ -80,8 +80,8 @@ prompts/<env_family>/<idx>.txt  # shared prompt templates for that family; Point
   - *PointMaze:* regex parse of `float, float`, validate each component in `[-1, 1]`, clip and return.
 - **Prompt templates:** training uses the first `prompt_template_count` templates from shared family templates in `prompts/<env_family>/<idx>.txt`, and evaluation always uses template 0. PointMaze currently defines 5 shared templates (0–2 English, 3–4 Chinese), but the loader follows the actual number of `.txt` templates present.
 - **Multi-variant joint training:** weighted sampling by variant sample count to prevent large variants from dominating
-- **Base model and dataset config:** `model_name` in `config.yaml` specifies the HuggingFace model ID (e.g. `Qwen/Qwen3-0.6B`, `meta-llama/Llama-3.2-1B`). `load_in_4bit` controls whether Unsloth loads the base model in 4-bit mode for training or evaluation. `prompt_template_count` controls how many prompt templates are used when building each dataset split. Checkpoint paths embed the model name slug (e.g. `checkpoints/pointmaze/Qwen3-0.6B/single/open/final/`) so experiments with different base models don't overwrite each other.
-- **Checkpoint layout:** `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/ep{N}/` saved after each epoch, plus `final/` at training end. Each directory contains LoRA adapter weights, tokenizer, and `config.yaml` copy. `eval.yaml` defaults to pointing at `final/`.
+- **Base model and dataset config:** `model_name` in `config.yaml` specifies the HuggingFace model ID (e.g. `Qwen/Qwen3-0.6B`, `meta-llama/Llama-3.2-1B`). `load_in_4bit` controls whether Unsloth loads the base model in 4-bit mode for training or evaluation. `prompt_template_count` controls how many prompt templates are used when building each dataset split. Checkpoint paths embed the model name slug (e.g. `checkpoints/pointmaze/Qwen3-0.6B/single/open/<experiment_id>/final/`) so experiments with different base models don't overwrite each other.
+- **Checkpoint layout:** `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/<experiment_id>/ep{N}/` saved after each epoch, plus `final/` at training end. Each directory contains LoRA adapter weights, tokenizer, and `config.yaml` copy. `eval.yaml` defaults to pointing at `final/`.
 - **Results layout:** `results/` mirrors `checkpoints/` structure; records episode return and success rate per variant
 
 ## Not in scope (do not implement)

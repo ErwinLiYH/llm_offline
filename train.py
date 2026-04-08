@@ -6,6 +6,7 @@ Usage:
 
 from unsloth import FastLanguageModel
 import argparse
+import uuid
 import os
 import json
 
@@ -26,11 +27,22 @@ def parse_args():
     return parser.parse_args()
 
 
+def ensure_experiment_id(config: dict) -> str:
+    experiment_id = config.get("experiment_id")
+    if experiment_id:
+        return str(experiment_id)
+
+    experiment_id = uuid.uuid4().hex[:8]
+    config["experiment_id"] = experiment_id
+    return experiment_id
+
+
 def get_checkpoint_dir(config: dict, variant: str, epoch: int | None = None) -> str:
     slug = get_model_slug(config["model_name"])
     root = config.get("checkpoint_root", "checkpoints")
+    experiment_id = config["experiment_id"]
     tag = f"ep{epoch}" if epoch is not None else "final"
-    return os.path.join(root, config["env_family"], slug, config["train_mode"], variant, tag)
+    return os.path.join(root, config["env_family"], slug, config["train_mode"], variant, experiment_id, tag)
 
 
 def train_single_variant(config: dict, variant: str, model, tokenizer, device: torch.device):
@@ -113,8 +125,6 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
             )
         )
 
-    # Weighted sampling: weight each sample by 1/variant_size so all variants
-    # contribute equally regardless of dataset size.
     weights = []
     for ds in train_datasets:
         n = len(ds)
@@ -142,7 +152,6 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
         collate_fn=collate_fn,
     )
 
-    print(f"[train] Total train samples: {len(combined_train)}, val: {len(combined_val)}")
     eval_variants = config.get("eval_variants") or []
     _run_training(config, model, train_loader, val_loader, device,
                   tokenizer=tokenizer, eval_variants=eval_variants, variant="all")
@@ -156,9 +165,11 @@ def get_eval_results_dir(config: dict, variant: str) -> str:
     env_family = config["env_family"]
     train_mode = config["train_mode"]
     train_variant = config.get("variant", "all")
+    experiment_id = config["experiment_id"]
     train_tag = f"train={env_family}-{train_variant}-{train_mode}"
+    exp_tag = f"exp={experiment_id}"
     eval_tag = f"eval={env_family}-{variant}"
-    return os.path.join("results", slug, train_tag, eval_tag)
+    return os.path.join("results", slug, train_tag, exp_tag, eval_tag)
 
 
 def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_loss, val_loss):
@@ -182,6 +193,7 @@ def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_los
         result = evaluate_variant(eval_config, variant, model, tokenizer, device, templates[0])
         result["train_loss"] = train_loss
         result["val_loss"] = val_loss
+        result["experiment_id"] = config["experiment_id"]
 
         print(
             f"[eval] {variant}: mean_return={result['mean_return']:.4f}, "
@@ -210,7 +222,6 @@ def _run_training(config, model, train_loader, val_loader, device,
 
     num_epochs = config["num_epochs"]
     for epoch in range(1, num_epochs + 1):
-        # ── Train ────────────────────────────────────────────────────
         model.train()
         total_loss = 0.0
         num_batches = 0
@@ -237,7 +248,6 @@ def _run_training(config, model, train_loader, val_loader, device,
 
         train_loss = total_loss / max(num_batches, 1)
 
-        # ── Validation ───────────────────────────────────────────────
         model.eval()
         val_loss = 0.0
         val_batches = 0
@@ -273,8 +283,6 @@ def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
     with open(config_dst, "w") as f:
         yaml.dump(config, f)
 
-    # Unsloth rewrites base_model_name_or_path to "unsloth/<model>" in adapter_config.json.
-    # Patch it back to the original model name so offline checkpoint loading works.
     adapter_cfg_path = os.path.join(checkpoint_dir, "adapter_config.json")
     if os.path.exists(adapter_cfg_path):
         with open(adapter_cfg_path) as f:
@@ -291,8 +299,10 @@ def main():
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
+    experiment_id = ensure_experiment_id(config)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[train] Using device: {device}")
+    print(f"[train] Experiment ID: {experiment_id}")
 
     model, tokenizer = load_model_and_tokenizer(config)
     model.to(device)
