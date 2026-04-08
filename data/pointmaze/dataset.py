@@ -2,11 +2,11 @@ import json
 import os
 import pickle
 import threading
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 import torch
-from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase, AutoTokenizer
-from concurrent.futures import ThreadPoolExecutor
 
 import minari
 from tqdm import tqdm
@@ -21,7 +21,7 @@ class PointMazeDataset(BaseOfflineDataset):
     """PyTorch Dataset for PointMaze behavior cloning.
 
     Loads a Minari offline dataset, splits episodes 9:1 (train/val),
-    and expands each timestep into 5 samples (one per prompt template).
+    and expands each timestep into one sample per selected prompt template.
     Loss is computed only on the action target tokens (prompt labels = -100).
     """
 
@@ -34,6 +34,7 @@ class PointMazeDataset(BaseOfflineDataset):
         num_workers: int = 8,
         cache_dir: str | None = None,
         max_data_num: int | None = None,
+        prompt_template_count: int = 1,
     ):
         super().__init__()
         self.variant = variant
@@ -43,6 +44,7 @@ class PointMazeDataset(BaseOfflineDataset):
         self.num_workers = num_workers
         self.cache_dir = cache_dir
         self.max_data_num = max_data_num
+        self.prompt_template_count = prompt_template_count
 
         self._local = threading.local()
         self._samples: list[dict] = []
@@ -52,7 +54,7 @@ class PointMazeDataset(BaseOfflineDataset):
     def _cache_path(self, variant: str, split: str) -> str | None:
         if self.cache_dir is None:
             return None
-        fname = f"pointmaze-{variant}-{split}.pkl"
+        fname = f"pointmaze-{variant}-{split}-prompts{self.prompt_template_count}.pkl"
         return os.path.join(self.cache_dir, fname)
 
     def load(self, variant: str, split: str):
@@ -68,7 +70,17 @@ class PointMazeDataset(BaseOfflineDataset):
 
         meta = POINTMAZE_VARIANTS[variant]
         dataset = minari.load_dataset(meta["dataset_id"], download=True)
-        templates = load_templates("pointmaze", variant)
+        all_templates = load_templates("pointmaze", variant)
+        if self.prompt_template_count < 1:
+            raise ValueError(
+                f"prompt_template_count must be >= 1, got {self.prompt_template_count}"
+            )
+        if self.prompt_template_count > len(all_templates):
+            raise ValueError(
+                "prompt_template_count exceeds available templates: "
+                f"requested {self.prompt_template_count}, available {len(all_templates)}"
+            )
+        templates = all_templates[: self.prompt_template_count]
 
         all_episodes = list(dataset.iterate_episodes())
         n_total = len(all_episodes)
@@ -81,9 +93,9 @@ class PointMazeDataset(BaseOfflineDataset):
 
         def process_episode(episode) -> list[tuple[dict, dict]]:
             results = []
-            obs_arr = episode.observations["observation"]   # (T+1, 4)
-            goal_arr = episode.observations["desired_goal"] # (T+1, 2)
-            actions = episode.actions                       # (T, 2)
+            obs_arr = episode.observations["observation"]
+            goal_arr = episode.observations["desired_goal"]
+            actions = episode.actions
             T = len(actions)
             for t in range(T):
                 obs = obs_arr[t].astype(np.float32)
@@ -100,11 +112,13 @@ class PointMazeDataset(BaseOfflineDataset):
 
         num_workers = min(os.cpu_count() or 1, self.num_workers)
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = list(tqdm(
-                executor.map(process_episode, episodes),
-                total=len(episodes),
-                desc=f"Tokenizing [{split}]",
-            ))
+            futures = list(
+                tqdm(
+                    executor.map(process_episode, episodes),
+                    total=len(episodes),
+                    desc=f"Tokenizing [{split}]",
+                )
+            )
 
         text_records = []
         for episode_results in futures:

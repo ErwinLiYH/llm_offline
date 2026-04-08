@@ -45,6 +45,7 @@ def train_single_variant(config: dict, variant: str, model, tokenizer, device: t
         num_workers=config.get("dataset_workers", 8),
         cache_dir=config.get("dataset_cache_dir"),
         max_data_num=config.get("max_data_num"),
+        prompt_template_count=config.get("prompt_template_count", 1),
     )
     val_dataset = DatasetCls(
         variant=variant,
@@ -54,6 +55,7 @@ def train_single_variant(config: dict, variant: str, model, tokenizer, device: t
         num_workers=config.get("dataset_workers", 8),
         cache_dir=config.get("dataset_cache_dir"),
         max_data_num=config.get("max_data_num"),
+        prompt_template_count=config.get("prompt_template_count", 1),
     )
     print(f"[train] Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
 
@@ -94,6 +96,7 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
                 max_length=config["max_length"],
                 num_workers=config.get("dataset_workers", 8),
                 max_data_num=config.get("max_data_num"),
+                prompt_template_count=config.get("prompt_template_count", 1),
             )
         )
         val_datasets.append(
@@ -104,6 +107,7 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
                 max_length=config["max_length"],
                 num_workers=config.get("dataset_workers", 8),
                 max_data_num=config.get("max_data_num"),
+                prompt_template_count=config.get("prompt_template_count", 1),
             )
         )
 

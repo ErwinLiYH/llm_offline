@@ -297,13 +297,13 @@ Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置
 
 ```
 dataset_cache/
-├── <env_family>-<variant>-train.pkl    # 二进制缓存，训练集 token 数据
-├── <env_family>-<variant>-train.jsonl  # 可读文本副本（prompt + action 原文）
-├── <env_family>-<variant>-val.pkl
-└── <env_family>-<variant>-val.jsonl
+├── <env_family>-<variant>-train-prompts<N>.pkl    # 二进制缓存，训练集 token 数据
+├── <env_family>-<variant>-train-prompts<N>.jsonl  # 可读文本副本（prompt + action 原文）
+├── <env_family>-<variant>-val-prompts<N>.pkl
+└── <env_family>-<variant>-val-prompts<N>.jsonl
 ```
 
-**示例：** `dataset_cache/pointmaze-open-train.pkl`
+**示例：** `dataset_cache/pointmaze-open-train-prompts1.pkl`
 
 - `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
 - `.jsonl` 每行是 `{"prompt": "...", "action": "0.35, -0.72"}`，供人工抽检数据质量

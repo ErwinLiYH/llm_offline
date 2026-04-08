@@ -1,13 +1,14 @@
 import os
-import yaml
 from typing import List
+
+import yaml
 
 
 def load_templates(env_family: str, variant: str) -> List[str]:
-    """Load all 5 prompt templates for the given env_family and variant.
+    """Load prompt templates for the given env_family and variant.
 
-    Returns a list of 5 template strings (indices 0-4).
-    Templates 0-2 are English; 3-4 are Chinese.
+    Returns the template strings exactly as listed in the variant YAML file.
+    Evaluation uses template 0; training may use the first N templates.
     """
     path = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
@@ -22,8 +23,6 @@ def load_templates(env_family: str, variant: str) -> List[str]:
         data = yaml.safe_load(f)
 
     templates = data["templates"]
-    if len(templates) != 5:
-        raise ValueError(
-            f"Expected 5 templates in {path}, got {len(templates)}"
-        )
+    if not isinstance(templates, list) or not templates:
+        raise ValueError(f"Expected a non-empty template list in {path}")
     return templates

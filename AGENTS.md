@@ -34,19 +34,19 @@ Key files:
 - `data/registry.py`: routes `env_family` to dataset + formatter
 - `data/base_dataset.py`: abstract dataset interface
 - `data/<env_family>/variants.py`: variant metadata
-- `data/<env_family>/dataset.py`: load data, expand to 5 samples per timestep, tokenize
+- `data/<env_family>/dataset.py`: load data, expand to `prompt_template_count` samples per timestep, tokenize
 - `data/<env_family>/formatting.py`: `format_obs`, `format_action`, `parse_action`, `validate_action`
 - `model/policy.py`: load base model and LoRA adapters
-- `utils/prompt_loader.py`: load all 5 prompt templates for a variant
-- `prompts/<env_family>/<variant>.yaml`: prompt templates
+- `utils/prompt_loader.py`: load prompt templates for a variant
+- `prompts/<env_family>/<variant>.yaml`: prompt templates for that variant; current PointMaze files contain 5
 
 Data flow:
 - dataset
 - episode-level 9:1 train/val split
 - per timestep: `format_obs` + `format_action`
-- fill templates
+- fill the first `prompt_template_count` templates
 - tokenize with prompt tokens masked out (`labels = -100`)
-- 5 samples per timestep
+- `prompt_template_count` samples per timestep
 
 To add a new environment family:
 - add `prompts/<family>/`
@@ -61,9 +61,9 @@ To add a new environment family:
 - `evaluate.py` uses `registry.get_formatter(env_family)` for `parse_action` and `validate_action`.
 - On parse failure or invalid output, evaluation retries up to `parse_retry_limit`, then falls back to a zero vector and logs fallback metrics.
 - PointMaze actions are parsed from `float, float`, validated in `[-1, 1]`, then clipped.
-- Each variant has 5 prompt templates. Evaluation always uses template 0.
+- Training uses the first `prompt_template_count` templates from each variant prompt file; evaluation always uses template 0. The current PointMaze prompt files contain 5 templates, but the loader uses however many are actually defined.
 - Multi-variant joint training uses weighted sampling by variant sample count.
-- `config.yaml` controls the base model via `model_name` and whether Unsloth uses 4-bit loading via `load_in_4bit`.
+- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, and how many prompt templates are used for dataset construction via `prompt_template_count`.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/`.
 - Results mirror checkpoint structure under `results/`.
 

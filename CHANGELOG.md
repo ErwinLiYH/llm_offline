@@ -139,3 +139,22 @@ type: project
 ## eval.yaml（2026-04-07）
 
 - 新增 `load_in_4bit: false` 配置项，用于控制评估时是否启用 4-bit 量化加载；若评估的是 LoRA checkpoint，也可不显式设置，回退到 checkpoint 保存的训练配置
+
+---
+
+## data/pointmaze/dataset.py（2026-04-07）
+
+**新增 `prompt_template_count` 数据集构建参数：**
+- `PointMazeDataset.__init__` 新增 `prompt_template_count: int = 1`
+- 训练构建数据集时不再固定使用全部 5 个模板，而是只使用前 `prompt_template_count` 个模板
+- 新增参数校验：`prompt_template_count` 必须在 `1..模板文件实际数量` 范围内
+- 缓存命名改为 `pointmaze-<variant>-<split>-prompts<N>.{pkl,jsonl}`，不同 prompt 数只读取各自匹配的缓存；若不存在匹配缓存则重新构建
+
+## train.py（2026-04-07）
+
+- `train_single_variant` 和 `train_all_variants` 创建 dataset 时新增透传 `prompt_template_count`
+- `train_all_variants` 创建 dataset 时补传 `cache_dir`，联合训练现在也会使用数据缓存
+
+## config.yaml（2026-04-07 续）
+
+- 新增 `prompt_template_count: 1`，默认每个 timestep 仅使用 1 个 prompt 模板构建训练样本
