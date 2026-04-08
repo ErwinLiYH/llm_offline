@@ -95,6 +95,7 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
                 tokenizer=tokenizer,
                 max_length=config["max_length"],
                 num_workers=config.get("dataset_workers", 8),
+                cache_dir=config.get("dataset_cache_dir"),
                 max_data_num=config.get("max_data_num"),
                 prompt_template_count=config.get("prompt_template_count", 1),
             )
@@ -106,6 +107,7 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
                 tokenizer=tokenizer,
                 max_length=config["max_length"],
                 num_workers=config.get("dataset_workers", 8),
+                cache_dir=config.get("dataset_cache_dir"),
                 max_data_num=config.get("max_data_num"),
                 prompt_template_count=config.get("prompt_template_count", 1),
             )
