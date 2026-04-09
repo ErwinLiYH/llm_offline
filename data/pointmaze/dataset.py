@@ -8,6 +8,9 @@ import minari
 import numpy as np
 import torch
 from tqdm import tqdm
+
+TQDM_BAR_FORMAT = "{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from data.base_dataset import BaseOfflineDataset
@@ -129,6 +132,8 @@ class PointMazeDataset(BaseOfflineDataset):
                     executor.map(process_episode, episodes),
                     total=len(episodes),
                     desc=f"Tokenizing [{split}]",
+                    dynamic_ncols=True,
+                    bar_format=TQDM_BAR_FORMAT,
                 )
             )
 

@@ -15,6 +15,9 @@ import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler, ConcatDataset
 from tqdm import tqdm
 
+TQDM_BAR_FORMAT = "{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+
+
 from data.registry import get_dataset
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from data.pointmaze.dataset import collate_fn
@@ -229,7 +232,13 @@ def _run_training(config, model, train_loader, val_loader, device,
         model.train()
         total_loss = 0.0
         num_batches = 0
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{num_epochs} [train]", leave=False)
+        pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch}/{num_epochs} [train]",
+            leave=False,
+            dynamic_ncols=True,
+            bar_format=TQDM_BAR_FORMAT,
+        )
         for batch in pbar:
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
@@ -256,7 +265,13 @@ def _run_training(config, model, train_loader, val_loader, device,
         val_loss = 0.0
         val_batches = 0
         with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch}/{num_epochs} [val]", leave=False):
+            for batch in tqdm(
+                val_loader,
+                desc=f"Epoch {epoch}/{num_epochs} [val]",
+                leave=False,
+                dynamic_ncols=True,
+                bar_format=TQDM_BAR_FORMAT,
+            ):
                 input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
                 labels = batch["labels"].to(device)
