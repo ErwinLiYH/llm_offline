@@ -6,6 +6,12 @@ variant: open             # variant name, or "all" to evaluate all variants
 num_episodes: 20
 parse_retry_limit: 3
 
+# Optional video recording settings
+record_video: true      # true = save one rollout file per evaluated variant
+video_episode_index: 0   # which eval episode to record (0-based)
+video_fps: 30
+video_format: gif        # gif works out of the box; mp4 requires ffmpeg backend support
+
 env_kwargs:
   continuing_task: false  # false = one goal per episode, terminated on success
   # max_episode_steps: 300  # uncomment to override default (open/umaze=300, medium=600, large=800)

@@ -199,3 +199,12 @@ type: project
 - train 使用前 `train_data_ratio` 比例的 episodes，val 自动使用剩余 episodes
 - dataset cache 文件名中的 split 标记改为根据当前配置动态生成，如 `split90`
 - 非法配置会直接报错：要求 `0 < train_data_ratio < 1`
+
+---
+
+## evaluate.py / eval.yaml（2026-04-09）
+
+**评估支持导出 rollout 视频：**
+- 新增 `record_video`、`video_episode_index`、`video_fps`、`video_format` 配置项
+- 录制开启时会自动把环境切到 `rgb_array` 渲染，并把指定 episode 保存到 `results/...` 目录
+- 默认推荐 `gif` 输出；`mp4` 需要可用的 ffmpeg backend
