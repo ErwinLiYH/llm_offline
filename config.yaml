@@ -1,6 +1,6 @@
 env_family: pointmaze
-train_mode: single        # single | all
-variant: open             # used only when train_mode=single
+train_mode: except        # single | all | except
+variants: [large, large-dense]         # single: exactly one; except: excluded variants; all: leave empty
 
 model_name: Qwen/Qwen3-0.6B
 load_in_4bit: false       # true = enable Unsloth 4-bit quantized loading
@@ -24,6 +24,7 @@ max_data_num: 32    # debug only: cap samples per dataset split; comment out for
 
 # Epoch-level environment evaluation
 eval_num_episodes: 20    # episodes per variant per epoch; 0 = disable
-eval_variants: []       # [] = auto (single mode: [variant], all mode: disabled)
+eval_mode: all         # optional; defaults to following train_mode
+# eval_variants: [open]  # single: one variant; except: excluded variants; all: leave empty
 eval_env_kwargs:
   continuing_task: false

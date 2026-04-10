@@ -38,6 +38,7 @@ Key files:
 - `data/<env_family>/formatting.py`: `format_obs`, `format_action`, `parse_action`, `validate_action`
 - `model/policy.py`: load base model and LoRA adapters
 - `utils/prompt_loader.py`: load shared prompt templates for an environment family
+- `utils/variant_selection.py`: resolve `single | all | except` plus variant lists into concrete training/eval sets
 - `prompts/<env_family>/<idx>.txt`: shared prompt templates for that family; PointMaze currently defines 5
 
 Data flow:
@@ -62,10 +63,19 @@ To add a new environment family:
 - On parse failure or invalid output, evaluation retries up to `parse_retry_limit`, then falls back to a zero vector and logs fallback metrics.
 - PointMaze actions are parsed from `float, float`, validated in `[-1, 1]`, then clipped.
 - Training uses the first `prompt_template_count` templates from shared family prompt files; evaluation always uses template 0. PointMaze currently defines 5 templates, but the loader uses however many indexed `.txt` templates are actually present.
-- Multi-variant joint training uses weighted sampling by variant sample count.
+- Training config uses `train_mode: single | all | except` plus list-valued `variants`.
+  - `single`: `variants` must contain exactly one variant
+  - `all`: `variants` should be empty/omitted
+  - `except`: `variants` is the exclusion list
+- Epoch eval selection is independent from training selection via optional `eval_mode` and `eval_variants`.
+  - If `eval_mode` is omitted, epoch eval follows the resolved training selection.
+  - `eval_variants` also uses list semantics; under `except` it is an exclusion list.
+- Multi-variant training, including `all` and `except`, uses weighted sampling by variant sample count.
 - `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, and how many prompt templates are used for dataset construction via `prompt_template_count`.
-- Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/<experiment_id>/`.
+- Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/`.
+  - `selection_tag` is the single variant name, `all`, or `except-<excluded variants joined by +>`.
 - Results mirror checkpoint structure under `results/`.
+- `eval.yaml` uses the same list-based variant selection semantics as training via `eval_mode` + `variants`; legacy `variant: <name|all>` is still accepted for compatibility.
 - `eval.yaml` can record one rollout per variant via `record_video`; default output format is `gif`, while `mp4` requires an ffmpeg backend. Headless MuJoCo recording should use `mujoco_gl: egl`.
 
 ## Out Of Scope

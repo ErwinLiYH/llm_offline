@@ -20,6 +20,7 @@ from data.registry import get_formatter
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from model.policy import load_from_checkpoint
 from utils.prompt_loader import load_templates, render_template
+from utils.variant_selection import get_available_variants, resolve_selection
 
 
 def parse_args():
@@ -28,27 +29,59 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_results_dir(config: dict) -> str:
+
+def resolve_standalone_eval_selection(config: dict):
+    available_variants = get_available_variants(config["env_family"])
+
+    eval_mode = config.get("eval_mode")
+    variants = config.get("variants")
+    legacy_variant = config.get("variant")
+
+    if eval_mode is None and variants is None and legacy_variant is not None:
+        if legacy_variant == "all":
+            eval_mode = "all"
+            variants = []
+        else:
+            eval_mode = "single"
+            variants = [legacy_variant]
+
+    resolved_eval_mode = eval_mode or "single"
+    selection = resolve_selection(
+        mode=resolved_eval_mode,
+        variants=variants,
+        available_variants=available_variants,
+        field_name="variants",
+    )
+    config["resolved_eval_mode"] = selection.mode
+    config["resolved_eval_variants"] = selection.selected_variants
+    config["eval_selection_tag"] = selection.selection_tag
+    config["variants"] = selection.configured_variants
+    return selection
+
+
+
+def get_results_dir(config: dict, eval_selection_tag: str) -> str:
     """Build results directory path encoding model, training context, and eval context."""
     from model.policy import get_model_slug
 
     model_path = config["model_path"]
-    eval_tag = f"eval={config['env_family']}-{config['variant']}"
+    eval_tag = f"eval={config['env_family']}-{eval_selection_tag}"
     norm_path = model_path.replace("\\", "/").rstrip("/")
     parts = [part for part in norm_path.split("/") if part]
 
     if "checkpoints" in parts:
         idx = parts.index("checkpoints")
         ckpt_parts = parts[idx + 1 :]
-        if len(ckpt_parts) >= 6:
-            env_family, model_slug, train_mode, train_variant, experiment_id, _checkpoint_tag = ckpt_parts[-6:]
-            train_tag = f"train={env_family}-{train_variant}-{train_mode}"
+        if len(ckpt_parts) >= 5:
+            env_family, model_slug, train_selection_tag, experiment_id, _checkpoint_tag = ckpt_parts[-5:]
+            train_tag = f"train={env_family}-{train_selection_tag}"
             exp_tag = f"exp={experiment_id}"
             return os.path.join("results", model_slug, train_tag, exp_tag, eval_tag)
 
     model_slug = get_model_slug(model_path)
     train_tag = "train=pretrained"
     return os.path.join("results", model_slug, train_tag, eval_tag)
+
 
 
 def _normalize_render_frame(frame) -> np.ndarray:
@@ -74,11 +107,13 @@ def _normalize_render_frame(frame) -> np.ndarray:
     return arr
 
 
+
 def _capture_render_frame(env, frames: list[np.ndarray]):
     frame = env.render()
     if frame is None:
         raise ValueError("render() returned None; use env_kwargs.render_mode='rgb_array' when recording")
     frames.append(_normalize_render_frame(frame))
+
 
 
 def _save_video(frames: list[np.ndarray], output_path: str, fps: int):
@@ -96,6 +131,7 @@ def _save_video(frames: list[np.ndarray], output_path: str, fps: int):
             f"Failed to save video to {output_path}. mp4 output requires a working ffmpeg backend; "
             "try video_format='gif' if ffmpeg is unavailable."
         ) from exc
+
 
 
 def generate_action(
@@ -121,6 +157,7 @@ def generate_action(
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
 
+
 def configure_mujoco_gl(config: dict):
     mujoco_gl = config.get("mujoco_gl")
     if mujoco_gl:
@@ -128,8 +165,8 @@ def configure_mujoco_gl(config: dict):
         return
 
     if config.get("record_video", False):
-        # Headless rollout recording should use EGL by default on this machine.
         os.environ.setdefault("MUJOCO_GL", "egl")
+
 
 
 def evaluate_variant(
@@ -259,16 +296,19 @@ def evaluate_variant(
     }
 
 
+
 def main():
     args = parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
+    eval_selection = resolve_standalone_eval_selection(config)
     configure_mujoco_gl(config)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[eval] Using device: {device}")
     print(f"[eval] Loading model from: {config['model_path']}")
+    print(f"[eval] Resolved eval variants: {eval_selection.selected_variants}")
 
     model, tokenizer = load_from_checkpoint(
         config["model_path"],
@@ -278,18 +318,11 @@ def main():
     model.eval()
 
     env_family = config["env_family"]
-    variant_arg = config["variant"]
-
-    if variant_arg == "all":
-        variants_to_eval = list(POINTMAZE_VARIANTS.keys())
-    else:
-        variants_to_eval = [variant_arg]
-
-    results_dir = get_results_dir(config)
+    results_dir = get_results_dir(config, eval_selection.selection_tag)
     os.makedirs(results_dir, exist_ok=True)
 
     all_results = []
-    for variant in variants_to_eval:
+    for variant in eval_selection.selected_variants:
         print(f"\n[eval] Evaluating variant: {variant}")
         templates = load_templates(env_family)
         template = templates[0]

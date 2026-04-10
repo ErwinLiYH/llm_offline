@@ -17,17 +17,17 @@ from tqdm import tqdm
 
 TQDM_BAR_FORMAT = "{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
 
-
 from data.registry import get_dataset
-from data.pointmaze.variants import POINTMAZE_VARIANTS
 from data.pointmaze.dataset import collate_fn
 from model.policy import load_model_and_tokenizer, get_model_slug
+from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml")
     return parser.parse_args()
+
 
 
 def ensure_experiment_id(config: dict) -> str:
@@ -40,21 +40,69 @@ def ensure_experiment_id(config: dict) -> str:
     return experiment_id
 
 
-def get_checkpoint_dir(config: dict, variant: str, epoch: int | None = None) -> str:
+
+def resolve_train_selection(config: dict, available_variants: list[str]) -> VariantSelection:
+    return resolve_selection(
+        mode=config["train_mode"],
+        variants=config.get("variants"),
+        available_variants=available_variants,
+        field_name="variants",
+    )
+
+
+
+def resolve_epoch_eval_selection(
+    config: dict,
+    available_variants: list[str],
+    train_selection: VariantSelection,
+) -> VariantSelection:
+    eval_mode = config.get("eval_mode")
+    eval_variants = config.get("eval_variants")
+    if not eval_mode and not eval_variants:
+        return train_selection
+
+    resolved_eval_mode = eval_mode or train_selection.mode
+    default_variants = None
+    if resolved_eval_mode == "single":
+        default_variants = train_selection.selected_variants
+    elif resolved_eval_mode == "except":
+        default_variants = train_selection.configured_variants
+
+    return resolve_selection(
+        mode=resolved_eval_mode,
+        variants=eval_variants,
+        available_variants=available_variants,
+        field_name="eval_variants",
+        default_variants=default_variants,
+    )
+
+
+
+def get_checkpoint_dir(config: dict, selection_tag: str, epoch: int | None = None) -> str:
     slug = get_model_slug(config["model_name"])
     root = config.get("checkpoint_root", "checkpoints")
     experiment_id = config["experiment_id"]
     tag = f"ep{epoch}" if epoch is not None else "final"
-    return os.path.join(root, config["env_family"], slug, config["train_mode"], variant, experiment_id, tag)
+    return os.path.join(root, config["env_family"], slug, selection_tag, experiment_id, tag)
 
 
-def train_single_variant(config: dict, variant: str, model, tokenizer, device: torch.device):
-    DatasetCls = get_dataset(config["env_family"])
 
-    print(f"\n[train] Loading data for variant: {variant}")
-    train_dataset = DatasetCls(
+def get_eval_results_dir(config: dict, train_selection_tag: str, variant: str) -> str:
+    slug = get_model_slug(config["model_name"])
+    env_family = config["env_family"]
+    experiment_id = config["experiment_id"]
+    train_tag = f"train={env_family}-{train_selection_tag}"
+    exp_tag = f"exp={experiment_id}"
+    eval_tag = f"eval={env_family}-{variant}"
+    return os.path.join("results", slug, train_tag, exp_tag, eval_tag)
+
+
+
+def build_dataset(config: dict, tokenizer, variant: str, split: str):
+    dataset_cls = get_dataset(config["env_family"])
+    return dataset_cls(
         variant=variant,
-        split="train",
+        split=split,
         tokenizer=tokenizer,
         max_length=config["max_length"],
         num_workers=config.get("dataset_workers", 8),
@@ -63,74 +111,35 @@ def train_single_variant(config: dict, variant: str, model, tokenizer, device: t
         prompt_template_count=config.get("prompt_template_count", 1),
         train_data_ratio=config.get("train_data_ratio", 0.9),
     )
-    val_dataset = DatasetCls(
-        variant=variant,
-        split="val",
-        tokenizer=tokenizer,
-        max_length=config["max_length"],
-        num_workers=config.get("dataset_workers", 8),
-        cache_dir=config.get("dataset_cache_dir"),
-        max_data_num=config.get("max_data_num"),
-        prompt_template_count=config.get("prompt_template_count", 1),
-        train_data_ratio=config.get("train_data_ratio", 0.9),
-    )
-    print(f"[train] Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config["batch_size"],
-        shuffle=True,
-        collate_fn=collate_fn,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config["batch_size"],
-        shuffle=False,
-        collate_fn=collate_fn,
-    )
-
-    eval_variants = config.get("eval_variants") or [variant]
-    _run_training(config, model, train_loader, val_loader, device,
-                  tokenizer=tokenizer, eval_variants=eval_variants, variant=variant)
-
-    checkpoint_dir = get_checkpoint_dir(config, variant)
-    _save_checkpoint(config, model, tokenizer, checkpoint_dir)
 
 
-def train_all_variants(config: dict, model, tokenizer, device: torch.device):
-    DatasetCls = get_dataset(config["env_family"])
-    all_variants = list(POINTMAZE_VARIANTS.keys())
 
+def build_data_loaders(config: dict, tokenizer, selected_variants: list[str]):
     train_datasets = []
     val_datasets = []
-    for variant in all_variants:
+
+    for variant in selected_variants:
         print(f"[train] Loading data for variant: {variant}")
-        train_datasets.append(
-            DatasetCls(
-                variant=variant,
-                split="train",
-                tokenizer=tokenizer,
-                max_length=config["max_length"],
-                num_workers=config.get("dataset_workers", 8),
-                cache_dir=config.get("dataset_cache_dir"),
-                max_data_num=config.get("max_data_num"),
-                prompt_template_count=config.get("prompt_template_count", 1),
-        train_data_ratio=config.get("train_data_ratio", 0.9),
-            )
+        train_datasets.append(build_dataset(config, tokenizer, variant, "train"))
+        val_datasets.append(build_dataset(config, tokenizer, variant, "val"))
+
+    if len(selected_variants) == 1:
+        train_dataset = train_datasets[0]
+        val_dataset = val_datasets[0]
+        print(f"[train] Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=config["batch_size"],
+            shuffle=True,
+            collate_fn=collate_fn,
         )
-        val_datasets.append(
-            DatasetCls(
-                variant=variant,
-                split="val",
-                tokenizer=tokenizer,
-                max_length=config["max_length"],
-                num_workers=config.get("dataset_workers", 8),
-                cache_dir=config.get("dataset_cache_dir"),
-                max_data_num=config.get("max_data_num"),
-                prompt_template_count=config.get("prompt_template_count", 1),
-        train_data_ratio=config.get("train_data_ratio", 0.9),
-            )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=config["batch_size"],
+            shuffle=False,
+            collate_fn=collate_fn,
         )
+        return train_loader, val_loader
 
     weights = []
     for ds in train_datasets:
@@ -158,28 +167,12 @@ def train_all_variants(config: dict, model, tokenizer, device: torch.device):
         shuffle=False,
         collate_fn=collate_fn,
     )
-
-    eval_variants = config.get("eval_variants") or []
-    _run_training(config, model, train_loader, val_loader, device,
-                  tokenizer=tokenizer, eval_variants=eval_variants, variant="all")
-
-    checkpoint_dir = get_checkpoint_dir(config, "all")
-    _save_checkpoint(config, model, tokenizer, checkpoint_dir)
+    print(f"[train] Joint train samples: {len(combined_train)}, Val samples: {len(combined_val)}")
+    return train_loader, val_loader
 
 
-def get_eval_results_dir(config: dict, variant: str) -> str:
-    slug = get_model_slug(config["model_name"])
-    env_family = config["env_family"]
-    train_mode = config["train_mode"]
-    train_variant = config.get("variant", "all")
-    experiment_id = config["experiment_id"]
-    train_tag = f"train={env_family}-{train_variant}-{train_mode}"
-    exp_tag = f"exp={experiment_id}"
-    eval_tag = f"eval={env_family}-{variant}"
-    return os.path.join("results", slug, train_tag, exp_tag, eval_tag)
 
-
-def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_loss, val_loss):
+def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, variants, epoch, train_loss, val_loss):
     import gymnasium_robotics  # noqa: F401
     from evaluate import evaluate_variant
     from utils.prompt_loader import load_templates
@@ -209,7 +202,7 @@ def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_los
             f"train_loss={train_loss:.4f}, val_loss={val_loss:.4f}"
         )
 
-        results_dir = get_eval_results_dir(config, variant)
+        results_dir = get_eval_results_dir(config, train_selection_tag, variant)
         os.makedirs(results_dir, exist_ok=True)
         result_path = os.path.join(results_dir, f"result_ep{epoch}.json")
         with open(result_path, "w") as f:
@@ -220,8 +213,9 @@ def _run_epoch_eval(config, model, tokenizer, device, variants, epoch, train_los
     FastLanguageModel.for_training(model)
 
 
+
 def _run_training(config, model, train_loader, val_loader, device,
-                  tokenizer=None, eval_variants=None, variant="all"):
+                  selection_tag: str, tokenizer=None, eval_variants=None):
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config["learning_rate"],
@@ -286,12 +280,22 @@ def _run_training(config, model, train_loader, val_loader, device,
         val_loss = val_loss / max(val_batches, 1)
         print(f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
 
-        epoch_ckpt_dir = get_checkpoint_dir(config, variant, epoch=epoch)
+        epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
         _save_checkpoint(config, model, tokenizer, epoch_ckpt_dir)
 
         if config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants:
-            _run_epoch_eval(config, model, tokenizer, device, eval_variants,
-                            epoch=epoch, train_loss=train_loss, val_loss=val_loss)
+            _run_epoch_eval(
+                config,
+                model,
+                tokenizer,
+                device,
+                selection_tag,
+                eval_variants,
+                epoch=epoch,
+                train_loss=train_loss,
+                val_loss=val_loss,
+            )
+
 
 
 def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
@@ -313,12 +317,52 @@ def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
     print(f"[train] Checkpoint saved to: {checkpoint_dir}")
 
 
+
+def train_with_selection(
+    config: dict,
+    train_selection: VariantSelection,
+    eval_selection: VariantSelection,
+    model,
+    tokenizer,
+    device: torch.device,
+):
+    print(f"[train] Resolved train variants: {train_selection.selected_variants}")
+    print(f"[train] Resolved train tag: {train_selection.selection_tag}")
+    print(f"[train] Resolved eval variants: {eval_selection.selected_variants}")
+
+    train_loader, val_loader = build_data_loaders(config, tokenizer, train_selection.selected_variants)
+    _run_training(
+        config,
+        model,
+        train_loader,
+        val_loader,
+        device,
+        selection_tag=train_selection.selection_tag,
+        tokenizer=tokenizer,
+        eval_variants=eval_selection.selected_variants,
+    )
+
+    checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
+    _save_checkpoint(config, model, tokenizer, checkpoint_dir)
+
+
+
 def main():
     args = parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
     experiment_id = ensure_experiment_id(config)
+    available_variants = get_available_variants(config["env_family"])
+    train_selection = resolve_train_selection(config, available_variants)
+    eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)
+
+    config["variants"] = train_selection.configured_variants
+    config["resolved_train_variants"] = train_selection.selected_variants
+    config["train_selection_tag"] = train_selection.selection_tag
+    config["resolved_eval_mode"] = eval_selection.mode
+    config["resolved_eval_variants"] = eval_selection.selected_variants
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[train] Using device: {device}")
     print(f"[train] Experiment ID: {experiment_id}")
@@ -326,14 +370,7 @@ def main():
     model, tokenizer = load_model_and_tokenizer(config)
     model.to(device)
 
-    train_mode = config["train_mode"]
-    if train_mode == "single":
-        variant = config["variant"]
-        train_single_variant(config, variant, model, tokenizer, device)
-    elif train_mode == "all":
-        train_all_variants(config, model, tokenizer, device)
-    else:
-        raise ValueError(f"Unknown train_mode: {train_mode!r}. Expected 'single' or 'all'.")
+    train_with_selection(config, train_selection, eval_selection, model, tokenizer, device)
 
 
 if __name__ == "__main__":

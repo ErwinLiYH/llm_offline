@@ -210,3 +210,21 @@ type: project
 - 默认推荐 `gif` 输出；`mp4` 需要可用的 ffmpeg backend
 
 - 录像评估新增 `mujoco_gl` 配置项；headless MuJoCo 默认推荐 `egl`
+
+---
+
+## train.py / config.yaml（2026-04-10）
+
+**训练模式与训练期 eval 选择重构：**
+- `train_mode` 新增 `except`，可使用“除若干变种外”的其余变种联合训练
+- `config.yaml` 的训练选择从单值 `variant` 改为列表 `variants`
+- 训练期环境评估新增独立的 `eval_mode` 和 `eval_variants`，不再强绑定训练模式
+- 新增 `utils/variant_selection.py` 统一解析 `single | all | except` 的训练/评估变种集合与路径 tag
+- `single` 要求 `variants` 恰好一个；`all` 要求列表为空；`except` 使用列表作为排除集合
+- checkpoint / 训练期 eval 结果路径中的选择层改为 `selection_tag`，`except` 形如 `except-open+large`
+- `single`、`all`、`except` 统一复用同一套 dataset / dataloader 构建流程，多变种训练继续按样本量加权采样
+
+- 最终路径约定进一步收敛为 `selection_tag` 结构：checkpoint 使用 `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/...`，results 使用 `train=<env_family>-<selection_tag>`
+
+- `utils/train_variant_selection.py` 更名为 `utils/variant_selection.py`，并扩展为 train / standalone eval 共用
+- `evaluate.py` 新增 `eval_mode` + 列表 `variants` 支持，语义与训练侧一致；保留旧 `variant: <name|all>` 兼容读取
