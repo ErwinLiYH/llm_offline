@@ -1,4 +1,5 @@
-model_path: checkpoints/pointmaze/Qwen3-0.6B/single/open/final
+model_path: checkpoints/pointmaze/Qwen3-0.6B/single/large/c2916c56/final
+# if model_path is set to checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/<experiment_id>/<epoch id>, result paths will be more meaningful
 # model_path: Qwen/Qwen3-0.6B
 load_in_4bit: true      # optional override; when omitted, checkpoint eval uses saved training config
 env_family: pointmaze
@@ -7,10 +8,11 @@ num_episodes: 20
 parse_retry_limit: 3
 
 # Optional video recording settings
-record_video: true      # true = save one rollout file per evaluated variant
-video_episode_index: 0   # which eval episode to record (0-based)
-video_fps: 30
-video_format: gif        # gif works out of the box; mp4 requires ffmpeg backend support
+# record_video: true      # uncomment to save one rollout file per evaluated variant
+# video_episode_index: 0   # which eval episode to record (0-based)
+# video_fps: 30
+# video_format: mp4        # gif works out of the box; mp4 requires ffmpeg backend support
+# mujoco_gl: egl           # headless MuJoCo recording backend on this machine
 
 env_kwargs:
   continuing_task: false  # false = one goal per episode, terminated on success

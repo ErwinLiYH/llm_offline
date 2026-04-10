@@ -208,3 +208,5 @@ type: project
 - 新增 `record_video`、`video_episode_index`、`video_fps`、`video_format` 配置项
 - 录制开启时会自动把环境切到 `rgb_array` 渲染，并把指定 episode 保存到 `results/...` 目录
 - 默认推荐 `gif` 输出；`mp4` 需要可用的 ffmpeg backend
+
+- 录像评估新增 `mujoco_gl` 配置项；headless MuJoCo 默认推荐 `egl`

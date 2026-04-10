@@ -66,7 +66,7 @@ To add a new environment family:
 - `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, and how many prompt templates are used for dataset construction via `prompt_template_count`.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/<experiment_id>/`.
 - Results mirror checkpoint structure under `results/`.
-- `eval.yaml` can record one rollout per variant via `record_video`; default output format is `gif`, while `mp4` requires an ffmpeg backend.
+- `eval.yaml` can record one rollout per variant via `record_video`; default output format is `gif`, while `mp4` requires an ffmpeg backend. Headless MuJoCo recording should use `mujoco_gl: egl`.
 
 ## Out Of Scope
 

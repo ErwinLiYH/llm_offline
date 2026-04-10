@@ -34,13 +34,17 @@ def get_results_dir(config: dict) -> str:
 
     model_path = config["model_path"]
     eval_tag = f"eval={config['env_family']}-{config['variant']}"
+    norm_path = model_path.replace("\\", "/").rstrip("/")
+    parts = [part for part in norm_path.split("/") if part]
 
-    if model_path.startswith("checkpoints/") or model_path.startswith("checkpoints\\"):
-        parts = model_path.replace("\\", "/").rstrip("/").split("/")
-        model_slug = parts[2] if len(parts) > 2 else model_path
-        train_tag = f"train={parts[1]}-{parts[4]}-{parts[3]}"
-        exp_tag = f"exp={parts[5]}" if len(parts) > 5 else "exp=unknown"
-        return os.path.join("results", model_slug, train_tag, exp_tag, eval_tag)
+    if "checkpoints" in parts:
+        idx = parts.index("checkpoints")
+        ckpt_parts = parts[idx + 1 :]
+        if len(ckpt_parts) >= 6:
+            env_family, model_slug, train_mode, train_variant, experiment_id, _checkpoint_tag = ckpt_parts[-6:]
+            train_tag = f"train={env_family}-{train_variant}-{train_mode}"
+            exp_tag = f"exp={experiment_id}"
+            return os.path.join("results", model_slug, train_tag, exp_tag, eval_tag)
 
     model_slug = get_model_slug(model_path)
     train_tag = "train=pretrained"
@@ -117,6 +121,17 @@ def generate_action(
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
 
+def configure_mujoco_gl(config: dict):
+    mujoco_gl = config.get("mujoco_gl")
+    if mujoco_gl:
+        os.environ["MUJOCO_GL"] = str(mujoco_gl)
+        return
+
+    if config.get("record_video", False):
+        # Headless rollout recording should use EGL by default on this machine.
+        os.environ.setdefault("MUJOCO_GL", "egl")
+
+
 def evaluate_variant(
     config: dict,
     variant: str,
@@ -143,12 +158,12 @@ def evaluate_variant(
                 f"video_episode_index must satisfy 0 <= index < num_episodes; got index={video_episode_index}, num_episodes={num_episodes}"
             )
         render_mode = env_kwargs.get("render_mode")
-        if render_mode is None:
+        if render_mode != "rgb_array":
+            if render_mode is not None:
+                print(
+                    f"[eval] record_video=true: overriding env_kwargs.render_mode={render_mode!r} to 'rgb_array'"
+                )
             env_kwargs["render_mode"] = "rgb_array"
-        elif render_mode != "rgb_array":
-            raise ValueError(
-                "record_video requires env_kwargs.render_mode='rgb_array' (or omit render_mode and it will be set automatically)"
-            )
 
     env = gym.make(env_id, **env_kwargs)
 
@@ -248,6 +263,8 @@ def main():
     args = parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+
+    configure_mujoco_gl(config)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[eval] Using device: {device}")
