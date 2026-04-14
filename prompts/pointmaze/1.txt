@@ -3,5 +3,6 @@ Maze ({maze_shape}, # = wall):
 {maze_visual}
 State (x, y: position; vx, vy: velocity; gx, gy: goal position):
 {obs_text}
-Output action [ax, ay] in [-1, 1] as two comma-separated floats. No extra text.
+Output action [ax, ay] as two signed integers separated by "," with no spaces, like 35,-72.
+Each integer equals the action component multiplied by 100, so the precision is 0.01 and the valid integer range is [-100, 100]. No extra text.
 Action:

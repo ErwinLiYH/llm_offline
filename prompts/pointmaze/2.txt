@@ -12,5 +12,6 @@ Here is my current state (x, y: position; vx, vy: velocity; gx, gy: goal positio
 {obs_text}
 
 I can apply a 2D force [ax, ay] where each component is between -1 and 1.
-Please tell me what force to apply to move toward the goal. Give me just two numbers separated by a comma, like: 0.35, -0.72
+Please tell me what force to apply to move toward the goal. Give me just two signed integers separated by "," with no spaces, like: 35,-72
+Each integer is the action component multiplied by 100, so the precision is 0.01 and the valid integer range is [-100, 100].
 Action:

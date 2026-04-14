@@ -173,7 +173,7 @@ Action:
 
 - 当前 `prompts/pointmaze/` 下定义了 5 个共享模板：0–2 英文、3–4 中文
 - `POINTMAZE_VARIANTS` 中的每个变种通过 `prompt_vars` 提供：`env_name`、`reward_desc_en`、`reward_desc_zh`、`maze_shape`、`maze_raw_matrix`、`maze_visual`、`structure_desc_en`、`structure_desc_zh`
-- target 文本仍由 `data/pointmaze/formatting.py` 定义，动作格式为 `0.35, -0.72`
+- target 文本仍由 `data/pointmaze/formatting.py` 定义，动作格式为紧凑的百分位整数，如 `35,-72`
 
 ### 数据处理
 
@@ -280,7 +280,7 @@ dataset_cache/
 **示例：** `dataset_cache/pointmaze-open-train-prompts1-split<train_pct>-<val_pct>.pkl`
 
 - `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
-- `.jsonl` 每行是 `{"prompt": "...", "action": "0.35, -0.72"}`，供人工抽检数据质量
+- `.jsonl` 每行是 `{"prompt": "...", "action": "35,-72"}`，供人工抽检数据质量
 - 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
 - `max_data_num` 截断发生在 cache 读取之后的内存中，cache 文件始终保存完整数据
 
@@ -415,7 +415,7 @@ def validate_action(action) -> bool:
 1. **Loss masking**：labels 中 prompt 部分设为 `-100`
 2. **每 timestep 展开 `prompt_template_count` 条**：`dataset.py` 构造数据时对每个 timestep 遍历前 `prompt_template_count` 个共享模板，生成对应数量的独立样本
 3. **Action parsing（环境族绑定）**：evaluate.py 通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 和 `validate_action`。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
-   - *PointMaze 实现*：正则解析 `float, float`，校验各分量在 `[-1, 1]` 内，clip 后返回
+   - *PointMaze 实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回
    - 其他环境族在各自 `formatting.py` 中实现对应逻辑，格式和校验规则完全自定义
 4. **Obs/Action 序列化（环境族绑定）**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs` 和 `format_action`，不依赖任何全局 formatting 工具
 5. **Episode 级别 train/val 划分**：先按 episode `train_data_ratio`（默认 `0.9`）划分，train 用前 90%，val 用剩余 10%，再展开 timestep，防止数据泄露

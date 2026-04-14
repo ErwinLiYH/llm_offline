@@ -61,7 +61,7 @@ To add a new environment family:
 - Formatting is per environment family. There is no shared global formatting helper.
 - `evaluate.py` uses `registry.get_formatter(env_family)` for `parse_action` and `validate_action`.
 - On parse failure or invalid output, evaluation retries up to `parse_retry_limit`, then falls back to a zero vector and logs fallback metrics.
-- PointMaze actions are parsed from `float, float`, validated in `[-1, 1]`, then clipped.
+- PointMaze actions are parsed from compact integer hundredths like `35,-72`, interpreted as action*100, validated in `[-1, 1]`, then clipped.
 - Training uses the first `prompt_template_count` templates from shared family prompt files; evaluation always uses template 0. PointMaze currently defines 5 templates, but the loader uses however many indexed `.txt` templates are actually present.
 - Training config uses `train_mode: single | all | except` plus list-valued `variants`.
   - `single`: `variants` must contain exactly one variant
