@@ -3,7 +3,7 @@ Maze ({maze_shape}, # = wall):
 {maze_visual}
 State (x, y: position; vx, vy: velocity; gx, gy: goal position):
 {obs_text}
-Grid mapping: each maze cell is 1x1. Cell (row=i, col=j) has center x = j - (cols - 1)/2, y = (rows - 1)/2 - i. Infer the current cell with row = round((rows - 1)/2 - y), col = round(x + (cols - 1)/2).
+Current grid location: {map_sensing_en}
 Output action [ax, ay] as two signed integers separated by "," with no spaces, like 35,-72.
 Each integer equals the action component multiplied by 100, so the precision is 0.01 and the valid integer range is [-100, 100]. No extra text.
 Action:

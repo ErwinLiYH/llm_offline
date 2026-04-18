@@ -22,6 +22,7 @@ def _build_prompt_vars(
     return {
         "reward_type": reward_type,
         "maze_map": maze_map,
+        "maze_size_scaling": 1.0,
         "env_name": env_name,
         "reward_desc_en": f"{reward_type} reward",
         "reward_desc_zh": "稀疏奖励" if reward_type == "sparse" else "稠密奖励",

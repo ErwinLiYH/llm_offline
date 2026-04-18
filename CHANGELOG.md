@@ -230,3 +230,26 @@ type: project
 - `evaluate.py` 新增 `eval_mode` + 列表 `variants` 支持，语义与训练侧一致；保留旧 `variant: <name|all>` 兼容读取
 
 - PointMaze 动作文本格式改为紧凑的百分位整数：由 `0.35, -0.72` 改为 `35,-72`；同步更新 formatter、decoder、shared prompts 和相关文档
+
+---
+
+## PointMaze Prompt / Eval（2026-04-18）
+
+**PointMaze prompt 感知信息改为动态 `map_sensing`：**
+- 共享 prompt 模板不再写静态 `Grid-coordinate mapping` 公式说明，改为直接注入动态 `map_sensing_en` / `map_sensing_zh`
+- `map_sensing` 现在直接给出当前位置格子、目标格子，以及上下左右相邻格子的 `wall/free` 状态
+- 行列编号统一为从左上角开始的 `1-based`
+- 坐标到格子的换算逻辑改为与 PointMaze 环境源码一致的 `floor + map_center + maze_size_scaling` 公式，避免不同迷宫宽高奇偶下的偏差
+
+**`format_obs` 接口重构：**
+- formatter 接口从返回单个字符串改为返回 prompt 渲染变量字典，且必须包含 `obs_text`
+- PointMaze 的 `format_obs` 现在统一为 `format_obs(obs, meta) -> dict`，由 formatter 自己解析环境观测结构并补充 `map_sensing`
+- 训练数据构造和 standalone eval 统一复用 `format_obs(...)` 的返回值渲染 prompt
+- `format_obs` 内部显式将 `observation` 和 `desired_goal` 转成 `np.float32`
+
+**standalone eval 录像配置增强：**
+- `evaluate.py` 运行 standalone eval 时，结果目录改为 `.../eval=<tag>#<eval_uuid>/results.json`
+- `train.py` 的训练期 eval 路径保持不变
+- `eval.yaml` 的 `video_episode_index` 现在支持单个整数或列表
+- 新增 `record_all`；为 `true` 时忽略 `video_episode_index` 并录制全部 episode
+- 开启录像时会自动将 `env_kwargs.render_mode` 覆盖为 `rgb_array`

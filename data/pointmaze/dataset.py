@@ -116,10 +116,14 @@ class PointMazeDataset(BaseOfflineDataset):
                 obs = obs_arr[t].astype(np.float32)
                 goal = goal_arr[t].astype(np.float32)
                 action = action.astype(np.float32)
-                obs_text = formatting.format_obs(obs, goal)
+                obs = {
+                    "observation": obs,
+                    "desired_goal": goal,
+                }
+                obs_payload = formatting.format_obs(obs, prompt_vars)
                 action_text = formatting.format_action(action)
                 for template in templates:
-                    prompt = render_template(template, prompt_vars, obs_text=obs_text)
+                    prompt = render_template(template, prompt_vars, **obs_payload)
                     token_sample = self._tokenize(prompt, action_text)
                     text_record = {"prompt": prompt, "action": action_text}
                     results.append((text_record, token_sample))

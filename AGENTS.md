@@ -4,7 +4,7 @@ This file provides guidance to Codex when working with code in this repository.
 
 ## Project Overview
 
-LLM Offline RL: behavior cloning on D4RL PointMaze environments using a fine-tuned LLM via LoRA. Observations and goals are serialized to text; the model predicts actions as plain-text floats.
+LLM Offline RL: behavior cloning on D4RL PointMaze environments using a fine-tuned LLM via LoRA. Per-family formatters convert observations into prompt render variables; the model predicts actions as compact integer hundredths such as `35,-72`.
 
 Main design reference: `DESIGN.md` (Chinese).
 
@@ -44,7 +44,7 @@ Key files:
 Data flow:
 - dataset
 - episode-level train/val split using `train_data_ratio` (default 0.9, so train uses the first 90% of episodes and val uses the remaining 10%)
-- per timestep: `format_obs` + `format_action`
+- per timestep: `format_obs(obs, meta)` + `format_action`
 - fill the first `prompt_template_count` templates
 - tokenize with prompt tokens masked out (`labels = -100`)
 - `prompt_template_count` samples per timestep
@@ -61,7 +61,9 @@ To add a new environment family:
 - Formatting is per environment family. There is no shared global formatting helper.
 - `evaluate.py` uses `registry.get_formatter(env_family)` for `parse_action` and `validate_action`.
 - On parse failure or invalid output, evaluation retries up to `parse_retry_limit`, then falls back to a zero vector and logs fallback metrics.
+- `format_obs(obs, meta)` returns a dict of prompt render variables. It must contain `obs_text`, and may add family-specific fields.
 - PointMaze actions are parsed from compact integer hundredths like `35,-72`, interpreted as action*100, validated in `[-1, 1]`, then clipped.
+- PointMaze `format_obs` also emits dynamic `map_sensing_en` / `map_sensing_zh`, which describe the current cell, goal cell, and four-neighbor `wall/free` status using 1-based row/column indexing from the top-left corner.
 - Training uses the first `prompt_template_count` templates from shared family prompt files; evaluation always uses template 0. PointMaze currently defines 5 templates, but the loader uses however many indexed `.txt` templates are actually present.
 - Training config uses `train_mode: single | all | except` plus list-valued `variants`.
   - `single`: `variants` must contain exactly one variant
@@ -74,9 +76,10 @@ To add a new environment family:
 - `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, and how many prompt templates are used for dataset construction via `prompt_template_count`.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/`.
   - `selection_tag` is the single variant name, `all`, or `except-<excluded variants joined by +>`.
-- Results mirror checkpoint structure under `results/`.
+- Training-time eval results live under `results/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/eval=<env_family>-<variant>/`.
+- Standalone eval results append an eval-run suffix: `eval=<env_family>-<eval_selection_tag>#<eval_uuid>/results.json`.
 - `eval.yaml` uses the same list-based variant selection semantics as training via `eval_mode` + `variants`; legacy `variant: <name|all>` is still accepted for compatibility.
-- `eval.yaml` can record one rollout per variant via `record_video`; default output format is `gif`, while `mp4` requires an ffmpeg backend. Headless MuJoCo recording should use `mujoco_gl: egl`.
+- `eval.yaml` can record selected rollouts via `record_video`; `video_episode_index` accepts an int or list, and `record_all: true` records every episode. Default output format is `gif`, while `mp4` requires an ffmpeg backend. Headless MuJoCo recording should use `mujoco_gl: egl`.
 
 ## Out Of Scope
 

@@ -11,7 +11,7 @@ Maze summary: {structure_desc_en}
 Here is my current state (x, y: position; vx, vy: velocity; gx, gy: goal position):
 {obs_text}
 
-Grid mapping: each maze cell is 1x1. Cell (row=i, col=j) has center x = j - (cols - 1)/2, y = (rows - 1)/2 - i. Infer the current cell with row = round((rows - 1)/2 - y), col = round(x + (cols - 1)/2).
+Current grid location: {map_sensing_en}
 
 I can apply a 2D force [ax, ay] where each component is between -1 and 1.
 Please tell me what force to apply to move toward the goal. Give me just two signed integers separated by "," with no spaces, like: 35,-72

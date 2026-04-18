@@ -295,11 +295,17 @@ results/
 └── <model_slug>/
     └── train=<env_family>-<selection_tag>/
         └── exp=<experiment_id>/
-            └── eval=<env_family>-<eval_variant>/
+            └── eval=<env_family>-<eval_tag>/
                 ├── results.json          # evaluate.py 完整评估结果
                 ├── result_ep1.json       # 训练 epoch 1 结束后的中间评估
                 ├── result_ep2.json
                 └── ...
+```
+
+standalone `evaluate.py` 会在 `eval=<...>` 后附加 `#<eval_uuid>`，例如：
+
+```text
+results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/eval=pointmaze-open#<eval_uuid>/results.json
 ```
 
 **路径字段说明：**
@@ -308,7 +314,7 @@ results/
 |------|------|------|
 | `model_slug` | 基座模型名 | `Qwen3-0.6B` |
 | `selection_tag` | 训练选择标签 | `open`、`all`、`except-large+large-dense` |
-| `eval_variant` | 评估时测试的变种 | `open`、`umaze` |
+| `eval_tag` | 评估选择标签；训练期通常是单个变种名，standalone eval 可能是 `all` / `except-...` 并附加 `#<eval_uuid>` | `open`、`umaze`、`all#<eval_uuid>` |
 
 **示例路径：**
 
@@ -318,9 +324,10 @@ results/
 | 训练 open 变种 epoch 2 中间评估 | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/eval=pointmaze-open/result_ep2.json` |
 | 联合训练所有变种后评估 umaze | `results/Qwen3-0.6B/train=pointmaze-all/exp=<experiment_id>/eval=pointmaze-umaze/results.json` |
 | except 模式排除 `large` 和 `large-dense` 后评估 medium | `results/Qwen3-0.6B/train=pointmaze-except-large+large-dense/exp=<experiment_id>/eval=pointmaze-medium/results.json` |
-| 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/eval=pointmaze-open/results.json` |
+| standalone 评估所有变种 | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/eval=pointmaze-all#<eval_uuid>/results.json` |
+| 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/eval=pointmaze-open#<eval_uuid>/results.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套路径生成逻辑，确保训练中间评估（`result_epN.json`）与最终评估（`results.json`）落在同一目录下，方便对比。`selection_tag` 已经包含训练集合语义，因此结果目录也不再单独重复 `train_mode`。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，确保训练中间评估（`result_epN.json`）与最终评估（`results.json`）落在对应训练实验目录下，方便对比。standalone `evaluate.py` 会在 `eval=<...>` 后追加 `#<eval_uuid>`，用于区分不同次独立评估运行。`selection_tag` 已经包含训练集合语义，因此结果目录也不再单独重复 `train_mode`。
 
 **结果文件字段：**
 
@@ -372,12 +379,12 @@ project/
 ├── config.yaml
 ├── prompts/
 │   └── <env_family>/            # 每个环境族一个子目录
-│       └── <variant_name>.yaml
+│       └── <idx>.txt            # 共享 prompt 模板，按 0..N 连续编号
 ├── data/
 │   ├── <env_family>/            # 每个环境族一个子目录
 │   │   ├── variants.py          # 该族所有变种的元信息字典
 │   │   ├── dataset.py           # 数据加载、tokenize（每 timestep 展开5条）
-│   │   └── formatting.py        # obs/goal 序列化、action 目标文本生成、action 解析
+│   │   └── formatting.py        # obs 序列化/附加 prompt 变量、action 目标文本生成、action 解析
 │   ├── base_dataset.py          # 抽象基类，定义通用接口（load、format、tokenize）
 │   └── registry.py              # 环境族注册表，按 env_family 路由 dataset 和 formatter
 ├── model/
@@ -387,14 +394,14 @@ project/
 ├── checkpoints/
 ├── results/
 └── utils/
-    └── prompt_loader.py         # 加载指定变种的全部模板，返回列表
+    └── prompt_loader.py         # 加载指定环境族的共享模板，返回列表
 ```
 
 **`data/<env_family>/formatting.py` 接口规范**（每个环境族必须实现）：
 
 ```python
-def format_obs(obs, goal) -> str:
-    """将 obs 和 goal 序列化为填入 prompt 的文本"""
+def format_obs(obs, meta) -> dict:
+    """返回 prompt 渲染变量字典；必须包含 obs_text，其他字段可自定义"""
 
 def format_action(action) -> str:
     """将 action 向量序列化为训练 target 文本"""
@@ -418,6 +425,8 @@ def validate_action(action) -> bool:
    - *PointMaze 实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回
    - 其他环境族在各自 `formatting.py` 中实现对应逻辑，格式和校验规则完全自定义
 4. **Obs/Action 序列化（环境族绑定）**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs` 和 `format_action`，不依赖任何全局 formatting 工具
+   - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text` 以及动态 `map_sensing_en` / `map_sensing_zh`
+   - `map_sensing` 会直接给出当前位置格子、目标格子，以及上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数
 5. **Episode 级别 train/val 划分**：先按 episode `train_data_ratio`（默认 `0.9`）划分，train 用前 90%，val 用剩余 10%，再展开 timestep，防止数据泄露
 6. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖
 7. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动

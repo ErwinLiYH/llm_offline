@@ -242,12 +242,9 @@ def evaluate_variant(
     saved_video_paths = []
 
     for ep_idx in range(num_episodes):
-        obs_dict, info = env.reset()
+        obs, info = env.reset()
         record_this_episode = record_video and ep_idx in video_episode_index_set
         episode_frames = [] if record_this_episode else None
-
-        obs = obs_dict["observation"].astype(np.float32)
-        goal = obs_dict["desired_goal"].astype(np.float32)
 
         if episode_frames is not None:
             _capture_render_frame(env, episode_frames)
@@ -259,8 +256,8 @@ def evaluate_variant(
         truncated = False
 
         while not (terminated or truncated):
-            obs_text = formatter.format_obs(obs, goal)
-            prompt = render_template(template, meta["prompt_vars"], obs_text=obs_text)
+            obs_payload = formatter.format_obs(obs, meta["prompt_vars"])
+            prompt = render_template(template, meta["prompt_vars"], **obs_payload)
 
             action = None
             for _attempt in range(parse_retry_limit + 1):
@@ -278,9 +275,7 @@ def evaluate_variant(
                 action = np.zeros(env.action_space.shape, dtype=np.float32)
                 total_fallbacks += 1
 
-            obs_dict, reward, terminated, truncated, info = env.step(action)
-            obs = obs_dict["observation"].astype(np.float32)
-            goal = obs_dict["desired_goal"].astype(np.float32)
+            obs, reward, terminated, truncated, info = env.step(action)
 
             if episode_frames is not None:
                 _capture_render_frame(env, episode_frames)
