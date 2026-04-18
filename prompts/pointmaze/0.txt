@@ -21,6 +21,11 @@ Observation semantics:
   vx, vy  - 2D velocity of the point mass
   gx, gy  - 2D goal position (desired_goal)
 
+Grid-coordinate mapping:
+  Each maze cell has size 1x1.
+  For maze matrix cell (row=i, col=j), the cell center is at x = j - (cols - 1)/2 and y = (rows - 1)/2 - i.
+  To infer the current cell from observation x,y, use row = round((rows - 1)/2 - y) and col = round(x + (cols - 1)/2).
+
 Action space (2-dimensional continuous force vector):
   ax - horizontal force component, range [-1, 1]
   ay - vertical force component, range [-1, 1]
