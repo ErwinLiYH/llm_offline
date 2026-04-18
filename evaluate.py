@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import time
+import uuid
 
 import gymnasium as gym
 import gymnasium_robotics  # noqa: F401  registers PointMaze envs
@@ -60,12 +61,14 @@ def resolve_standalone_eval_selection(config: dict):
 
 
 
-def get_results_dir(config: dict, eval_selection_tag: str) -> str:
+def get_results_dir(config: dict, eval_selection_tag: str, standalone_eval_id: str | None = None) -> str:
     """Build results directory path encoding model, training context, and eval context."""
     from model.policy import get_model_slug
 
     model_path = config["model_path"]
     eval_tag = f"eval={config['env_family']}-{eval_selection_tag}"
+    if standalone_eval_id:
+        eval_tag = f"{eval_tag}#{standalone_eval_id}"
     norm_path = model_path.replace("\\", "/").rstrip("/")
     parts = [part for part in norm_path.split("/") if part]
 
@@ -158,6 +161,34 @@ def generate_action(
 
 
 
+def _resolve_video_episode_indices(config: dict, num_episodes: int) -> list[int]:
+    if not config.get("record_video", False):
+        return []
+
+    if config.get("record_all", False):
+        return list(range(num_episodes))
+
+    raw_indices = config.get("video_episode_index", 0)
+    if isinstance(raw_indices, int):
+        indices = [raw_indices]
+    elif isinstance(raw_indices, (list, tuple)):
+        if not raw_indices:
+            raise ValueError("video_episode_index must not be empty when record_video=true and record_all=false")
+        if not all(isinstance(idx, int) for idx in raw_indices):
+            raise ValueError("video_episode_index must be an int or a list of ints")
+        indices = list(raw_indices)
+    else:
+        raise ValueError("video_episode_index must be an int or a list of ints")
+
+    unique_indices = sorted(set(indices))
+    for idx in unique_indices:
+        if not (0 <= idx < num_episodes):
+            raise ValueError(
+                f"video_episode_index must satisfy 0 <= index < num_episodes; got index={idx}, num_episodes={num_episodes}"
+            )
+    return unique_indices
+
+
 def configure_mujoco_gl(config: dict):
     mujoco_gl = config.get("mujoco_gl")
     if mujoco_gl:
@@ -176,7 +207,7 @@ def evaluate_variant(
     tokenizer,
     device: torch.device,
     template: str,
-    video_path: str | None = None,
+    video_paths: dict[int, str] | None = None,
 ) -> dict:
     formatter = get_formatter(config["env_family"])
     meta = POINTMAZE_VARIANTS[variant]
@@ -186,14 +217,11 @@ def evaluate_variant(
 
     env_kwargs = dict(config.get("env_kwargs") or {})
     record_video = bool(config.get("record_video", False))
-    video_episode_index = int(config.get("video_episode_index", 0))
+    video_episode_indices = _resolve_video_episode_indices(config, num_episodes)
+    video_episode_index_set = set(video_episode_indices)
     video_fps = int(config.get("video_fps", 20))
 
     if record_video:
-        if not (0 <= video_episode_index < num_episodes):
-            raise ValueError(
-                f"video_episode_index must satisfy 0 <= index < num_episodes; got index={video_episode_index}, num_episodes={num_episodes}"
-            )
         render_mode = env_kwargs.get("render_mode")
         if render_mode != "rgb_array":
             if render_mode is not None:
@@ -211,11 +239,11 @@ def evaluate_variant(
     total_fallbacks = 0
     total_action_time = 0.0
     total_actions = 0
-    saved_video_path = None
+    saved_video_paths = []
 
     for ep_idx in range(num_episodes):
         obs_dict, info = env.reset()
-        record_this_episode = record_video and ep_idx == video_episode_index
+        record_this_episode = record_video and ep_idx in video_episode_index_set
         episode_frames = [] if record_this_episode else None
 
         obs = obs_dict["observation"].astype(np.float32)
@@ -263,10 +291,12 @@ def evaluate_variant(
             if terminated:
                 ep_success = True
 
-        if episode_frames is not None and video_path is not None:
-            _save_video(episode_frames, video_path, video_fps)
-            saved_video_path = video_path
-            print(f"  [{variant}] saved video: {video_path}")
+        if episode_frames is not None and video_paths is not None:
+            video_path = video_paths.get(ep_idx)
+            if video_path is not None:
+                _save_video(episode_frames, video_path, video_fps)
+                saved_video_paths.append(video_path)
+                print(f"  [{variant}] saved video: {video_path}")
 
         episode_returns.append(ep_return)
         episode_successes.append(ep_success)
@@ -292,7 +322,8 @@ def evaluate_variant(
         "total_parse_failures": total_parse_failures,
         "total_fallbacks": total_fallbacks,
         "mean_action_time_ms": round(mean_action_time_ms, 2),
-        "video_path": saved_video_path,
+        "video_path": saved_video_paths[0] if len(saved_video_paths) == 1 else None,
+        "video_paths": saved_video_paths,
     }
 
 
@@ -318,7 +349,10 @@ def main():
     model.eval()
 
     env_family = config["env_family"]
-    results_dir = get_results_dir(config, eval_selection.selection_tag)
+    standalone_eval_id = uuid.uuid4().hex[:8]
+    print(f"[eval] Eval ID: {standalone_eval_id}")
+
+    results_dir = get_results_dir(config, eval_selection.selection_tag, standalone_eval_id=standalone_eval_id)
     os.makedirs(results_dir, exist_ok=True)
 
     all_results = []
@@ -327,11 +361,14 @@ def main():
         templates = load_templates(env_family)
         template = templates[0]
 
-        video_path = None
+        video_paths = None
         if config.get("record_video", False):
             video_ext = str(config.get("video_format", "gif")).lstrip(".")
-            episode_num = int(config.get("video_episode_index", 0)) + 1
-            video_path = os.path.join(results_dir, f"{variant}-episode{episode_num}.{video_ext}")
+            episode_indices = _resolve_video_episode_indices(config, int(config["num_episodes"]))
+            video_paths = {
+                ep_idx: os.path.join(results_dir, f"{variant}-episode{ep_idx + 1}.{video_ext}")
+                for ep_idx in episode_indices
+            }
 
         result = evaluate_variant(
             config,
@@ -340,7 +377,7 @@ def main():
             tokenizer,
             device,
             template,
-            video_path=video_path,
+            video_paths=video_paths,
         )
         all_results.append(result)
         print(
