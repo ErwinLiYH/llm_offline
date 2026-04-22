@@ -110,6 +110,8 @@ def build_dataset(config: dict, tokenizer, variant: str, split: str):
         max_data_num=config.get("max_data_num"),
         prompt_template_count=config.get("prompt_template_count", 1),
         train_data_ratio=config.get("train_data_ratio", 0.9),
+        history_num=config.get("history_num", 0),
+        history_stride=config.get("history_stride", 1),
     )
 
 
@@ -182,6 +184,8 @@ def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, 
         "num_episodes": config["eval_num_episodes"],
         "parse_retry_limit": config.get("parse_retry_limit", 3),
         "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
+        "history_num": config.get("history_num", 0),
+        "history_stride": config.get("history_stride", 1),
     }
 
     model.eval()

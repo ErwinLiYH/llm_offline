@@ -253,3 +253,49 @@ type: project
 - `eval.yaml` 的 `video_episode_index` 现在支持单个整数或列表
 - 新增 `record_all`；为 `true` 时忽略 `video_episode_index` 并录制全部 episode
 - 开启录像时会自动将 `env_kwargs.render_mode` 覆盖为 `rgb_array`
+
+---
+
+## data/pointmaze/formatting.py / data/pointmaze/dataset.py / train.py / evaluate.py（2026-04-22）
+
+**PointMaze 主流程新增历史轨迹 prompt：**
+- 新增 `history_num` / `history_stride` 配置项；`config.yaml` 和 `eval.yaml` 各自独立配置，`0` 表示关闭历史
+- `data/pointmaze/formatting.py` 新增 `format_history(...)`，统一渲染中英文历史块；历史只包含每条过去 transition 的起始位置和动作
+- `PointMazeDataset` 现在会从 offline episode 中按 `t-1, t-1-stride, ...` 回溯采样历史，并将历史配置编码进 dataset cache 文件名，避免误复用旧缓存
+- `evaluate_variant(...)` 现在在 rollout 中维护在线 history buffer；每个 episode 的首步显式使用空历史，之后每步把实际执行动作写入历史，fallback 零动作也会被记录
+- 训练期 epoch eval 复用训练配置中的历史参数，standalone `evaluate.py` 使用 `eval.yaml` 中的历史参数
+
+## prompts/pointmaze/*.txt（2026-04-22）
+
+**共享 PointMaze prompts 接入历史块并重排静态/动态区域：**
+- 全部模板新增 `{history_block_en}` / `{history_block_zh}` 占位符；历史为空时渲染为空字符串，不额外输出标题
+- 模板整体重排为“静态描述在前、动态状态在后”，以提高前缀缓存命中率
+- `prompt 0` 进一步简化：移除 raw matrix 与 reward 描述，只保留 visual maze，并采用更结构化的 `Env Description` / `Current Status` 组织方式
+- 历史排序语义说明移到静态区域：第一条是最早采样到的历史 step，最后一条是当前 step 之前最近的采样历史 step
+
+## inspect_jsonl_record.py（2026-04-22）
+
+**新增 JSONL 样本检查脚本：**
+- 新增 `inspect_jsonl_record.py`
+- 用法：`python inspect_jsonl_record.py <jsonl_path> <record_index>`
+- 按固定格式打印单条记录：
+  - `Prompt:\n...`
+  - `Action:\n...`
+- 用于快速核查 dataset cache 导出的 `.jsonl` 样本内容
+
+## plan_probe.py（2026-04-22）
+
+**新增规划能力探针脚本：**
+- 新增 `plan_probe.py`，用于把路径规划能力从低层控制中拆出来单独测试
+- 支持两种模式：一次性输出整条路径的 `path` 模式，以及逐步决策的 `step` 模式
+- 支持本地 checkpoint 与 OpenAI 兼容云端接口两种后端；云端模式在 `responses.create` 不可用时自动回退到 `chat.completions.create`
+- 新增可选的直接输出/允许思考开关，以及 `step` 模式的历史轨迹注入参数，用于验证记忆对规划成功率的影响
+- 训练期环境评估新增独立的 `eval_mode` 和 `eval_variants`，不再强绑定训练模式
+- 新增 `utils/variant_selection.py` 统一解析 `single | all | except` 的训练/评估变种集合与路径 tag
+- `single` 要求 `variants` 恰好一个；`all` 要求列表为空；`except` 使用列表作为排除集合
+- checkpoint / 训练期 eval 结果路径中的选择层改为 `selection_tag`，`except` 形如 `except-open+large`
+- `single`、`all`、`except` 统一复用同一套 dataset / dataloader 构建流程，多变种训练继续按样本量加权采样
+- 最终路径约定进一步收敛为 `selection_tag` 结构：checkpoint 使用 `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/...`，results 使用 `train=<env_family>-<selection_tag>`
+- `utils/train_variant_selection.py` 更名为 `utils/variant_selection.py`，并扩展为 train / standalone eval 共用
+- `evaluate.py` 新增 `eval_mode` + 列表 `variants` 支持，语义与训练侧一致；保留旧 `variant: <name|all>` 兼容读取
+- PointMaze 动作文本格式改为紧凑的百分位整数：由 `0.35, -0.72` 改为 `35,-72`；同步更新 formatter、decoder、shared prompts 和相关文档

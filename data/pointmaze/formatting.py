@@ -64,6 +64,53 @@ def _build_map_sensing(obs: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
     }
 
 
+def _format_cell_and_xy(vec: np.ndarray, meta: dict, *, zh: bool = False) -> str:
+    row, col = _obs_xy_to_row_col(
+        float(vec[0]),
+        float(vec[1]),
+        meta["maze_map"],
+        maze_size_scaling=float(meta.get("maze_size_scaling", 1.0)),
+    )
+    row_1 = row + 1
+    col_1 = col + 1
+    if zh:
+        return (
+            f"起始格子：第 {row_1} 行，第 {col_1} 列；"
+            f"起始坐标：(x={float(vec[0]):.4f}, y={float(vec[1]):.4f})。"
+        )
+    return (
+        f"Start cell: row {row_1}, column {col_1}; "
+        f"start xy: (x={float(vec[0]):.4f}, y={float(vec[1]):.4f})."
+    )
+
+
+def format_history(history_entries: list[dict], meta: dict) -> dict:
+    """Serialize sampled trajectory history for prompt insertion.
+
+    Each history entry must contain:
+    - observation: np.ndarray with at least x/y in the first two slots
+    - action_text: compact action string such as "35,-72"
+    """
+    if not history_entries:
+        return {
+            "history_block_en": "",
+            "history_block_zh": "",
+        }
+
+    en_lines = ["Step history:"]
+    zh_lines = ["历史轨迹："]
+    for idx, entry in enumerate(history_entries, start=1):
+        obs_vec = entry["observation"].astype(np.float32)
+        action_text = str(entry["action_text"])
+        en_lines.append(f"  {idx}. {_format_cell_and_xy(obs_vec, meta, zh=False)} Action: {action_text}.")
+        zh_lines.append(f"  {idx}. {_format_cell_and_xy(obs_vec, meta, zh=True)}动作：{action_text}。")
+
+    return {
+        "history_block_en": "\n" + "\n".join(en_lines),
+        "history_block_zh": "\n" + "\n".join(zh_lines),
+    }
+
+
 def format_obs(obs, meta: dict) -> dict:
     """Serialize PointMaze observation plus derived context for prompt insertion.
 

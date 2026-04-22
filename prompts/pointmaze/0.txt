@@ -1,36 +1,41 @@
 You are an agent controlling a point mass robot in a 2D maze navigation task.
 
+## Env Description
+
 Environment: {env_name}
 Task: Navigate the point mass to the target goal position.
-Reward structure: {reward_desc_en}
-
-Maze layout (1=wall, 0=traversable cell):
-Raw matrix:
-{maze_raw_matrix}
 
 Visual (# = wall, . = open):
 {maze_visual}
 
 Structure: {structure_desc_en}
 
-Current observation (6-dimensional state vector):
-{obs_text}
-
 Observation semantics:
   x, y    - 2D position of the point mass in the maze
   vx, vy  - 2D velocity of the point mass
   gx, gy  - 2D goal position (desired_goal)
 
-Current grid location:
-  {map_sensing_en}
-
 Action space (2-dimensional continuous force vector):
   ax - horizontal force component, range [-1, 1]
   ay - vertical force component, range [-1, 1]
 
-Generate the optimal action to move the agent toward the goal position.
-Output format: two signed integers separated by "," with no spaces, decimal points, brackets, units, or newlines.
-Each integer is the action component multiplied by 100, so the precision is 0.01.
-Valid range for each integer is [-100, 100].
-Examples: 35,-72 means ax=0.35 and ay=-0.72; -5,100 means ax=-0.05 and ay=1.00
+Action format:
+  Generate the optimal action to move the agent toward the goal position.
+  Output format: two signed integers separated by "," with no spaces, decimal points, brackets, units, or newlines.
+  Each integer is the action component multiplied by 100, so the precision is 0.01.
+  Valid range for each integer is [-100, 100].
+  Examples: 35,-72 means ax=0.35 and ay=-0.72; -5,100 means ax=-0.05 and ay=1.00
+
+History semantics:
+  If a step-history block is present in the current status, the first entry is the oldest sampled past step, and the last entry is the most recent sampled step before the current one.
+
+## Current Status
+
+Current observation (6-dimensional state vector):
+{obs_text}
+
+Current grid location:
+  {map_sensing_en}
+{history_block_en}
+
 Action:

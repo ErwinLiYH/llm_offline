@@ -1,9 +1,16 @@
-{env_name} | {reward_desc_en}
+## Env Description
+
+{env_name}
 Maze ({maze_shape}, # = wall):
 {maze_visual}
+If a step-history block is present in the current status, the first entry is the oldest sampled past step, and the last entry is the most recent sampled step before the current one.
+Output action [ax, ay] as two signed integers separated by "," with no spaces, like 35,-72.
+Each integer equals the action component multiplied by 100, so the precision is 0.01 and the valid integer range is [-100, 100]. No extra text.
+
+## Current Status
+
 State (x, y: position; vx, vy: velocity; gx, gy: goal position):
 {obs_text}
 Current grid location: {map_sensing_en}
-Output action [ax, ay] as two signed integers separated by "," with no spaces, like 35,-72.
-Each integer equals the action component multiplied by 100, so the precision is 0.01 and the valid integer range is [-100, 100]. No extra text.
+{history_block_en}
 Action:

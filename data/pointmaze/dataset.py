@@ -35,6 +35,8 @@ class PointMazeDataset(BaseOfflineDataset):
         max_data_num: int | None = None,
         prompt_template_count: int = 1,
         train_data_ratio: float = DEFAULT_TRAIN_DATA_RATIO,
+        history_num: int = 0,
+        history_stride: int = 1,
     ):
         super().__init__()
         self.variant = variant
@@ -46,6 +48,8 @@ class PointMazeDataset(BaseOfflineDataset):
         self.max_data_num = max_data_num
         self.prompt_template_count = prompt_template_count
         self.train_data_ratio = train_data_ratio
+        self.history_num = history_num
+        self.history_stride = history_stride
 
         self._local = threading.local()
         self._samples: list[dict] = []
@@ -59,7 +63,8 @@ class PointMazeDataset(BaseOfflineDataset):
         if self.cache_dir is None:
             return None
         fname = (
-            f"pointmaze-{variant}-{split}-prompts{self.prompt_template_count}-{self._split_tag()}.pkl"
+            f"pointmaze-{variant}-{split}-prompts{self.prompt_template_count}-"
+            f"hist{self.history_num}-stride{self.history_stride}-{self._split_tag()}.pkl"
         )
         return os.path.join(self.cache_dir, fname)
 
@@ -79,6 +84,10 @@ class PointMazeDataset(BaseOfflineDataset):
                 "Invalid train_data_ratio: expected 0 < train_data_ratio < 1, "
                 f"got train_data_ratio={self.train_data_ratio}"
             )
+        if self.history_num < 0:
+            raise ValueError(f"history_num must be >= 0, got {self.history_num}")
+        if self.history_stride < 1:
+            raise ValueError(f"history_stride must be >= 1, got {self.history_stride}")
 
         meta = POINTMAZE_VARIANTS[variant]
         dataset = minari.load_dataset(meta["dataset_id"], download=True)
@@ -120,10 +129,26 @@ class PointMazeDataset(BaseOfflineDataset):
                     "observation": obs,
                     "desired_goal": goal,
                 }
-                obs_payload = formatting.format_obs(obs, prompt_vars)
                 action_text = formatting.format_action(action)
+                history_entries = []
+                if self.history_num > 0:
+                    history_indices = []
+                    hist_idx = t - 1
+                    while hist_idx >= 0 and len(history_indices) < self.history_num:
+                        history_indices.append(hist_idx)
+                        hist_idx -= self.history_stride
+                    history_indices.reverse()
+                    for hist_t in history_indices:
+                        history_entries.append(
+                            {
+                                "observation": obs_arr[hist_t].astype(np.float32),
+                                "action_text": formatting.format_action(actions[hist_t].astype(np.float32)),
+                            }
+                        )
+                obs_payload = formatting.format_obs(obs, prompt_vars)
+                history_payload = formatting.format_history(history_entries, prompt_vars)
                 for template in templates:
-                    prompt = render_template(template, prompt_vars, **obs_payload)
+                    prompt = render_template(template, prompt_vars, **obs_payload, **history_payload)
                     token_sample = self._tokenize(prompt, action_text)
                     text_record = {"prompt": prompt, "action": action_text}
                     results.append((text_record, token_sample))

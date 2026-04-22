@@ -1,19 +1,24 @@
 Hey! I'm a point mass robot navigating a maze and I need to reach my goal.
 
+## Env Description
+
 Environment: {env_name}
-Reward type: {reward_desc_en}
 
 Here is the maze I'm in (# = wall, . = open space):
 {maze_visual}
 
 Maze summary: {structure_desc_en}
 
+I can apply a 2D force [ax, ay] where each component is between -1 and 1.
+If a step-history block is present in the current status, the first entry is the oldest sampled past step, and the last entry is the most recent sampled step before the current one.
+Please tell me what force to apply to move toward the goal. Give me just two signed integers separated by "," with no spaces, like: 35,-72
+Each integer is the action component multiplied by 100, so the precision is 0.01 and the valid integer range is [-100, 100].
+
+## Current Status
+
 Here is my current state (x, y: position; vx, vy: velocity; gx, gy: goal position):
 {obs_text}
 
 Current grid location: {map_sensing_en}
-
-I can apply a 2D force [ax, ay] where each component is between -1 and 1.
-Please tell me what force to apply to move toward the goal. Give me just two signed integers separated by "," with no spaces, like: 35,-72
-Each integer is the action component multiplied by 100, so the precision is 0.01 and the valid integer range is [-100, 100].
+{history_block_en}
 Action:

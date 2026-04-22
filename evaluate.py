@@ -214,6 +214,12 @@ def evaluate_variant(
     env_id = meta["env_id"]
     num_episodes = config["num_episodes"]
     parse_retry_limit = config["parse_retry_limit"]
+    history_num = int(config.get("history_num", 0))
+    history_stride = int(config.get("history_stride", 1))
+    if history_num < 0:
+        raise ValueError(f"history_num must be >= 0, got {history_num}")
+    if history_stride < 1:
+        raise ValueError(f"history_stride must be >= 1, got {history_stride}")
 
     env_kwargs = dict(config.get("env_kwargs") or {})
     record_video = bool(config.get("record_video", False))
@@ -243,6 +249,7 @@ def evaluate_variant(
 
     for ep_idx in range(num_episodes):
         obs, info = env.reset()
+        history_buffer = []
         record_this_episode = record_video and ep_idx in video_episode_index_set
         episode_frames = [] if record_this_episode else None
 
@@ -256,10 +263,22 @@ def evaluate_variant(
         truncated = False
 
         while not (terminated or truncated):
+            if history_num > 0:
+                sampled_history = []
+                hist_idx = len(history_buffer) - 1
+                while hist_idx >= 0 and len(sampled_history) < history_num:
+                    sampled_history.append(history_buffer[hist_idx])
+                    hist_idx -= history_stride
+                sampled_history.reverse()
+            else:
+                sampled_history = []
+            history_payload = formatter.format_history(sampled_history, meta["prompt_vars"])
             obs_payload = formatter.format_obs(obs, meta["prompt_vars"])
-            prompt = render_template(template, meta["prompt_vars"], **obs_payload)
+            prompt = render_template(template, meta["prompt_vars"], **obs_payload, **history_payload)
 
             action = None
+            executed_action_text = None
+            current_obs_vec = obs["observation"].astype(np.float32)
             for _attempt in range(parse_retry_limit + 1):
                 t0 = time.perf_counter()
                 generated = generate_action(model, tokenizer, prompt, device)
@@ -268,14 +287,22 @@ def evaluate_variant(
                 parsed_action, success = formatter.parse_action(generated)
                 if success and formatter.validate_action(parsed_action):
                     action = np.clip(parsed_action, -1.0, 1.0)
+                    executed_action_text = formatter.format_action(action)
                     break
                 total_parse_failures += 1
 
             if action is None:
                 action = np.zeros(env.action_space.shape, dtype=np.float32)
+                executed_action_text = formatter.format_action(action)
                 total_fallbacks += 1
 
             obs, reward, terminated, truncated, info = env.step(action)
+            history_buffer.append(
+                {
+                    "observation": current_obs_vec,
+                    "action_text": executed_action_text,
+                }
+            )
 
             if episode_frames is not None:
                 _capture_render_frame(env, episode_frames)
