@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Changelog"
+  short_description: "Update CHANGELOG.md and related project docs"
+  default_prompt: "Use this skill when updating CHANGELOG.md for recent llm_offline project changes and checking whether AGENTS.md or DESIGN.md also need updates."
