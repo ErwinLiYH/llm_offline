@@ -9,7 +9,14 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-TQDM_BAR_FORMAT = "{desc}: {percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+TQDM_BAR_FORMAT = "{desc} {percentage:3.0f}% {n_fmt}/{total_fmt} elapsed={elapsed} eta={remaining}"
+TQDM_KWARGS = {
+    "bar_format": TQDM_BAR_FORMAT,
+    "dynamic_ncols": False,
+    "ncols": 100,
+    "nrows": 100,
+    "mininterval": 5.0,
+}
 
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
@@ -161,8 +168,7 @@ class PointMazeDataset(BaseOfflineDataset):
                     executor.map(process_episode, episodes),
                     total=len(episodes),
                     desc=f"Tokenizing [{split}]",
-                    dynamic_ncols=True,
-                    bar_format=TQDM_BAR_FORMAT,
+                    **TQDM_KWARGS,
                 )
             )
 
