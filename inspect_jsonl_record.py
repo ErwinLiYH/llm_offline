@@ -9,6 +9,8 @@ from __future__ import annotations
 import argparse
 import json
 
+from utils.record_format import format_prompt_action_text
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -29,7 +31,7 @@ def main():
             record = json.loads(line)
             prompt = record.get("prompt", "")
             action = record.get("action", "")
-            print(f"Prompt:\n{prompt}\n\nAction:\n{action}")
+            print(format_prompt_action_text(prompt, action))
             return
 
     raise IndexError(

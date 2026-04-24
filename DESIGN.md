@@ -298,24 +298,27 @@ dataset_cache/
 
 #### 3. 评估结果路径
 
-评估结果统一保存在 `results/` 下，路径编码了"用哪个模型"、"训练背景"、"在哪个变种上评估"三层信息：
+评估结果统一保存在 `result_root`（默认 `results/`）下，路径编码了"用哪个模型"、"训练背景"、"是训练期还是独立评估"、"在哪个变种上评估"四层信息：
 
 ```
-results/
+<result_root>/
 └── <model_slug>/
     └── train=<env_family>-<selection_tag>/
         └── exp=<experiment_id>/
-            └── eval=<env_family>-<eval_tag>/
-                ├── results.json          # evaluate.py 完整评估结果
-                ├── result_ep1.json       # 训练 epoch 1 结束后的中间评估
-                ├── result_ep2.json
-                └── ...
-```
-
-standalone `evaluate.py` 会在 `eval=<...>` 后附加 `#<eval_uuid>`，例如：
-
-```text
-results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/eval=pointmaze-open#<eval_uuid>/results.json
+            ├── epoch_<n>/
+            │   └── eval=<env_family>-<variant>/
+            │       ├── result.json
+            │       └── episode_<n>/
+            │           ├── rollout.gif|mp4
+            │           └── steps/
+            │               └── step_<n>.txt
+            └── standalone_<eval_uuid>/
+                └── eval=<env_family>-<variant>/
+                    ├── result.json
+                    └── episode_<n>/
+                        ├── rollout.gif|mp4
+                        └── steps/
+                            └── step_<n>.txt
 ```
 
 **路径字段说明：**
@@ -324,20 +327,20 @@ results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/eval=pointmaze-open#
 |------|------|------|
 | `model_slug` | 基座模型名 | `Qwen3-0.6B` |
 | `selection_tag` | 训练选择标签 | `open`、`all`、`except-large+large-dense` |
-| `eval_tag` | 评估选择标签；训练期通常是单个变种名，standalone eval 可能是 `all` / `except-...` 并附加 `#<eval_uuid>` | `open`、`umaze`、`all#<eval_uuid>` |
+| `result_root` | 结果根目录配置项 | `results`、`resultsV2` |
+| `variant` | 当前评估变种名 | `open`、`umaze`、`medium` |
+| `epoch_<n>` / `standalone_<eval_uuid>` | 区分训练期中间评估与独立评估运行 | `epoch_2`、`standalone_ab12cd34` |
 
 **示例路径：**
 
 | 场景 | 路径 |
 |------|------|
-| 训练 open 变种后评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/eval=pointmaze-open/results.json` |
-| 训练 open 变种 epoch 2 中间评估 | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/eval=pointmaze-open/result_ep2.json` |
-| 联合训练所有变种后评估 umaze | `results/Qwen3-0.6B/train=pointmaze-all/exp=<experiment_id>/eval=pointmaze-umaze/results.json` |
-| except 模式排除 `large` 和 `large-dense` 后评估 medium | `results/Qwen3-0.6B/train=pointmaze-except-large+large-dense/exp=<experiment_id>/eval=pointmaze-medium/results.json` |
-| standalone 评估所有变种 | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/eval=pointmaze-all#<eval_uuid>/results.json` |
-| 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/eval=pointmaze-open#<eval_uuid>/results.json` |
+| 训练 open 变种 epoch 2 中间评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/epoch_2/eval=pointmaze-open/result.json` |
+| except 模式排除 `large` 和 `large-dense` 后训练，并在 epoch 1 评估 medium | `results/Qwen3-0.6B/train=pointmaze-except-large+large-dense/exp=<experiment_id>/epoch_1/eval=pointmaze-medium/result.json` |
+| standalone 评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
+| 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，确保训练中间评估（`result_epN.json`）与最终评估（`results.json`）落在对应训练实验目录下，方便对比。standalone `evaluate.py` 会在 `eval=<...>` 后追加 `#<eval_uuid>`，用于区分不同次独立评估运行。`selection_tag` 已经包含训练集合语义，因此结果目录也不再单独重复 `train_mode`。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 区分不同轮次，standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数。
 
 **结果文件字段：**
 

@@ -22,6 +22,7 @@ env/
 # Model checkpoints & results
 checkpoints/
 results/
+resultsV2/
 
 # Datasets / caches
 *.hdf5

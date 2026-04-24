@@ -77,14 +77,15 @@ To add a new environment family:
   - If `eval_mode` is omitted, epoch eval follows the resolved training selection.
   - `eval_variants` also uses list semantics; under `except` it is an exclusion list.
 - Multi-variant training, including `all` and `except`, uses weighted sampling by variant sample count.
-- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, how many prompt templates are used for dataset construction via `prompt_template_count`, and history prompt settings via `history_num` / `history_stride`.
+- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, how many prompt templates are used for dataset construction via `prompt_template_count`, history prompt settings via `history_num` / `history_stride`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/`.
   - `selection_tag` is the single variant name, `all`, or `except-<excluded variants joined by +>`.
-- Training-time eval results live under `results/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/eval=<env_family>-<variant>/`.
-- Standalone eval results append an eval-run suffix: `eval=<env_family>-<eval_selection_tag>#<eval_uuid>/results.json`.
+- Training-time eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/epoch_<n>/eval=<env_family>-<variant>/result.json`.
+- Standalone eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/standalone_<eval_uuid>/eval=<env_family>-<variant>/result.json`.
 - `eval.yaml` uses the same list-based variant selection semantics as training via `eval_mode` + `variants`; legacy `variant: <name|all>` is still accepted for compatibility.
 - `eval.yaml` has its own `history_num` / `history_stride` for standalone eval; training-time epoch eval reuses the training config's history settings.
-- `eval.yaml` can record selected rollouts via `record_video`; `video_episode_index` accepts an int or list, and `record_all: true` records every episode. Default output format is `gif`, while `mp4` requires an ffmpeg backend. Headless MuJoCo recording should use `mujoco_gl: egl`.
+- Eval step logs are written by default under each `eval=<...>/episode_<n>/steps/`, using the same `Prompt:` / `Action:` text layout as `inspect_jsonl_record.py` plus executed-action metadata.
+- Eval videos are stored next to the step-log directory inside each `episode_<n>/`; `video_episode_index` accepts an int or list, and `record_all: true` records every episode. Default output format is `gif`, while `mp4` requires an ffmpeg backend. Headless MuJoCo recording should use `mujoco_gl: egl`.
 
 ## Out Of Scope
 

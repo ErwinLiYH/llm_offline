@@ -21,6 +21,7 @@ from data.registry import get_formatter
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from model.policy import load_from_checkpoint
 from utils.prompt_loader import load_templates, render_template
+from utils.record_format import format_eval_step_text
 from utils.variant_selection import get_available_variants, resolve_selection
 
 
@@ -53,22 +54,16 @@ def resolve_standalone_eval_selection(config: dict):
         available_variants=available_variants,
         field_name="variants",
     )
-    config["resolved_eval_mode"] = selection.mode
-    config["resolved_eval_variants"] = selection.selected_variants
-    config["eval_selection_tag"] = selection.selection_tag
-    config["variants"] = selection.configured_variants
     return selection
 
 
 
-def get_results_dir(config: dict, eval_selection_tag: str, standalone_eval_id: str | None = None) -> str:
-    """Build results directory path encoding model, training context, and eval context."""
+def get_results_base_dir(config: dict) -> str:
+    """Build the base results directory from model/training context only."""
     from model.policy import get_model_slug
 
     model_path = config["model_path"]
-    eval_tag = f"eval={config['env_family']}-{eval_selection_tag}"
-    if standalone_eval_id:
-        eval_tag = f"{eval_tag}#{standalone_eval_id}"
+    result_root = config.get("result_root", "results")
     norm_path = model_path.replace("\\", "/").rstrip("/")
     parts = [part for part in norm_path.split("/") if part]
 
@@ -79,11 +74,47 @@ def get_results_dir(config: dict, eval_selection_tag: str, standalone_eval_id: s
             env_family, model_slug, train_selection_tag, experiment_id, _checkpoint_tag = ckpt_parts[-5:]
             train_tag = f"train={env_family}-{train_selection_tag}"
             exp_tag = f"exp={experiment_id}"
-            return os.path.join("results", model_slug, train_tag, exp_tag, eval_tag)
+            return os.path.join(result_root, model_slug, train_tag, exp_tag)
 
     model_slug = get_model_slug(model_path)
     train_tag = "train=pretrained"
-    return os.path.join("results", model_slug, train_tag, eval_tag)
+    return os.path.join(result_root, model_slug, train_tag)
+
+
+def get_standalone_results_dir(base_results_dir: str, standalone_eval_id: str) -> str:
+    return os.path.join(base_results_dir, f"standalone_{standalone_eval_id}")
+
+
+def get_variant_results_dir(parent_results_dir: str, env_family: str, variant: str) -> str:
+    return os.path.join(parent_results_dir, f"eval={env_family}-{variant}")
+
+
+def get_episode_dir(artifacts_dir: str, episode_index: int) -> str:
+    return os.path.join(artifacts_dir, f"episode_{episode_index + 1:04d}")
+
+
+def write_step_log(
+    episode_dir: str,
+    step_index: int,
+    *,
+    prompt: str,
+    action_text: str,
+    executed_action: str,
+    parse_status: str,
+    attempt_count: int,
+):
+    steps_dir = os.path.join(episode_dir, "steps")
+    os.makedirs(steps_dir, exist_ok=True)
+    step_path = os.path.join(steps_dir, f"step_{step_index + 1:04d}.txt")
+    payload = format_eval_step_text(
+        prompt,
+        action_text,
+        executed_action=executed_action,
+        parse_status=parse_status,
+        attempt_count=attempt_count,
+    )
+    with open(step_path, "w", encoding="utf-8") as f:
+        f.write(payload)
 
 
 
@@ -207,7 +238,7 @@ def evaluate_variant(
     tokenizer,
     device: torch.device,
     template: str,
-    video_paths: dict[int, str] | None = None,
+    variant_results_dir: str | None = None,
 ) -> dict:
     formatter = get_formatter(config["env_family"])
     meta = POINTMAZE_VARIANTS[variant]
@@ -226,6 +257,7 @@ def evaluate_variant(
     video_episode_indices = _resolve_video_episode_indices(config, num_episodes)
     video_episode_index_set = set(video_episode_indices)
     video_fps = int(config.get("video_fps", 20))
+    record_step_logs = bool(config.get("record_step_logs", True))
 
     if record_video:
         render_mode = env_kwargs.get("render_mode")
@@ -246,12 +278,19 @@ def evaluate_variant(
     total_action_time = 0.0
     total_actions = 0
     saved_video_paths = []
+    episode_artifact_dirs = []
 
     for ep_idx in range(num_episodes):
         obs, info = env.reset()
         history_buffer = []
         record_this_episode = record_video and ep_idx in video_episode_index_set
         episode_frames = [] if record_this_episode else None
+        episode_dir = None
+
+        if variant_results_dir is not None:
+            episode_dir = get_episode_dir(variant_results_dir, ep_idx)
+            os.makedirs(episode_dir, exist_ok=True)
+            episode_artifact_dirs.append(episode_dir)
 
         if episode_frames is not None:
             _capture_render_frame(env, episode_frames)
@@ -278,12 +317,16 @@ def evaluate_variant(
 
             action = None
             executed_action_text = None
+            generated_attempts = []
+            attempt_count = 0
             current_obs_vec = obs["observation"].astype(np.float32)
             for _attempt in range(parse_retry_limit + 1):
+                attempt_count += 1
                 t0 = time.perf_counter()
                 generated = generate_action(model, tokenizer, prompt, device)
                 total_action_time += time.perf_counter() - t0
                 total_actions += 1
+                generated_attempts.append(generated)
                 parsed_action, success = formatter.parse_action(generated)
                 if success and formatter.validate_action(parsed_action):
                     action = np.clip(parsed_action, -1.0, 1.0)
@@ -295,6 +338,24 @@ def evaluate_variant(
                 action = np.zeros(env.action_space.shape, dtype=np.float32)
                 executed_action_text = formatter.format_action(action)
                 total_fallbacks += 1
+                parse_status = "fallback"
+            else:
+                parse_status = "success"
+
+            generated_text = "\n\n".join(
+                f"[Attempt {idx + 1}]\n{text}" for idx, text in enumerate(generated_attempts)
+            )
+
+            if record_step_logs and episode_dir is not None:
+                write_step_log(
+                    episode_dir,
+                    ep_steps,
+                    prompt=prompt,
+                    action_text=generated_text,
+                    executed_action=executed_action_text,
+                    parse_status=parse_status,
+                    attempt_count=attempt_count,
+                )
 
             obs, reward, terminated, truncated, info = env.step(action)
             history_buffer.append(
@@ -313,12 +374,12 @@ def evaluate_variant(
             if terminated:
                 ep_success = True
 
-        if episode_frames is not None and video_paths is not None:
-            video_path = video_paths.get(ep_idx)
-            if video_path is not None:
-                _save_video(episode_frames, video_path, video_fps)
-                saved_video_paths.append(video_path)
-                print(f"  [{variant}] saved video: {video_path}")
+        if episode_frames is not None and episode_dir is not None:
+            video_ext = str(config.get("video_format", "gif")).lstrip(".")
+            video_path = os.path.join(episode_dir, f"rollout.{video_ext}")
+            _save_video(episode_frames, video_path, video_fps)
+            saved_video_paths.append(video_path)
+            print(f"  [{variant}] saved video: {video_path}")
 
         episode_returns.append(ep_return)
         episode_successes.append(ep_success)
@@ -346,6 +407,8 @@ def evaluate_variant(
         "mean_action_time_ms": round(mean_action_time_ms, 2),
         "video_path": saved_video_paths[0] if len(saved_video_paths) == 1 else None,
         "video_paths": saved_video_paths,
+        "episode_artifact_dirs": episode_artifact_dirs,
+        "episode_artifacts_dir": variant_results_dir,
     }
 
 
@@ -374,23 +437,17 @@ def main():
     standalone_eval_id = uuid.uuid4().hex[:8]
     print(f"[eval] Eval ID: {standalone_eval_id}")
 
-    results_dir = get_results_dir(config, eval_selection.selection_tag, standalone_eval_id=standalone_eval_id)
-    os.makedirs(results_dir, exist_ok=True)
+    base_results_dir = get_results_base_dir(config)
+    run_results_dir = get_standalone_results_dir(base_results_dir, standalone_eval_id)
+    os.makedirs(run_results_dir, exist_ok=True)
 
-    all_results = []
     for variant in eval_selection.selected_variants:
         print(f"\n[eval] Evaluating variant: {variant}")
         templates = load_templates(env_family)
         template = templates[0]
-
-        video_paths = None
-        if config.get("record_video", False):
-            video_ext = str(config.get("video_format", "gif")).lstrip(".")
-            episode_indices = _resolve_video_episode_indices(config, int(config["num_episodes"]))
-            video_paths = {
-                ep_idx: os.path.join(results_dir, f"{variant}-episode{ep_idx + 1}.{video_ext}")
-                for ep_idx in episode_indices
-            }
+        results_dir = get_variant_results_dir(run_results_dir, env_family, variant)
+        os.makedirs(results_dir, exist_ok=True)
+        result_path = os.path.join(results_dir, "result.json")
 
         result = evaluate_variant(
             config,
@@ -399,20 +456,18 @@ def main():
             tokenizer,
             device,
             template,
-            video_paths=video_paths,
+            variant_results_dir=results_dir,
         )
-        all_results.append(result)
+        result["result_path"] = result_path
         print(
             f"[eval] {variant}: mean_return={result['mean_return']:.4f}, "
             f"success_rate={result['success_rate']:.2%}, "
             f"parse_failures={result['total_parse_failures']}, "
             f"fallbacks={result['total_fallbacks']}"
         )
-
-    results_path = os.path.join(results_dir, "results.json")
-    with open(results_path, "w") as f:
-        json.dump(all_results, f, indent=2)
-    print(f"\n[eval] Results saved to: {results_path}")
+        with open(result_path, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"[eval] Results saved to: {result_path}")
 
 
 if __name__ == "__main__":

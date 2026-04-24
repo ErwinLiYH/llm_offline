@@ -299,3 +299,21 @@ type: project
 - `utils/train_variant_selection.py` 更名为 `utils/variant_selection.py`，并扩展为 train / standalone eval 共用
 - `evaluate.py` 新增 `eval_mode` + 列表 `variants` 支持，语义与训练侧一致；保留旧 `variant: <name|all>` 兼容读取
 - PointMaze 动作文本格式改为紧凑的百分位整数：由 `0.35, -0.72` 改为 `35,-72`；同步更新 formatter、decoder、shared prompts 和相关文档
+
+## evaluate.py / train.py / config.yaml / eval.yaml（2026-04-24）
+
+**eval 结果目录重排，并新增可配置结果根目录：**
+- 新增 `result_root` 配置项；`config.yaml` 和 `eval.yaml` 都可独立指定 eval 结果根目录，默认仍为 `results`
+- 训练期 eval 结果现在落在 `.../exp=<experiment_id>/epoch_<n>/eval=<env_family>-<variant>/result.json`
+- standalone `evaluate.py` 结果现在落在 `.../exp=<experiment_id>/standalone_<eval_uuid>/eval=<env_family>-<variant>/result.json`
+- standalone eval 的目录粒度改为单个 `variant`，不再使用 `eval=<selection_tag>#<eval_uuid>` 作为最终结果目录
+
+**eval 新增逐步对话日志与按 episode 归档的视频：**
+- `evaluate.py` 和训练期 epoch eval 现在都会默认保存逐步文本日志，可通过 `record_step_logs` 开关关闭
+- 每个 `episode_<n>` 目录下新增 `steps/step_<n>.txt`，记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数
+- rollout 视频现在与 `steps/` 同级保存在对应 `episode_<n>` 目录下，不再直接平铺到 eval 根目录
+- `inspect_jsonl_record.py` 的 `Prompt:` / `Action:` 文本格式被抽成共享 helper，eval step log 复用同一基础格式
+
+**训练期 eval 接入独立 eval 的视频配置：**
+- `config.yaml` 新增训练期 eval 可用的 `record_video`、`record_all`、`video_episode_index`、`video_fps`、`video_format`、`mujoco_gl`
+- `train.py` 的 epoch eval 现在会透传这些配置给 `evaluate_variant(...)`，训练过程中也能按配置录制视频

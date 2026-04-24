@@ -130,14 +130,25 @@ def get_checkpoint_dir(config: dict, selection_tag: str, epoch: int | None = Non
 
 
 
-def get_eval_results_dir(config: dict, train_selection_tag: str, variant: str) -> str:
+def get_train_results_base_dir(config: dict, train_selection_tag: str) -> str:
     slug = get_model_slug(config["model_name"])
     env_family = config["env_family"]
     experiment_id = config["experiment_id"]
+    result_root = config.get("result_root", "results")
     train_tag = f"train={env_family}-{train_selection_tag}"
     exp_tag = f"exp={experiment_id}"
-    eval_tag = f"eval={env_family}-{variant}"
-    return os.path.join("results", slug, train_tag, exp_tag, eval_tag)
+    return os.path.join(result_root, slug, train_tag, exp_tag)
+
+
+def get_eval_epoch_results_dir(config: dict, train_selection_tag: str, epoch: int) -> str:
+    return os.path.join(get_train_results_base_dir(config, train_selection_tag), f"epoch_{epoch}")
+
+
+def get_eval_variant_results_dir(config: dict, train_selection_tag: str, variant: str, epoch: int) -> str:
+    return os.path.join(
+        get_eval_epoch_results_dir(config, train_selection_tag, epoch),
+        f"eval={config['env_family']}-{variant}",
+    )
 
 
 
@@ -219,7 +230,7 @@ def build_data_loaders(config: dict, tokenizer, selected_variants: list[str]):
 
 def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, variants, epoch, train_loss, val_loss):
     import gymnasium_robotics  # noqa: F401
-    from evaluate import evaluate_variant
+    from evaluate import configure_mujoco_gl, evaluate_variant
     from utils.prompt_loader import load_templates
 
     eval_config = {
@@ -229,18 +240,39 @@ def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, 
         "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
         "history_num": config.get("history_num", 0),
         "history_stride": config.get("history_stride", 1),
+        "record_video": config.get("record_video", False),
+        "record_all": config.get("record_all", False),
+        "video_episode_index": config.get("video_episode_index", 0),
+        "video_fps": config.get("video_fps", 20),
+        "video_format": config.get("video_format", "gif"),
+        "mujoco_gl": config.get("mujoco_gl"),
+        "record_step_logs": config.get("record_step_logs", True),
     }
 
+    configure_mujoco_gl(eval_config)
     model.eval()
     FastLanguageModel.for_inference(model)
 
     for variant in variants:
         print(f"[eval] Epoch {epoch} | variant: {variant}")
         templates = load_templates(config["env_family"])
-        result = evaluate_variant(eval_config, variant, model, tokenizer, device, templates[0])
+        results_dir = get_eval_variant_results_dir(config, train_selection_tag, variant, epoch)
+        os.makedirs(results_dir, exist_ok=True)
+        result_path = os.path.join(results_dir, "result.json")
+
+        result = evaluate_variant(
+            eval_config,
+            variant,
+            model,
+            tokenizer,
+            device,
+            templates[0],
+            variant_results_dir=results_dir,
+        )
         result["train_loss"] = train_loss
         result["val_loss"] = val_loss
         result["experiment_id"] = config["experiment_id"]
+        result["result_path"] = result_path
 
         print(
             f"[eval] {variant}: mean_return={result['mean_return']:.4f}, "
@@ -249,9 +281,6 @@ def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, 
             f"train_loss={train_loss:.4f}, val_loss={val_loss:.4f}"
         )
 
-        results_dir = get_eval_results_dir(config, train_selection_tag, variant)
-        os.makedirs(results_dir, exist_ok=True)
-        result_path = os.path.join(results_dir, f"result_ep{epoch}.json")
         with open(result_path, "w") as f:
             json.dump(result, f, indent=2)
         print(f"[eval] Saved: {result_path}")
