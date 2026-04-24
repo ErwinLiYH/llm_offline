@@ -328,3 +328,17 @@ type: project
 
 **dataset cache 行为切换到 chat template 版本：**
 - PointMaze dataset 默认按 chat-template 方式构造 tokenized cache；旧的 plain-text cache 需要手动清理后重建
+
+## train.py / data/pointmaze/dataset.py / config.yaml（2026-04-24）
+
+**offline dataset 新增按 episode 子采样与跨 variant 训练 quota 平衡：**
+- `config.yaml` 新增 `episode_keep_ratio`、`balance_variant_episode_count`、`sampling_seed`
+- PointMaze offline dataset 不再按前缀切分 episode；现在先随机无放回抽样 train episodes，再从剩余 episodes 中按 `train_data_ratio` 反推 quota 抽样 val
+- 极小 `episode_keep_ratio` 仍至少保留 1 个 train episode；若剩余 episodes 不足 val quota，会自动降级为“使用全部剩余 episodes”并打印原因
+- 多 variant 训练时，`train.py` 会先统计各 variant 的原始 episode 数和初始 train quota；若 `balance_variant_episode_count=true`，则统一裁到最小 quota，并打印全局平衡摘要
+- 每个 variant 的 dataset 构建会打印原始 episode/step 数、初始 train quota、是否被平衡裁小、最终 train/val episode 数和 step 数
+
+**dataset cache 行为保持不变：**
+- cache 文件名不包含这三个新配置，命中现有 `.pkl` 时仍直接读取旧 cache
+- 命中 cache 时会明确打印 `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed` 本次未生效
+- `max_data_num` 仍只在 cache 读取或新构建完成后做样本级内存截断，不替代 episode 级抽样

@@ -2,6 +2,8 @@ import json
 import os
 import pickle
 import threading
+import hashlib
+import math
 from concurrent.futures import ThreadPoolExecutor
 
 import minari
@@ -27,6 +29,105 @@ from utils.chat_template import build_generation_prompt, build_training_conversa
 from utils.prompt_loader import load_templates, render_template
 
 DEFAULT_TRAIN_DATA_RATIO = 0.9
+DEFAULT_EPISODE_KEEP_RATIO = 1.0
+DEFAULT_SAMPLING_SEED = 0
+
+
+def _load_variant_episodes(variant: str):
+    meta = POINTMAZE_VARIANTS[variant]
+    dataset = minari.load_dataset(meta["dataset_id"], download=True)
+    episodes = list(dataset.iterate_episodes())
+    step_counts = [len(episode.actions) for episode in episodes]
+    return meta, episodes, step_counts
+
+
+def _compute_train_episode_target(total_episodes: int, episode_keep_ratio: float) -> int:
+    if total_episodes < 1:
+        raise ValueError("Offline dataset contains no episodes.")
+    if not (0.0 < episode_keep_ratio <= 1.0):
+        raise ValueError(
+            "Invalid episode_keep_ratio: expected 0 < episode_keep_ratio <= 1, "
+            f"got episode_keep_ratio={episode_keep_ratio}"
+        )
+    return min(total_episodes, max(1, math.floor(total_episodes * episode_keep_ratio)))
+
+
+def _variant_sampling_seed(variant: str, sampling_seed: int) -> int:
+    digest = hashlib.sha256(f"{variant}:{sampling_seed}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big", signed=False)
+
+
+def collect_variant_episode_stats(variant: str, episode_keep_ratio: float) -> dict:
+    _, episodes, step_counts = _load_variant_episodes(variant)
+    total_episodes = len(episodes)
+    total_steps = sum(step_counts)
+    initial_train_target = _compute_train_episode_target(total_episodes, episode_keep_ratio)
+    return {
+        "variant": variant,
+        "total_episodes": total_episodes,
+        "total_steps": total_steps,
+        "initial_train_target": initial_train_target,
+    }
+
+
+def select_variant_episode_indices(
+    variant: str,
+    train_data_ratio: float,
+    episode_keep_ratio: float,
+    sampling_seed: int,
+    balanced_train_target: int | None = None,
+) -> dict:
+    if not (0.0 < train_data_ratio < 1.0):
+        raise ValueError(
+            "Invalid train_data_ratio: expected 0 < train_data_ratio < 1, "
+            f"got train_data_ratio={train_data_ratio}"
+        )
+    if not isinstance(sampling_seed, int):
+        raise ValueError(f"sampling_seed must be an int, got {type(sampling_seed).__name__}")
+
+    _, episodes, step_counts = _load_variant_episodes(variant)
+    total_episodes = len(episodes)
+    total_steps = sum(step_counts)
+    initial_train_target = _compute_train_episode_target(total_episodes, episode_keep_ratio)
+    train_target = initial_train_target if balanced_train_target is None else balanced_train_target
+    train_target = min(total_episodes, train_target)
+    if train_target < 1:
+        raise ValueError(f"train_target must be >= 1 for variant={variant}, got {train_target}")
+
+    val_target = math.floor(train_target * (1.0 - train_data_ratio) / train_data_ratio)
+    rng = np.random.default_rng(_variant_sampling_seed(variant, sampling_seed))
+    permutation = rng.permutation(total_episodes).tolist()
+    train_indices = sorted(permutation[:train_target])
+    remaining_indices = permutation[train_target:]
+    actual_val_target = min(val_target, len(remaining_indices))
+    val_indices = sorted(remaining_indices[:actual_val_target])
+
+    train_steps = sum(step_counts[idx] for idx in train_indices)
+    val_steps = sum(step_counts[idx] for idx in val_indices)
+
+    val_shortfall_reason = None
+    if actual_val_target < val_target:
+        val_shortfall_reason = (
+            f"requested {val_target} val episodes but only {len(remaining_indices)} remained "
+            f"after reserving {train_target} train episodes"
+        )
+
+    return {
+        "variant": variant,
+        "episodes": episodes,
+        "total_episodes": total_episodes,
+        "total_steps": total_steps,
+        "initial_train_target": initial_train_target,
+        "balanced_train_target": balanced_train_target,
+        "train_indices": train_indices,
+        "val_indices": val_indices,
+        "train_episode_count": len(train_indices),
+        "val_episode_count": len(val_indices),
+        "train_steps": train_steps,
+        "val_steps": val_steps,
+        "val_target": val_target,
+        "val_shortfall_reason": val_shortfall_reason,
+    }
 
 
 class PointMazeDataset(BaseOfflineDataset):
@@ -43,6 +144,10 @@ class PointMazeDataset(BaseOfflineDataset):
         max_data_num: int | None = None,
         prompt_template_count: int = 1,
         train_data_ratio: float = DEFAULT_TRAIN_DATA_RATIO,
+        episode_keep_ratio: float = DEFAULT_EPISODE_KEEP_RATIO,
+        balance_variant_episode_count: bool = False,
+        balanced_train_episode_count: int | None = None,
+        sampling_seed: int = DEFAULT_SAMPLING_SEED,
         history_num: int = 0,
         history_stride: int = 1,
     ):
@@ -56,6 +161,10 @@ class PointMazeDataset(BaseOfflineDataset):
         self.max_data_num = max_data_num
         self.prompt_template_count = prompt_template_count
         self.train_data_ratio = train_data_ratio
+        self.episode_keep_ratio = episode_keep_ratio
+        self.balance_variant_episode_count = balance_variant_episode_count
+        self.balanced_train_episode_count = balanced_train_episode_count
+        self.sampling_seed = sampling_seed
         self.history_num = history_num
         self.history_stride = history_stride
 
@@ -80,6 +189,12 @@ class PointMazeDataset(BaseOfflineDataset):
         cache_path = self._cache_path(variant, split)
         if cache_path and os.path.exists(cache_path):
             print(f"[dataset] Loading cached dataset from {cache_path}")
+            print(
+                "[dataset] Cached split bypasses episode sampling settings: "
+                f"episode_keep_ratio={self.episode_keep_ratio}, "
+                f"balance_variant_episode_count={self.balance_variant_episode_count}, "
+                f"sampling_seed={self.sampling_seed}. This run did not apply them."
+            )
             with open(cache_path, "rb") as f:
                 self._samples = pickle.load(f)
             if self.max_data_num is not None:
@@ -92,13 +207,19 @@ class PointMazeDataset(BaseOfflineDataset):
                 "Invalid train_data_ratio: expected 0 < train_data_ratio < 1, "
                 f"got train_data_ratio={self.train_data_ratio}"
             )
+        if not (0.0 < self.episode_keep_ratio <= 1.0):
+            raise ValueError(
+                "Invalid episode_keep_ratio: expected 0 < episode_keep_ratio <= 1, "
+                f"got episode_keep_ratio={self.episode_keep_ratio}"
+            )
+        if not isinstance(self.sampling_seed, int):
+            raise ValueError(f"sampling_seed must be an int, got {type(self.sampling_seed).__name__}")
         if self.history_num < 0:
             raise ValueError(f"history_num must be >= 0, got {self.history_num}")
         if self.history_stride < 1:
             raise ValueError(f"history_stride must be >= 1, got {self.history_stride}")
 
         meta = POINTMAZE_VARIANTS[variant]
-        dataset = minari.load_dataset(meta["dataset_id"], download=True)
         all_templates = load_templates("pointmaze")
         if self.prompt_template_count < 1:
             raise ValueError(
@@ -112,15 +233,39 @@ class PointMazeDataset(BaseOfflineDataset):
         templates = all_templates[: self.prompt_template_count]
         prompt_vars = meta["prompt_vars"]
 
-        all_episodes = list(dataset.iterate_episodes())
-        n_total = len(all_episodes)
-        train_end = max(1, int(n_total * self.train_data_ratio))
-        train_end = min(train_end, n_total - 1)
+        selection = select_variant_episode_indices(
+            variant=variant,
+            train_data_ratio=self.train_data_ratio,
+            episode_keep_ratio=self.episode_keep_ratio,
+            sampling_seed=self.sampling_seed,
+            balanced_train_target=self.balanced_train_episode_count,
+        )
+        all_episodes = selection["episodes"]
+        balanced_target = selection["balanced_train_target"]
+        balance_text = (
+            "not applied"
+            if balanced_target is None
+            else (
+                f"clipped to {selection['train_episode_count']}"
+                if balanced_target < selection["initial_train_target"]
+                else "enabled, unchanged"
+            )
+        )
+        if split == "train":
+            print(
+                f"[dataset] Variant {variant}: total_episodes={selection['total_episodes']}, "
+                f"total_steps={selection['total_steps']}, initial_train_target={selection['initial_train_target']}, "
+                f"balance={balance_text}, final_train_episodes={selection['train_episode_count']}, "
+                f"train_steps={selection['train_steps']}, final_val_episodes={selection['val_episode_count']}, "
+                f"val_steps={selection['val_steps']}"
+            )
+            if selection["val_shortfall_reason"]:
+                print(f"[dataset] Variant {variant}: val fallback -> {selection['val_shortfall_reason']}")
 
         if split == "train":
-            episodes = all_episodes[:train_end]
+            episodes = [all_episodes[idx] for idx in selection["train_indices"]]
         elif split == "val":
-            episodes = all_episodes[train_end:]
+            episodes = [all_episodes[idx] for idx in selection["val_indices"]]
         else:
             raise ValueError(f"Unknown split: {split!r}. Expected 'train' or 'val'.")
 

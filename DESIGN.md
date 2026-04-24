@@ -188,7 +188,7 @@ Action:
 - 如启用历史 prompt，训练数据会在同一 episode 内按 `t-1`、`t-1-history_stride`、... 回溯采样过去 transition，最多取 `history_num` 条，再通过 `format_history(...)` 注入 prompt
 - action 的目标文本由 `formatting.py` 中的 `format_action` 函数生成
 - 训练 tokenization 不再直接编码 `prompt + action_text`；而是将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence
-- train/val 划分在 **episode 级别**进行（`train_data_ratio`，默认 `0.9`，即前 90% episode 用于 train，剩余 10% 用于 val），再展开 timestep，避免同一 episode 数据同时出现在 train 和 val 中
+- train/val 划分在 **episode 级别**进行：先按 `episode_keep_ratio` 随机无放回抽样 train episodes（至少保留 1 条），再按 `train_data_ratio` 反推 val quota，并从剩余 episodes 中随机无放回补足 val，避免同一 episode 同时出现在 train 和 val 中
 - 每个 episode 的第一个 timestep 没有历史；评估 rollout 中也同样如此，只有一步实际动作执行完成后才会写入在线 history buffer
 
 ---
@@ -225,6 +225,9 @@ parse_retry_limit: 3     # action 解析失败时的最大重试次数
 
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
+episode_keep_ratio: 1.0  # 训练 episode 保留比例，只作用于未命中 cache 的 offline dataset 构建
+balance_variant_episode_count: false  # 多 variant 时是否把 train episode quota 对齐到最小 variant
+sampling_seed: 0         # 控制 episode 随机抽样的可复现性
 ```
 
 对 PointMaze 环境族，共训练以下 9 个模型：
@@ -282,10 +285,10 @@ Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置
 
 ```
 dataset_cache/
-├── <env_family>-<variant>-train-prompts<N>-split<train_pct>-<val_pct>.pkl    # 二进制缓存，训练集 token 数据
-├── <env_family>-<variant>-train-prompts<N>-split<train_pct>-<val_pct>.jsonl  # 可读文本副本（prompt + action 原文）
-├── <env_family>-<variant>-val-prompts<N>-split<train_pct>-<val_pct>.pkl
-└── <env_family>-<variant>-val-prompts<N>-split<train_pct>-<val_pct>.jsonl
+├── <env_family>-<variant>-train-prompts<N>-hist<H>-stride<S>-split<train_pct>.pkl    # 二进制缓存，训练集 token 数据
+├── <env_family>-<variant>-train-prompts<N>-hist<H>-stride<S>-split<train_pct>.jsonl  # 可读文本副本（prompt + action 原文）
+├── <env_family>-<variant>-val-prompts<N>-hist<H>-stride<S>-split<train_pct>.pkl
+└── <env_family>-<variant>-val-prompts<N>-hist<H>-stride<S>-split<train_pct>.jsonl
 ```
 
 **示例：** `dataset_cache/pointmaze-open-train-prompts1-hist4-stride1-split95.pkl`
@@ -295,6 +298,7 @@ dataset_cache/
 - 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
 - `max_data_num` 截断发生在 cache 读取之后的内存中，cache 文件始终保存完整数据
 - 不同 `history_num/history_stride` 组合会写入不同 cache 文件名，避免不同历史配置误复用同一份 tokenized 数据
+- `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed` 只在未命中 cache 时参与 episode 抽样；命中现有 cache 时会直接复用 `.pkl`，并打印这些设置本次未生效
 
 ---
 
@@ -442,7 +446,7 @@ def validate_action(action) -> bool:
 4. **Obs/Action 序列化（环境族绑定）**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs` 和 `format_action`，不依赖任何全局 formatting 工具
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text` 以及动态 `map_sensing_en` / `map_sensing_zh`
    - `map_sensing` 会直接给出当前位置格子、目标格子，以及上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数
-5. **Episode 级别 train/val 划分**：先按 episode `train_data_ratio`（默认 `0.9`）划分，train 用前 90%，val 用剩余 10%，再展开 timestep，防止数据泄露
+5. **Episode 级别 train/val 划分**：先按 `episode_keep_ratio` 随机抽样 train episodes，再从剩余 episodes 中按 `train_data_ratio` 反推得到的 quota 抽样 val，防止数据泄露
 6. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖
 7. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
 

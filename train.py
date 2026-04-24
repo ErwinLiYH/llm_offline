@@ -16,7 +16,7 @@ import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler, ConcatDataset
 
 from data.registry import get_dataset
-from data.pointmaze.dataset import collate_fn
+from data.pointmaze.dataset import collate_fn, collect_variant_episode_stats
 from model.policy import load_model_and_tokenizer, get_model_slug
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 
@@ -164,20 +164,50 @@ def build_dataset(config: dict, tokenizer, variant: str, split: str):
         max_data_num=config.get("max_data_num"),
         prompt_template_count=config.get("prompt_template_count", 1),
         train_data_ratio=config.get("train_data_ratio", 0.9),
+        episode_keep_ratio=config.get("episode_keep_ratio", 1.0),
+        balance_variant_episode_count=config.get("balance_variant_episode_count", False),
+        balanced_train_episode_count=config.get("balanced_train_episode_count"),
+        sampling_seed=config.get("sampling_seed", 0),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
     )
 
 
+def _resolve_balanced_train_episode_count(config: dict, selected_variants: list[str]) -> int | None:
+    balance_enabled = config.get("balance_variant_episode_count", False)
+    if len(selected_variants) <= 1:
+        if balance_enabled:
+            print("[train] balance_variant_episode_count=true but only one variant is selected; skipping balancing.")
+        return None
+
+    if not balance_enabled:
+        return None
+
+    keep_ratio = config.get("episode_keep_ratio", 1.0)
+    variant_stats = [collect_variant_episode_stats(variant, keep_ratio) for variant in selected_variants]
+    balanced_target = min(stat["initial_train_target"] for stat in variant_stats)
+    stats_text = ", ".join(
+        f"{stat['variant']}: total_episodes={stat['total_episodes']}, "
+        f"initial_train_target={stat['initial_train_target']}"
+        for stat in variant_stats
+    )
+    print(f"[train] Multi-variant episode balance stats -> {stats_text}")
+    print(f"[train] Balanced train episode target across variants: {balanced_target}")
+    return balanced_target
+
 
 def build_data_loaders(config: dict, tokenizer, selected_variants: list[str]):
     train_datasets = []
     val_datasets = []
+    dataset_config = dict(config)
+    dataset_config["balanced_train_episode_count"] = _resolve_balanced_train_episode_count(
+        config, selected_variants
+    )
 
     for variant in selected_variants:
         print(f"[train] Loading data for variant: {variant}")
-        train_datasets.append(build_dataset(config, tokenizer, variant, "train"))
-        val_datasets.append(build_dataset(config, tokenizer, variant, "val"))
+        train_datasets.append(build_dataset(dataset_config, tokenizer, variant, "train"))
+        val_datasets.append(build_dataset(dataset_config, tokenizer, variant, "val"))
 
     if len(selected_variants) == 1:
         train_dataset = train_datasets[0]

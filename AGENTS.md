@@ -43,7 +43,7 @@ Key files:
 
 Data flow:
 - dataset
-- episode-level train/val split using `train_data_ratio` (default 0.9, so train uses the first 90% of episodes and val uses the remaining 10%)
+- episode-level train/val split using randomized sampling: train first draws `floor(total_episodes * episode_keep_ratio)` episodes (at least 1), then val draws from the remaining episodes using the implied `train_data_ratio`
 - per timestep: `format_obs(obs, meta)` + optional sampled history via `format_history(...)` + `format_action`
 - fill the first `prompt_template_count` templates
 - wrap the rendered prompt using the tokenizer's native `chat_template` as a user turn; training also appends the action as the assistant turn
@@ -78,8 +78,8 @@ To add a new environment family:
 - Epoch eval selection is independent from training selection via optional `eval_mode` and `eval_variants`.
   - If `eval_mode` is omitted, epoch eval follows the resolved training selection.
   - `eval_variants` also uses list semantics; under `except` it is an exclusion list.
-- Multi-variant training, including `all` and `except`, uses weighted sampling by variant sample count.
-- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, how many prompt templates are used for dataset construction via `prompt_template_count`, history prompt settings via `history_num` / `history_stride`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
+- Multi-variant training, including `all` and `except`, uses weighted sampling by variant sample count. Optional `balance_variant_episode_count: true` first equalizes the offline train episode quota across selected variants to the smallest per-variant target.
+- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, how many prompt templates are used for dataset construction via `prompt_template_count`, offline episode sampling via `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed`, history prompt settings via `history_num` / `history_stride`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/`.
   - `selection_tag` is the single variant name, `all`, or `except-<excluded variants joined by +>`.
 - Training-time eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/epoch_<n>/eval=<env_family>-<variant>/result.json`.
