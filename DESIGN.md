@@ -154,6 +154,7 @@ POINTMAZE_VARIANTS = {
 - 评估时固定使用模板 `0`，保证可复现
 - 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的动态字段；PointMaze 当前动态字段至少包括 `obs_text`、`map_sensing_en/zh`、`history_block_en/zh`
 - 共享模板当前按“静态 Env Description 在前、动态 Current Status 在后”的结构组织，以提高前缀 cache 命中率
+- 渲染出的共享模板文本只负责环境/任务语义；最终输入序列会再通过 tokenizer 自带的 `chat_template` 包装成 `user` / `assistant` 对话格式
 
 #### 模板文件格式
 
@@ -186,6 +187,7 @@ Action:
 - obs、goal 的序列化方式（精度、格式）由各环境族的 `formatting.py` 中的 `format_obs` 函数定义，结果填入模板占位符
 - 如启用历史 prompt，训练数据会在同一 episode 内按 `t-1`、`t-1-history_stride`、... 回溯采样过去 transition，最多取 `history_num` 条，再通过 `format_history(...)` 注入 prompt
 - action 的目标文本由 `formatting.py` 中的 `format_action` 函数生成
+- 训练 tokenization 不再直接编码 `prompt + action_text`；而是将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence
 - train/val 划分在 **episode 级别**进行（`train_data_ratio`，默认 `0.9`，即前 90% episode 用于 train，剩余 10% 用于 val），再展开 timestep，避免同一 episode 数据同时出现在 train 和 val 中
 - 每个 episode 的第一个 timestep 没有历史；评估 rollout 中也同样如此，只有一步实际动作执行完成后才会写入在线 history buffer
 
@@ -432,7 +434,7 @@ def validate_action(action) -> bool:
 
 ### 关键实现细节
 
-1. **Loss masking**：labels 中 prompt 部分设为 `-100`
+1. **Loss masking**：labels 中 `user` turn 与 assistant 前缀部分设为 `-100`，只训练 assistant 动作文本及其结束标记
 2. **每 timestep 展开 `prompt_template_count` 条**：`dataset.py` 构造数据时对每个 timestep 遍历前 `prompt_template_count` 个共享模板，生成对应数量的独立样本
 3. **Action parsing（环境族绑定）**：evaluate.py 通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 和 `validate_action`。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
    - *PointMaze 实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回

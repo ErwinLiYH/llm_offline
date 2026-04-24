@@ -317,3 +317,14 @@ type: project
 **训练期 eval 接入独立 eval 的视频配置：**
 - `config.yaml` 新增训练期 eval 可用的 `record_video`、`record_all`、`video_episode_index`、`video_fps`、`video_format`、`mujoco_gl`
 - `train.py` 的 epoch eval 现在会透传这些配置给 `evaluate_variant(...)`，训练过程中也能按配置录制视频
+
+## data/pointmaze/dataset.py / evaluate.py / utils/chat_template.py（2026-04-24）
+
+**训练与评估现在严格使用模型自带的 chat template：**
+- 新增 `utils/chat_template.py`，统一通过 tokenizer 自带的 `chat_template` 构造最终对话序列
+- 训练样本不再直接编码 `prompt + action_text`；而是把渲染后的环境 prompt 作为 `user` 消息，把动作文本作为 `assistant` 消息
+- eval 推理也改为先把环境 prompt 包装成带 `add_generation_prompt=True` 的 chat-template 输入，再调用 `model.generate(...)`
+- 如果 tokenizer 未定义 `chat_template`，现在会显式报错，而不是静默回退到纯文本拼接
+
+**dataset cache 行为切换到 chat template 版本：**
+- PointMaze dataset 默认按 chat-template 方式构造 tokenized cache；旧的 plain-text cache 需要手动清理后重建

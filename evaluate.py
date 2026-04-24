@@ -20,6 +20,7 @@ import yaml
 from data.registry import get_formatter
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from model.policy import load_from_checkpoint
+from utils.chat_template import build_generation_prompt
 from utils.prompt_loader import load_templates, render_template
 from utils.record_format import format_eval_step_text
 from utils.variant_selection import get_available_variants, resolve_selection
@@ -176,7 +177,11 @@ def generate_action(
     max_new_tokens: int = 20,
 ) -> str:
     """Run inference and return the generated text (action portion)."""
-    encoded = tokenizer(prompt, return_tensors="pt")
+    encoded = tokenizer(
+        build_generation_prompt(tokenizer, prompt),
+        return_tensors="pt",
+        add_special_tokens=False,
+    )
     input_ids = encoded.input_ids.to(device)
     attention_mask = encoded.attention_mask.to(device)
     with torch.no_grad():

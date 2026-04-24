@@ -23,6 +23,7 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from data.base_dataset import BaseOfflineDataset
 from data.pointmaze import formatting
 from data.pointmaze.variants import POINTMAZE_VARIANTS
+from utils.chat_template import build_generation_prompt, build_training_conversation
 from utils.prompt_loader import load_templates, render_template
 
 DEFAULT_TRAIN_DATA_RATIO = 0.9
@@ -202,12 +203,15 @@ class PointMazeDataset(BaseOfflineDataset):
 
     def _tokenize(self, prompt: str, action_text: str) -> dict:
         tok = self._get_local_tokenizer()
-        prompt_ids = tok(prompt, add_special_tokens=True).input_ids
+        prompt_text = build_generation_prompt(tok, prompt)
+        full_text = build_training_conversation(tok, prompt, action_text)
+
+        prompt_ids = tok(prompt_text, add_special_tokens=False).input_ids
         prompt_len = len(prompt_ids)
 
         full_enc = tok(
-            prompt + action_text,
-            add_special_tokens=True,
+            full_text,
+            add_special_tokens=False,
             max_length=self.max_length,
             truncation=True,
         )

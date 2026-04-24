@@ -46,7 +46,8 @@ Data flow:
 - episode-level train/val split using `train_data_ratio` (default 0.9, so train uses the first 90% of episodes and val uses the remaining 10%)
 - per timestep: `format_obs(obs, meta)` + optional sampled history via `format_history(...)` + `format_action`
 - fill the first `prompt_template_count` templates
-- tokenize with prompt tokens masked out (`labels = -100`)
+- wrap the rendered prompt using the tokenizer's native `chat_template` as a user turn; training also appends the action as the assistant turn
+- tokenize with prompt-turn tokens masked out (`labels = -100`)
 - `prompt_template_count` samples per timestep
 
 To add a new environment family:
@@ -59,6 +60,7 @@ To add a new environment family:
 ## Implementation Notes
 
 - Formatting is per environment family. There is no shared global formatting helper.
+- Shared prompt templates render the environment/task text only; final training/eval token sequences are built through the model tokenizer's native `chat_template`, not by plain-text concatenation.
 - `evaluate.py` uses `registry.get_formatter(env_family)` for `parse_action` and `validate_action`.
 - On parse failure or invalid output, evaluation retries up to `parse_retry_limit`, then falls back to a zero vector and logs fallback metrics.
 - `format_obs(obs, meta)` returns a dict of prompt render variables. It must contain `obs_text`, and may add family-specific fields.
