@@ -296,6 +296,7 @@ class PointMazeDataset(BaseOfflineDataset):
                             {
                                 "observation": obs_arr[hist_t].astype(np.float32),
                                 "action_text": formatting.format_action(actions[hist_t].astype(np.float32)),
+                                "steps_ago": t - hist_t,
                             }
                         )
                 obs_payload = formatting.format_obs(obs, prompt_vars)

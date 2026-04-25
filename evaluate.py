@@ -311,7 +311,9 @@ def evaluate_variant(
                 sampled_history = []
                 hist_idx = len(history_buffer) - 1
                 while hist_idx >= 0 and len(sampled_history) < history_num:
-                    sampled_history.append(history_buffer[hist_idx])
+                    sampled_entry = dict(history_buffer[hist_idx])
+                    sampled_entry["steps_ago"] = len(history_buffer) - hist_idx
+                    sampled_history.append(sampled_entry)
                     hist_idx -= history_stride
                 sampled_history.reverse()
             else:

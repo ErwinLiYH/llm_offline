@@ -26,8 +26,7 @@ Action format:
   Valid range for each integer is [-100, 100].
   Examples: 35,-72 means ax=0.35 and ay=-0.72; -5,100 means ax=-0.05 and ay=1.00
 
-History semantics:
-  If a step-history block is present in the current status, the first entry is the oldest sampled past step, and the last entry is the most recent sampled step before the current one.
+{history_block_en}
 
 ## Current Status
 
@@ -36,6 +35,5 @@ Current observation (6-dimensional state vector):
 
 Current grid location:
   {map_sensing_en}
-{history_block_en}
 
 Action:

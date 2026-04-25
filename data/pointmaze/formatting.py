@@ -84,12 +84,40 @@ def _format_cell_and_xy(vec: np.ndarray, meta: dict, *, zh: bool = False) -> str
     )
 
 
+def _format_history_entry(entry: dict, meta: dict, *, zh: bool = False) -> str:
+    obs_vec = entry["observation"].astype(np.float32)
+    action_text = str(entry["action_text"])
+    steps_ago = int(entry["steps_ago"])
+    row, col = _obs_xy_to_row_col(
+        float(obs_vec[0]),
+        float(obs_vec[1]),
+        meta["maze_map"],
+        maze_size_scaling=float(meta.get("maze_size_scaling", 1.0)),
+    )
+    row_1 = row + 1
+    col_1 = col + 1
+    if zh:
+        return (
+            f"前 {steps_ago} 步的起始点为 "
+            f"(x={float(obs_vec[0]):.4f}, y={float(obs_vec[1]):.4f})，"
+            f"所在格为第 {row_1} 行，第 {col_1} 列，"
+            f"动作为 {action_text}。"
+        )
+    return (
+        f"The start point {steps_ago} steps before the current step was "
+        f"(x={float(obs_vec[0]):.4f}, y={float(obs_vec[1]):.4f}), "
+        f"the cell was row {row_1}, column {col_1}, "
+        f"and the action was {action_text}."
+    )
+
+
 def format_history(history_entries: list[dict], meta: dict) -> dict:
     """Serialize sampled trajectory history for prompt insertion.
 
     Each history entry must contain:
     - observation: np.ndarray with at least x/y in the first two slots
     - action_text: compact action string such as "35,-72"
+    - steps_ago: how many executed steps before the current step this entry came from
     """
     if not history_entries:
         return {
@@ -97,13 +125,11 @@ def format_history(history_entries: list[dict], meta: dict) -> dict:
             "history_block_zh": "",
         }
 
-    en_lines = ["Step history:"]
-    zh_lines = ["历史轨迹："]
-    for idx, entry in enumerate(history_entries, start=1):
-        obs_vec = entry["observation"].astype(np.float32)
-        action_text = str(entry["action_text"])
-        en_lines.append(f"  {idx}. {_format_cell_and_xy(obs_vec, meta, zh=False)} Action: {action_text}.")
-        zh_lines.append(f"  {idx}. {_format_cell_and_xy(obs_vec, meta, zh=True)}动作：{action_text}。")
+    en_lines = ["## History"]
+    zh_lines = ["## History"]
+    for entry in history_entries:
+        en_lines.append(_format_history_entry(entry, meta, zh=False))
+        zh_lines.append(_format_history_entry(entry, meta, zh=True))
 
     return {
         "history_block_en": "\n" + "\n".join(en_lines),
