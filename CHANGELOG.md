@@ -342,3 +342,17 @@ type: project
 - cache 文件名不包含这三个新配置，命中现有 `.pkl` 时仍直接读取旧 cache
 - 命中 cache 时会明确打印 `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed` 本次未生效
 - `max_data_num` 仍只在 cache 读取或新构建完成后做样本级内存截断，不替代 episode 级抽样
+
+## prompts / tokenizer compatibility / project-changelog skill（2026-04-25）
+
+**PointMaze history 与 prompt 0 输出格式调整：**
+- `format_history(...)` 现在在有历史时自行渲染完整 `## History` section；`history_num=0` 或首步无历史时仍渲染为空，不在 prompt 中残留 history 标题
+- history 条目改为显式描述“前 n 步的起始点 / 所在格 / 动作”，不再使用 `1. 2. 3.` 序号列表
+- offline dataset 和 rollout eval 都会为 history entry 传入真实 `steps_ago`，eval 侧按在线 history buffer 动态计算相对步数
+- `prompts/pointmaze/0.txt` 将 `{history_block_en}` 放在 `## Env Description` 和 `## Current Status` 之间，并收紧动作格式示例，强调 `"35,-72"` / `"-5,100"` 这类紧凑文本输出
+
+**Qwen3.5 / Qwen3VLProcessor 兼容：**
+- `Qwen/Qwen3.5-4B` 通过 Unsloth 加载时第二返回值可能是 `Qwen3VLProcessor`，不是普通 tokenizer；外层 processor 没有 `name_or_path`
+- tokenizer / processor 调用统一使用显式 `text=...`，避免 `Qwen3VLProcessor.__call__` 将 prompt 位置参数误解释为 `images`
+- chat template 统一尝试传 `enable_thinking=False`，让 eval generation prompt 停在 closed empty thinking block 后，和训练目标中动作出现的位置对齐
+- `PointMazeDataset` 新增 `tokenizer_name_or_path`，`train.py` 构建 dataset 时传入 `config["model_name"]`，dataset worker reload 不再依赖外层 processor 的 `name_or_path`

@@ -138,6 +138,7 @@ class PointMazeDataset(BaseOfflineDataset):
         variant: str,
         split: str,
         tokenizer: PreTrainedTokenizerBase,
+        tokenizer_name_or_path: str | None = None,
         max_length: int = 512,
         num_workers: int = 8,
         cache_dir: str | None = None,
@@ -155,6 +156,11 @@ class PointMazeDataset(BaseOfflineDataset):
         self.variant = variant
         self.split = split
         self.tokenizer = tokenizer
+        self.tokenizer_name_or_path = tokenizer_name_or_path or getattr(tokenizer, "name_or_path", None)
+        if not self.tokenizer_name_or_path:
+            raise ValueError(
+                "PointMazeDataset requires tokenizer_name_or_path when tokenizer does not expose name_or_path."
+            )
         self.max_length = max_length
         self.num_workers = num_workers
         self.cache_dir = cache_dir
@@ -343,7 +349,7 @@ class PointMazeDataset(BaseOfflineDataset):
     def _get_local_tokenizer(self):
         if not hasattr(self._local, "tokenizer"):
             self._local.tokenizer = AutoTokenizer.from_pretrained(
-                self.tokenizer.name_or_path, trust_remote_code=True
+                self.tokenizer_name_or_path, trust_remote_code=True
             )
         return self._local.tokenizer
 

@@ -158,6 +158,7 @@ def build_dataset(config: dict, tokenizer, variant: str, split: str):
         variant=variant,
         split=split,
         tokenizer=tokenizer,
+        tokenizer_name_or_path=config["model_name"],
         max_length=config["max_length"],
         num_workers=config.get("dataset_workers", 8),
         cache_dir=config.get("dataset_cache_dir"),
