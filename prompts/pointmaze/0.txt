@@ -23,11 +23,10 @@ Action format:
   Generate the optimal action to move the agent toward the goal position.
   Output format: two signed integers separated by "," with no spaces, decimal points, brackets, units, or newlines.
   Each integer is the action component multiplied by 100, so the precision is 0.01.
-  Valid range for each integer is [-100, 100].
-  Examples: 35,-72 means ax=0.35 and ay=-0.72; -5,100 means ax=-0.05 and ay=1.00
+  Valid range for each integer is -100 to 100.
+  Examples: "35,-72" means ax=0.35 and ay=-0.72; "-5,100" means ax=-0.05 and ay=1.00
 
 {history_block_en}
-
 ## Current Status
 
 Current observation (6-dimensional state vector):
