@@ -10,7 +10,7 @@ description: Use this skill when the user asks to update the changelog, record r
 Use this skill when the user wants to record recent project changes into `CHANGELOG.md`.
 
 In this repo, changelog updates should be grounded in actual recent work, not generic summaries. The workflow is:
-- inspect current context and recent repo changes
+- inspect the current conversation context for changes the user explicitly asked Codex to make
 - compare against existing `CHANGELOG.md` to avoid duplicates
 - give the user a concise change summary first
 - append new changelog content to the bottom of `CHANGELOG.md`
@@ -25,19 +25,21 @@ This skill should be used for requests like:
 - 记录这次改动
 - 记录最近的修改
 - 把这些变化写进 changelog
+- 记录变化
+- 记录改变
 
 ## Workflow
 
-1. Inspect the current work before editing documentation.
-Check at minimum:
-- `git status --short`
-- relevant changed files
+1. Inspect the current conversation context before editing documentation.
+Use the changes the user explicitly asked Codex to make in the current context as the source of truth. Do not run `git status` by default and do not infer changelog items from unrelated dirty worktree files unless the user asks for a repo-wide audit.
+
+Check only what is needed to avoid duplicates and keep docs consistent:
 - the tail of `CHANGELOG.md`
-- `AGENTS.md`
-- `DESIGN.md`
+- relevant files for changes mentioned in the current conversation, if the context is ambiguous
+- `AGENTS.md` / `DESIGN.md` only when the change may affect architecture, config semantics, prompt behavior, evaluation/training workflow, or operating guidance
 
 2. Compare recent work against `CHANGELOG.md`.
-Do not duplicate items that are already recorded. Prefer using the current conversation context plus actual changed files to infer what is new.
+Do not duplicate items that are already recorded. Prefer using the current conversation context to infer what is new; inspect files only to clarify uncertain details.
 
 3. Before writing, give the user a concise summary of the changes you believe should be logged.
 Keep that summary short and high-signal.
@@ -60,6 +62,7 @@ Only update them if the recent changes materially affect:
 - Append at the end of `CHANGELOG.md`, never in the middle.
 - Group related changes into a few sections instead of one bullet per file.
 - Focus on behavior changes, interfaces, configs, prompt semantics, evaluation behavior, and debugging tools.
+- Do not log Codex workflow or tooling metadata that is not part of the llm_offline project behavior, such as skill additions, removals, or edits, unless the user explicitly asks to document Codex setup changes.
 - Do not log ephemeral artifacts such as local result folders, temporary experiment outputs, or cache files unless the user explicitly asks.
 - If a change is still exploratory and not actually implemented in the repo, do not log it as completed work.
 - If there is no substantive new change compared with the existing changelog, say that explicitly and do not add a duplicate entry.
