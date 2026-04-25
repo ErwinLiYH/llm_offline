@@ -352,11 +352,11 @@ class PointMazeDataset(BaseOfflineDataset):
         prompt_text = build_generation_prompt(tok, prompt)
         full_text = build_training_conversation(tok, prompt, action_text)
 
-        prompt_ids = tok(prompt_text, add_special_tokens=False).input_ids
+        prompt_ids = tok(text=prompt_text, add_special_tokens=False).input_ids
         prompt_len = len(prompt_ids)
 
         full_enc = tok(
-            full_text,
+            text=full_text,
             add_special_tokens=False,
             max_length=self.max_length,
             truncation=True,

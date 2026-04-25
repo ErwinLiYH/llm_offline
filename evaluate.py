@@ -178,7 +178,7 @@ def generate_action(
 ) -> str:
     """Run inference and return the generated text (action portion)."""
     encoded = tokenizer(
-        build_generation_prompt(tokenizer, prompt),
+        text=build_generation_prompt(tokenizer, prompt),
         return_tensors="pt",
         add_special_tokens=False,
     )
