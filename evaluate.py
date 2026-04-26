@@ -20,6 +20,14 @@ import yaml
 from data.registry import get_formatter
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from model.policy import load_from_checkpoint
+from utils.action_bins import (
+    bin_to_continuous,
+    get_action_bin_range,
+    get_action_bin_token_ids,
+    get_action_bin_tokens,
+    get_action_num_bins,
+    get_action_token_mode,
+)
 from utils.chat_template import build_generation_prompt
 from utils.prompt_loader import load_templates, render_template
 from utils.record_format import format_eval_step_text
@@ -56,6 +64,52 @@ def resolve_standalone_eval_selection(config: dict):
         field_name="variants",
     )
     return selection
+
+
+ACTION_CONFIG_KEYS = (
+    "action_token_mode",
+    "action_num_bins",
+    "action_bin_min",
+    "action_bin_max",
+    "action_soft_label_sigma",
+    "action_loss_weight",
+    "action_stop_loss_weight",
+)
+
+
+def _load_checkpoint_action_config(model_path: str) -> dict:
+    config_path = os.path.join(model_path, "config.yaml")
+    saved_config = {}
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            saved_config = yaml.safe_load(f) or {}
+
+    action_config = {
+        "action_token_mode": saved_config.get("action_token_mode", "text"),
+        "action_num_bins": saved_config.get("action_num_bins", 10),
+        "action_bin_min": saved_config.get("action_bin_min", -1.0),
+        "action_bin_max": saved_config.get("action_bin_max", 1.0),
+    }
+    for key in ("action_soft_label_sigma", "action_loss_weight", "action_stop_loss_weight"):
+        if key in saved_config:
+            action_config[key] = saved_config[key]
+    return action_config
+
+
+def apply_checkpoint_action_config(config: dict) -> dict:
+    action_config = _load_checkpoint_action_config(config["model_path"])
+    for key in ACTION_CONFIG_KEYS:
+        if key in config and config[key] != action_config.get(key):
+            raise ValueError(
+                f"Standalone eval action config must come from checkpoint config.yaml; "
+                f"remove {key}={config[key]!r} from eval.yaml or match checkpoint value {action_config.get(key)!r}."
+            )
+    merged = dict(config)
+    merged.update(action_config)
+    get_action_token_mode(merged)
+    get_action_num_bins(merged)
+    get_action_bin_range(merged)
+    return merged
 
 
 
@@ -103,6 +157,7 @@ def write_step_log(
     executed_action: str,
     parse_status: str,
     attempt_count: int,
+    action_bin_probabilities: str | None = None,
 ):
     steps_dir = os.path.join(episode_dir, "steps")
     os.makedirs(steps_dir, exist_ok=True)
@@ -113,6 +168,7 @@ def write_step_log(
         executed_action=executed_action,
         parse_status=parse_status,
         attempt_count=attempt_count,
+        action_bin_probabilities=action_bin_probabilities,
     )
     with open(step_path, "w", encoding="utf-8") as f:
         f.write(payload)
@@ -175,7 +231,9 @@ def generate_action(
     prompt: str,
     device: torch.device,
     max_new_tokens: int = 20,
-) -> str:
+    skip_special_tokens: bool = True,
+    collect_scores: bool = False,
+) -> tuple[str, tuple[torch.Tensor, ...] | None]:
     """Run inference and return the generated text (action portion)."""
     encoded = tokenizer(
         text=build_generation_prompt(tokenizer, prompt),
@@ -184,16 +242,85 @@ def generate_action(
     )
     input_ids = encoded.input_ids.to(device)
     attention_mask = encoded.attention_mask.to(device)
-    with torch.no_grad():
-        output_ids = model.generate(
-            input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
+    generate_kwargs = {
+        "attention_mask": attention_mask,
+        "max_new_tokens": max_new_tokens,
+        "do_sample": False,
+        "pad_token_id": tokenizer.eos_token_id,
+    }
+    if collect_scores:
+        generate_kwargs.update(
+            {
+                "return_dict_in_generate": True,
+                "output_scores": True,
+            }
         )
+
+    with torch.no_grad():
+        outputs = model.generate(
+            input_ids,
+            **generate_kwargs,
+        )
+    output_ids = outputs.sequences if collect_scores else outputs
     new_tokens = output_ids[0, input_ids.shape[1]:]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True)
+    text = tokenizer.decode(new_tokens, skip_special_tokens=skip_special_tokens)
+    if not collect_scores:
+        return text, None
+    return text, outputs.scores
+
+
+def _collect_action_bin_probabilities(
+    scores,
+    tokenizer,
+    config: dict,
+    action_dim: int,
+) -> list[list[float]]:
+    if not scores:
+        return []
+    bin_token_ids = torch.tensor(get_action_bin_token_ids(tokenizer, config), device=scores[0].device)
+    distributions = []
+    for score in scores[:action_dim]:
+        bin_logits = score[0].index_select(dim=-1, index=bin_token_ids)
+        bin_probs = torch.softmax(bin_logits, dim=-1)
+        distributions.append([float(value) for value in bin_probs.detach().cpu().tolist()])
+    return distributions
+
+
+def _format_action_bin_probability_log(distributions: list[list[float]], config: dict) -> str:
+    if not distributions:
+        return ""
+    num_bins = get_action_num_bins(config)
+    low, high = get_action_bin_range(config)
+    tokens = get_action_bin_tokens(num_bins)
+    lines = []
+    for dim_idx, probs in enumerate(distributions):
+        lines.append(f"dim={dim_idx}")
+        for bin_idx, prob in enumerate(probs):
+            center = bin_to_continuous(bin_idx, num_bins, low, high)
+            lines.append(f"  {tokens[bin_idx]} center={center:.6f} prob={prob:.8f}")
+    return "\n".join(lines)
+
+
+def _format_action_for_mode(formatter, action: np.ndarray, config: dict) -> str:
+    if get_action_token_mode(config) == "text":
+        return formatter.format_action(action)
+    return formatter.format_action_bin_tokens(
+        action,
+        num_bins=get_action_num_bins(config),
+        low=float(config.get("action_bin_min", -1.0)),
+        high=float(config.get("action_bin_max", 1.0)),
+    )
+
+
+def _parse_action_for_mode(formatter, text: str, config: dict) -> tuple[np.ndarray, bool]:
+    if get_action_token_mode(config) == "text":
+        return formatter.parse_action(text)
+    return formatter.parse_action_bin_tokens(
+        text,
+        num_bins=get_action_num_bins(config),
+        low=float(config.get("action_bin_min", -1.0)),
+        high=float(config.get("action_bin_max", 1.0)),
+    )
 
 
 
@@ -263,6 +390,8 @@ def evaluate_variant(
     video_episode_index_set = set(video_episode_indices)
     video_fps = int(config.get("video_fps", 20))
     record_step_logs = bool(config.get("record_step_logs", True))
+    action_token_mode = get_action_token_mode(config)
+    collect_bin_probabilities = record_step_logs and action_token_mode == "gaussian_bin"
 
     if record_video:
         render_mode = env_kwargs.get("render_mode")
@@ -325,25 +454,44 @@ def evaluate_variant(
             action = None
             executed_action_text = None
             generated_attempts = []
+            generated_probability_logs = []
             attempt_count = 0
             current_obs_vec = obs["observation"].astype(np.float32)
             for _attempt in range(parse_retry_limit + 1):
                 attempt_count += 1
                 t0 = time.perf_counter()
-                generated = generate_action(model, tokenizer, prompt, device)
+                generated, generation_scores = generate_action(
+                    model,
+                    tokenizer,
+                    prompt,
+                    device,
+                    skip_special_tokens=action_token_mode == "text",
+                    collect_scores=collect_bin_probabilities,
+                )
                 total_action_time += time.perf_counter() - t0
                 total_actions += 1
                 generated_attempts.append(generated)
-                parsed_action, success = formatter.parse_action(generated)
+                if collect_bin_probabilities:
+                    distributions = _collect_action_bin_probabilities(
+                        generation_scores,
+                        tokenizer,
+                        config,
+                        action_dim=env.action_space.shape[0],
+                    )
+                    probability_log = _format_action_bin_probability_log(distributions, config)
+                    generated_probability_logs.append(
+                        f"[Attempt {attempt_count}]\n{probability_log}" if probability_log else f"[Attempt {attempt_count}]"
+                    )
+                parsed_action, success = _parse_action_for_mode(formatter, generated, config)
                 if success and formatter.validate_action(parsed_action):
                     action = np.clip(parsed_action, -1.0, 1.0)
-                    executed_action_text = formatter.format_action(action)
+                    executed_action_text = _format_action_for_mode(formatter, action, config)
                     break
                 total_parse_failures += 1
 
             if action is None:
                 action = np.zeros(env.action_space.shape, dtype=np.float32)
-                executed_action_text = formatter.format_action(action)
+                executed_action_text = _format_action_for_mode(formatter, action, config)
                 total_fallbacks += 1
                 parse_status = "fallback"
             else:
@@ -362,6 +510,9 @@ def evaluate_variant(
                     executed_action=executed_action_text,
                     parse_status=parse_status,
                     attempt_count=attempt_count,
+                    action_bin_probabilities=(
+                        "\n\n".join(generated_probability_logs) if generated_probability_logs else None
+                    ),
                 )
 
             obs, reward, terminated, truncated, info = env.step(action)
@@ -424,6 +575,7 @@ def main():
     args = parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+    config = apply_checkpoint_action_config(config)
 
     eval_selection = resolve_standalone_eval_selection(config)
     configure_mujoco_gl(config)

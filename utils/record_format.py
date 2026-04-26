@@ -14,11 +14,15 @@ def format_eval_step_text(
     executed_action: str,
     parse_status: str,
     attempt_count: int,
+    action_bin_probabilities: str | None = None,
 ) -> str:
     base = format_prompt_action_text(prompt, action)
-    return (
+    text = (
         f"{base}\n\n"
         f"Executed Action:\n{executed_action}\n\n"
         f"Parse Status:\n{parse_status}\n\n"
         f"Attempt Count:\n{attempt_count}"
     )
+    if action_bin_probabilities:
+        text = f"{text}\n\nAction Bin Probabilities:\n{action_bin_probabilities}"
+    return text

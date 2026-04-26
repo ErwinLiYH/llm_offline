@@ -186,8 +186,9 @@ Action:
 - 每个 timestep 的 `(obs, [goal,] action)` 元组展开为 `prompt_template_count` 条训练样本（对应前 `prompt_template_count` 个共享模板）
 - obs、goal 的序列化方式（精度、格式）由各环境族的 `formatting.py` 中的 `format_obs` 函数定义，结果填入模板占位符
 - 如启用历史 prompt，训练数据会在同一 episode 内按 `t-1`、`t-1-history_stride`、... 回溯采样过去 transition，最多取 `history_num` 条，再通过 `format_history(...)` 注入 prompt
-- action 的目标文本由 `formatting.py` 中的 `format_action` 函数生成
+- action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` 使用共享特殊 token `<act_XX>` 表示离散动作 bin
 - 训练 tokenization 不再直接编码 `prompt + action_text`；而是将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence
+- `gaussian_bin` 会额外在 dataset 中记录 `action_bin_labels`，动作 token 位置使用高斯 soft-label CE，chat-template 结束 token 等非动作 assistant token 仍使用普通 CE
 - train/val 划分在 **episode 级别**进行：先按 `episode_keep_ratio` 随机无放回抽样 train episodes（至少保留 1 条），再按 `train_data_ratio` 反推 val quota，并从剩余 episodes 中随机无放回补足 val，避免同一 episode 同时出现在 train 和 val 中
 - 每个 episode 的第一个 timestep 没有历史；评估 rollout 中也同样如此，只有一步实际动作执行完成后才会写入在线 history buffer
 
@@ -222,6 +223,11 @@ lora_target_modules: ["q_proj", "v_proj"]
 
 # 评估辅助
 parse_retry_limit: 3     # action 解析失败时的最大重试次数
+action_token_mode: text  # text | bin | gaussian_bin
+action_num_bins: 10      # bin 模式下的共享动作 token 数
+action_bin_min: -1.0
+action_bin_max: 1.0
+action_soft_label_sigma: 1.0  # gaussian_bin 的高斯宽度，单位是 bin index
 
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
@@ -285,19 +291,19 @@ Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置
 
 ```
 dataset_cache/
-├── <env_family>-<variant>-train-prompts<N>-hist<H>-stride<S>-split<train_pct>.pkl    # 二进制缓存，训练集 token 数据
-├── <env_family>-<variant>-train-prompts<N>-hist<H>-stride<S>-split<train_pct>.jsonl  # 可读文本副本（prompt + action 原文）
-├── <env_family>-<variant>-val-prompts<N>-hist<H>-stride<S>-split<train_pct>.pkl
-└── <env_family>-<variant>-val-prompts<N>-hist<H>-stride<S>-split<train_pct>.jsonl
+├── <env_family>-<variant>-train-prompts<N>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.pkl
+├── <env_family>-<variant>-train-prompts<N>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.jsonl
+├── <env_family>-<variant>-val-prompts<N>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.pkl
+└── <env_family>-<variant>-val-prompts<N>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.jsonl
 ```
 
 **示例：** `dataset_cache/pointmaze-open-train-prompts1-hist4-stride1-split95.pkl`
 
 - `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
-- `.jsonl` 每行是 `{"prompt": "...", "action": "35,-72"}`，供人工抽检数据质量
+- `.jsonl` 每行是 `{"prompt": "...", "action": "35,-72"}` 或 `{"prompt": "...", "action": "<act_03><act_48>"}`，供人工抽检数据质量
 - 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
 - `max_data_num` 截断发生在 cache 读取之后的内存中，cache 文件始终保存完整数据
-- 不同 `history_num/history_stride` 组合会写入不同 cache 文件名，避免不同历史配置误复用同一份 tokenized 数据
+- 不同 `history_num/history_stride` 和 action 编码配置会写入不同 cache 文件名，避免不同历史或动作 tokenization 配置误复用同一份 tokenized 数据
 - `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed` 只在未命中 cache 时参与 episode 抽样；命中现有 cache 时会直接复用 `.pkl`，并打印这些设置本次未生效
 
 ---
@@ -346,7 +352,7 @@ dataset_cache/
 | standalone 评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 | 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 区分不同轮次，standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 区分不同轮次，standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；`gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率。
 
 **结果文件字段：**
 

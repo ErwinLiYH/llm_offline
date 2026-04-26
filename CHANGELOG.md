@@ -356,3 +356,23 @@ type: project
 - tokenizer / processor 调用统一使用显式 `text=...`，避免 `Qwen3VLProcessor.__call__` 将 prompt 位置参数误解释为 `images`
 - chat template 统一尝试传 `enable_thinking=False`，让 eval generation prompt 停在 closed empty thinking block 后，和训练目标中动作出现的位置对齐
 - `PointMazeDataset` 新增 `tokenizer_name_or_path`，`train.py` 构建 dataset 时传入 `config["model_name"]`，dataset worker reload 不再依赖外层 processor 的 `name_or_path`
+
+---
+
+## action token modes / gaussian bin loss（2026-04-26）
+
+**训练动作输出新增三种模式：**
+- `config.yaml` 新增 `action_token_mode: text | bin | gaussian_bin`，其中 `text` 保持原有 `35,-72` 紧凑整数动作格式
+- `bin` / `gaussian_bin` 使用共享特殊 token `<act_00>` ... `<act_N>` 表示各维动作 bin；当前配置切到 `gaussian_bin`、`action_num_bins: 50`、`action_soft_label_sigma: 1.0`
+- `model/policy.py` 在 bin 模式下会把动作 token 注册为 tokenizer 的 `additional_special_tokens`，并在 LoRA 注入前 resize token embedding
+
+**PointMaze dataset 与 loss 接入 action bin：**
+- `PointMazeDataset` 根据 action mode 生成 assistant 动作文本；bin 模式输出纯动作 token，如 `<act_03><act_48>`
+- dataset 样本新增 `action_bin_labels` mask，动作 token 位置记录真实 bin index，非动作位置为 `-1`
+- `gaussian_bin` 训练时动作 token 位置使用 Gaussian soft-label CE；chat template 产生的结束 token 仍使用普通 CE
+- dataset cache 文件名新增 action mode、bin 数和 bin 范围，避免误复用 text/bin 不同编码方式的 tokenized cache
+
+**评估与 step log 支持 bin 模式：**
+- `evaluate.py` 的 bin / gaussian_bin 模式会保留 special tokens 解码，解析 `<act_XX>` 后映射回连续动作；解析失败仍走原有 retry/fallback 流程
+- standalone eval 的 action 编码配置固定来自 checkpoint 内 `config.yaml`，`eval.yaml` 不允许覆盖 action 相关配置
+- `record_step_logs: true` 且 `action_token_mode: gaussian_bin` 时，step log 会额外记录每个动作维度上所有 action bin 的生成概率分布

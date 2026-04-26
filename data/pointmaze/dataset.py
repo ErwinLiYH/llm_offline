@@ -25,6 +25,13 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from data.base_dataset import BaseOfflineDataset
 from data.pointmaze import formatting
 from data.pointmaze.variants import POINTMAZE_VARIANTS
+from utils.action_bins import (
+    get_action_bin_range,
+    get_action_bin_token_ids,
+    get_action_num_bins,
+    get_action_token_mode,
+    register_action_tokens,
+)
 from utils.chat_template import build_generation_prompt, build_training_conversation
 from utils.prompt_loader import load_templates, render_template
 
@@ -151,6 +158,10 @@ class PointMazeDataset(BaseOfflineDataset):
         sampling_seed: int = DEFAULT_SAMPLING_SEED,
         history_num: int = 0,
         history_stride: int = 1,
+        action_token_mode: str = "text",
+        action_num_bins: int = 10,
+        action_bin_min: float = -1.0,
+        action_bin_max: float = 1.0,
     ):
         super().__init__()
         self.variant = variant
@@ -173,6 +184,15 @@ class PointMazeDataset(BaseOfflineDataset):
         self.sampling_seed = sampling_seed
         self.history_num = history_num
         self.history_stride = history_stride
+        action_config = {
+            "action_token_mode": action_token_mode,
+            "action_num_bins": action_num_bins,
+            "action_bin_min": action_bin_min,
+            "action_bin_max": action_bin_max,
+        }
+        self.action_token_mode = get_action_token_mode(action_config)
+        self.action_num_bins = get_action_num_bins(action_config)
+        self.action_bin_min, self.action_bin_max = get_action_bin_range(action_config)
 
         self._local = threading.local()
         self._samples: list[dict] = []
@@ -187,9 +207,21 @@ class PointMazeDataset(BaseOfflineDataset):
             return None
         fname = (
             f"pointmaze-{variant}-{split}-prompts{self.prompt_template_count}-"
-            f"hist{self.history_num}-stride{self.history_stride}-{self._split_tag()}.pkl"
+            f"hist{self.history_num}-stride{self.history_stride}-{self._split_tag()}-"
+            f"action-{self.action_token_mode}-bins{self.action_num_bins}-"
+            f"range{self.action_bin_min:g}to{self.action_bin_max:g}.pkl"
         )
         return os.path.join(self.cache_dir, fname)
+
+    def _format_action_for_mode(self, action: np.ndarray) -> str:
+        if self.action_token_mode == "text":
+            return formatting.format_action(action)
+        return formatting.format_action_bin_tokens(
+            action,
+            num_bins=self.action_num_bins,
+            low=self.action_bin_min,
+            high=self.action_bin_max,
+        )
 
     def load(self, variant: str, split: str):
         cache_path = self._cache_path(variant, split)
@@ -288,7 +320,7 @@ class PointMazeDataset(BaseOfflineDataset):
                     "observation": obs,
                     "desired_goal": goal,
                 }
-                action_text = formatting.format_action(action)
+                action_text = self._format_action_for_mode(action)
                 history_entries = []
                 if self.history_num > 0:
                     history_indices = []
@@ -301,7 +333,7 @@ class PointMazeDataset(BaseOfflineDataset):
                         history_entries.append(
                             {
                                 "observation": obs_arr[hist_t].astype(np.float32),
-                                "action_text": formatting.format_action(actions[hist_t].astype(np.float32)),
+                                "action_text": self._format_action_for_mode(actions[hist_t].astype(np.float32)),
                                 "steps_ago": t - hist_t,
                             }
                         )
@@ -351,6 +383,16 @@ class PointMazeDataset(BaseOfflineDataset):
             self._local.tokenizer = AutoTokenizer.from_pretrained(
                 self.tokenizer_name_or_path, trust_remote_code=True
             )
+            if self.action_token_mode != "text":
+                register_action_tokens(
+                    self._local.tokenizer,
+                    {
+                        "action_token_mode": self.action_token_mode,
+                        "action_num_bins": self.action_num_bins,
+                        "action_bin_min": self.action_bin_min,
+                        "action_bin_max": self.action_bin_max,
+                    },
+                )
         return self._local.tokenizer
 
     def _tokenize(self, prompt: str, action_text: str) -> dict:
@@ -374,10 +416,32 @@ class PointMazeDataset(BaseOfflineDataset):
         for i in range(min(prompt_len, len(labels))):
             labels[i] = -100
 
+        action_bin_labels = [-1] * len(input_ids)
+        if self.action_token_mode != "text":
+            token_id_to_bin = {
+                token_id: bin_idx
+                for bin_idx, token_id in enumerate(
+                    get_action_bin_token_ids(
+                        tok,
+                        {
+                            "action_token_mode": self.action_token_mode,
+                            "action_num_bins": self.action_num_bins,
+                            "action_bin_min": self.action_bin_min,
+                            "action_bin_max": self.action_bin_max,
+                        },
+                    )
+                )
+            }
+            for pos in range(min(prompt_len, len(input_ids)), len(input_ids)):
+                bin_idx = token_id_to_bin.get(input_ids[pos])
+                if bin_idx is not None:
+                    action_bin_labels[pos] = bin_idx
+
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
+            "action_bin_labels": action_bin_labels,
         }
 
     def __len__(self) -> int:
@@ -385,17 +449,21 @@ class PointMazeDataset(BaseOfflineDataset):
 
     def __getitem__(self, idx: int) -> dict:
         sample = self._samples[idx]
+        action_bin_labels = sample.get("action_bin_labels")
+        if action_bin_labels is None:
+            action_bin_labels = [-1] * len(sample["input_ids"])
         return {
             "input_ids": torch.tensor(sample["input_ids"], dtype=torch.long),
             "attention_mask": torch.tensor(sample["attention_mask"], dtype=torch.long),
             "labels": torch.tensor(sample["labels"], dtype=torch.long),
+            "action_bin_labels": torch.tensor(action_bin_labels, dtype=torch.long),
         }
 
 
 def collate_fn(batch: list[dict]) -> dict:
     """Pad a batch of variable-length sequences to the same length."""
     max_len = max(item["input_ids"].shape[0] for item in batch)
-    input_ids_list, attention_mask_list, labels_list = [], [], []
+    input_ids_list, attention_mask_list, labels_list, action_bin_labels_list = [], [], [], []
 
     for item in batch:
         seq_len = item["input_ids"].shape[0]
@@ -407,9 +475,13 @@ def collate_fn(batch: list[dict]) -> dict:
         labels_list.append(
             torch.cat([item["labels"], torch.full((pad_len,), -100, dtype=torch.long)])
         )
+        action_bin_labels_list.append(
+            torch.cat([item["action_bin_labels"], torch.full((pad_len,), -1, dtype=torch.long)])
+        )
 
     return {
         "input_ids": torch.stack(input_ids_list),
         "attention_mask": torch.stack(attention_mask_list),
         "labels": torch.stack(labels_list),
+        "action_bin_labels": torch.stack(action_bin_labels_list),
     }

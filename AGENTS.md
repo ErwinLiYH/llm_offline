@@ -4,7 +4,7 @@ This file provides guidance to Codex when working with code in this repository.
 
 ## Project Overview
 
-LLM Offline RL: behavior cloning on D4RL PointMaze environments using a fine-tuned LLM via LoRA. Per-family formatters convert observations into prompt render variables; the model predicts actions as compact integer hundredths such as `35,-72`.
+LLM Offline RL: behavior cloning on D4RL PointMaze environments using a fine-tuned LLM via LoRA. Per-family formatters convert observations into prompt render variables; the model predicts actions either as compact integer hundredths such as `35,-72` or as discrete action-bin special tokens such as `<act_03><act_48>`.
 
 Main design reference: `DESIGN.md` (Chinese).
 
@@ -48,6 +48,7 @@ Data flow:
 - fill the first `prompt_template_count` templates
 - wrap the rendered prompt using the tokenizer's native `chat_template` as a user turn; training also appends the action as the assistant turn
 - tokenize with prompt-turn tokens masked out (`labels = -100`)
+- when `action_token_mode: gaussian_bin`, action token positions use a Gaussian soft-label CE over action-bin tokens while non-action assistant tokens such as the chat-template end token use ordinary CE
 - `prompt_template_count` samples per timestep
 
 To add a new environment family:
@@ -65,7 +66,9 @@ To add a new environment family:
 - On parse failure or invalid output, evaluation retries up to `parse_retry_limit`, then falls back to a zero vector and logs fallback metrics.
 - `format_obs(obs, meta)` returns a dict of prompt render variables. It must contain `obs_text`, and may add family-specific fields.
 - PointMaze also implements `format_history(history_entries, meta)`, which renders optional history prompt blocks from sampled past transitions.
-- PointMaze actions are parsed from compact integer hundredths like `35,-72`, interpreted as action*100, validated in `[-1, 1]`, then clipped.
+- PointMaze text-mode actions are parsed from compact integer hundredths like `35,-72`, interpreted as action*100, validated in `[-1, 1]`, then clipped.
+- `action_token_mode` supports `text`, `bin`, and `gaussian_bin`. `bin` and `gaussian_bin` use shared special tokens `<act_00>` ... according to `action_num_bins`; these tokens must be registered on every tokenizer used for tokenization or generation.
+- `gaussian_bin` stores per-token `action_bin_labels` in the dataset and trains action token positions with Gaussian soft labels controlled by `action_soft_label_sigma`; chat-template stop tokens still train with ordinary CE.
 - PointMaze `format_obs` also emits dynamic `map_sensing_en` / `map_sensing_zh`, which describe the current cell, goal cell, and four-neighbor `wall/free` status using 1-based row/column indexing from the top-left corner.
 - PointMaze history entries contain the past step's start position plus executed action. Positions are shown as both grid coordinates and continuous `x/y`.
 - If `history_num > 0`, training samples history from the same episode using indices `t-1`, `t-1-history_stride`, ... and renders entries in chronological order. The first step in each episode has no history block.
@@ -79,14 +82,14 @@ To add a new environment family:
   - If `eval_mode` is omitted, epoch eval follows the resolved training selection.
   - `eval_variants` also uses list semantics; under `except` it is an exclusion list.
 - Multi-variant training, including `all` and `except`, uses weighted sampling by variant sample count. Optional `balance_variant_episode_count: true` first equalizes the offline train episode quota across selected variants to the smallest per-variant target.
-- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, how many prompt templates are used for dataset construction via `prompt_template_count`, offline episode sampling via `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed`, history prompt settings via `history_num` / `history_stride`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
+- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, how many prompt templates are used for dataset construction via `prompt_template_count`, action encoding via `action_token_mode` / `action_num_bins` / `action_bin_min` / `action_bin_max` / `action_soft_label_sigma`, offline episode sampling via `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed`, history prompt settings via `history_num` / `history_stride`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/`.
   - `selection_tag` is the single variant name, `all`, or `except-<excluded variants joined by +>`.
 - Training-time eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/epoch_<n>/eval=<env_family>-<variant>/result.json`.
 - Standalone eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/standalone_<eval_uuid>/eval=<env_family>-<variant>/result.json`.
 - `eval.yaml` uses the same list-based variant selection semantics as training via `eval_mode` + `variants`; legacy `variant: <name|all>` is still accepted for compatibility.
 - `eval.yaml` has its own `history_num` / `history_stride` for standalone eval; training-time epoch eval reuses the training config's history settings.
-- Eval step logs are written by default under each `eval=<...>/episode_<n>/steps/`, using the same `Prompt:` / `Action:` text layout as `inspect_jsonl_record.py` plus executed-action metadata.
+- Eval step logs are written by default under each `eval=<...>/episode_<n>/steps/`, using the same `Prompt:` / `Action:` text layout as `inspect_jsonl_record.py` plus executed-action metadata. In `gaussian_bin` mode they also include per-dimension action-bin probability distributions when `record_step_logs: true`.
 - Eval videos are stored next to the step-log directory inside each `episode_<n>/`; `video_episode_index` accepts an int or list, and `record_all: true` records every episode. Default output format is `gif`, while `mp4` requires an ffmpeg backend. Headless MuJoCo recording should use `mujoco_gl: egl`.
 
 ## Out Of Scope

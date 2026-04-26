@@ -18,6 +18,12 @@ from torch.utils.data import DataLoader, WeightedRandomSampler, ConcatDataset
 from data.registry import get_dataset
 from data.pointmaze.dataset import collate_fn, collect_variant_episode_stats
 from model.policy import load_model_and_tokenizer, get_model_slug
+from utils.action_bins import (
+    gaussian_action_loss,
+    get_action_bin_token_ids,
+    get_action_num_bins,
+    get_action_token_mode,
+)
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 
 
@@ -171,6 +177,10 @@ def build_dataset(config: dict, tokenizer, variant: str, split: str):
         sampling_seed=config.get("sampling_seed", 0),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
+        action_token_mode=config.get("action_token_mode", "text"),
+        action_num_bins=config.get("action_num_bins", 10),
+        action_bin_min=config.get("action_bin_min", -1.0),
+        action_bin_max=config.get("action_bin_max", 1.0),
     )
 
 
@@ -278,6 +288,10 @@ def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, 
         "video_format": config.get("video_format", "gif"),
         "mujoco_gl": config.get("mujoco_gl"),
         "record_step_logs": config.get("record_step_logs", True),
+        "action_token_mode": config.get("action_token_mode", "text"),
+        "action_num_bins": config.get("action_num_bins", 10),
+        "action_bin_min": config.get("action_bin_min", -1.0),
+        "action_bin_max": config.get("action_bin_max", 1.0),
     }
 
     configure_mujoco_gl(eval_config)
@@ -329,6 +343,14 @@ def _run_training(config, model, train_loader, val_loader, device,
     )
 
     num_epochs = config["num_epochs"]
+    action_token_mode = get_action_token_mode(config)
+    bin_token_ids = None
+    if action_token_mode == "gaussian_bin":
+        bin_token_ids = get_action_bin_token_ids(tokenizer, config)
+        action_num_bins = get_action_num_bins(config)
+        action_sigma = float(config.get("action_soft_label_sigma", 1.0))
+        action_loss_weight = float(config.get("action_loss_weight", 1.0))
+        action_stop_loss_weight = float(config.get("action_stop_loss_weight", 1.0))
     progress_interval = float(config.get("progress_interval_seconds", 5.0))
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -344,12 +366,30 @@ def _run_training(config, model, train_loader, val_loader, device,
             labels = batch["labels"].to(device)
 
             optimizer.zero_grad()
-            outputs = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-            )
-            loss = outputs.loss
+            if action_token_mode == "gaussian_bin":
+                action_bin_labels = batch["action_bin_labels"].to(device)
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                )
+                loss, loss_parts = gaussian_action_loss(
+                    outputs.logits,
+                    labels,
+                    action_bin_labels,
+                    bin_token_ids,
+                    action_num_bins,
+                    action_sigma,
+                    action_loss_weight=action_loss_weight,
+                    stop_loss_weight=action_stop_loss_weight,
+                )
+            else:
+                outputs = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                )
+                loss = outputs.loss
+                loss_parts = None
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
@@ -362,7 +402,14 @@ def _run_training(config, model, train_loader, val_loader, device,
                     step,
                     train_total,
                     train_start,
-                    extra=f"loss={loss.item():.4f}",
+                    extra=(
+                        f"loss={loss.item():.4f}"
+                        if loss_parts is None
+                        else (
+                            f"loss={loss.item():.4f} action={loss_parts['action_loss']:.4f} "
+                            f"stop={loss_parts['stop_loss']:.4f}"
+                        )
+                    ),
                     done=step == train_total,
                 )
                 train_last_log = time.monotonic()
@@ -381,12 +428,31 @@ def _run_training(config, model, train_loader, val_loader, device,
                 input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
                 labels = batch["labels"].to(device)
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels,
-                )
-                val_loss += outputs.loss.item()
+                if action_token_mode == "gaussian_bin":
+                    action_bin_labels = batch["action_bin_labels"].to(device)
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                    )
+                    loss, loss_parts = gaussian_action_loss(
+                        outputs.logits,
+                        labels,
+                        action_bin_labels,
+                        bin_token_ids,
+                        action_num_bins,
+                        action_sigma,
+                        action_loss_weight=action_loss_weight,
+                        stop_loss_weight=action_stop_loss_weight,
+                    )
+                else:
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                    )
+                    loss = outputs.loss
+                    loss_parts = None
+                val_loss += loss.item()
                 val_batches += 1
                 if _should_log_progress(step, val_total, val_last_log, progress_interval):
                     _print_progress(
@@ -394,7 +460,14 @@ def _run_training(config, model, train_loader, val_loader, device,
                         step,
                         val_total,
                         val_start,
-                        extra=f"loss={outputs.loss.item():.4f}",
+                        extra=(
+                            f"loss={loss.item():.4f}"
+                            if loss_parts is None
+                            else (
+                                f"loss={loss.item():.4f} action={loss_parts['action_loss']:.4f} "
+                                f"stop={loss_parts['stop_loss']:.4f}"
+                            )
+                        ),
                         done=step == val_total,
                     )
                     val_last_log = time.monotonic()

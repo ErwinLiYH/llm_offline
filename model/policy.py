@@ -3,6 +3,8 @@ import os
 import yaml
 from unsloth import FastLanguageModel
 
+from utils.action_bins import register_action_tokens, uses_action_bins
+
 
 def get_model_slug(model_name: str) -> str:
     """Convert HuggingFace model ID to a filesystem-safe slug.
@@ -26,6 +28,9 @@ def load_model_and_tokenizer(config: dict):
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    if uses_action_bins(config):
+        register_action_tokens(tokenizer, config)
+        model.resize_token_embeddings(len(tokenizer))
 
     model = FastLanguageModel.get_peft_model(
         model,
