@@ -13,6 +13,19 @@ import torch.nn.functional as F
 VALID_ACTION_TOKEN_MODES = {"text", "bin", "gaussian_bin"}
 
 
+def get_tokenizer_backend(tokenizer_or_processor):
+    """Return the actual tokenizer object, unwrapping HF processors when needed."""
+    if hasattr(tokenizer_or_processor, "add_special_tokens"):
+        return tokenizer_or_processor
+    inner = getattr(tokenizer_or_processor, "tokenizer", None)
+    if inner is not None and hasattr(inner, "add_special_tokens"):
+        return inner
+    raise AttributeError(
+        f"{type(tokenizer_or_processor).__name__} does not expose add_special_tokens "
+        "or a tokenizer with add_special_tokens"
+    )
+
+
 def get_action_token_mode(config: dict) -> str:
     mode = str(config.get("action_token_mode", "text"))
     if mode not in VALID_ACTION_TOKEN_MODES:
@@ -54,19 +67,21 @@ def register_action_tokens(tokenizer, config: dict) -> int:
     """Register action-bin tokens on a tokenizer when a bin mode is enabled."""
     if not uses_action_bins(config):
         return 0
+    tok = get_tokenizer_backend(tokenizer)
     tokens = get_action_bin_tokens(get_action_num_bins(config))
-    existing = list(getattr(tokenizer, "additional_special_tokens", []) or [])
+    existing = list(getattr(tok, "additional_special_tokens", []) or [])
     merged = existing + [token for token in tokens if token not in existing]
-    return tokenizer.add_special_tokens({"additional_special_tokens": merged})
+    return tok.add_special_tokens({"additional_special_tokens": merged})
 
 
 def get_action_bin_token_ids(tokenizer, config: dict) -> list[int]:
+    tok = get_tokenizer_backend(tokenizer)
     tokens = get_action_bin_tokens(get_action_num_bins(config))
-    token_ids = tokenizer.convert_tokens_to_ids(tokens)
+    token_ids = tok.convert_tokens_to_ids(tokens)
     missing = [token for token, token_id in zip(tokens, token_ids) if token_id is None or token_id < 0]
     if missing:
         raise ValueError(f"Tokenizer is missing action-bin tokens: {missing}")
-    unk_id = getattr(tokenizer, "unk_token_id", None)
+    unk_id = getattr(tok, "unk_token_id", None)
     if unk_id is not None:
         missing = [token for token, token_id in zip(tokens, token_ids) if token_id == unk_id]
         if missing:

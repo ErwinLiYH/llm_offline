@@ -3,7 +3,7 @@ import os
 import yaml
 from unsloth import FastLanguageModel
 
-from utils.action_bins import register_action_tokens, uses_action_bins
+from utils.action_bins import get_tokenizer_backend, register_action_tokens, uses_action_bins
 
 
 def get_model_slug(model_name: str) -> str:
@@ -30,7 +30,7 @@ def load_model_and_tokenizer(config: dict):
         tokenizer.pad_token = tokenizer.eos_token
     if uses_action_bins(config):
         register_action_tokens(tokenizer, config)
-        model.resize_token_embeddings(len(tokenizer))
+        model.resize_token_embeddings(len(get_tokenizer_backend(tokenizer)))
 
     model = FastLanguageModel.get_peft_model(
         model,
