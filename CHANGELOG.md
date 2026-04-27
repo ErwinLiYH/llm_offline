@@ -416,3 +416,12 @@ type: project
 - 在抽取出的 pool 内再按 `floor(pool_size * train_data_ratio)` 划分 train episodes，剩余 episodes 全部作为 val
 - `episode_keep_ratio: 1` 现在会使用全部 episodes 作为 pool，并按 `train_data_ratio` 正常产生 val，不再出现“train 预留全部 episode 后 val 剩余 0”的 fallback
 - 多 variant balance 现在对齐的是 sampled episode pool 大小；相同 `train_data_ratio` 下各 variant 的 train split 规模随之对齐
+
+---
+
+## gaussian bin local soft-label window（2026-04-27）
+
+**`gaussian_bin` 支持只训练中心附近的 action bins：**
+- 新增 `action_soft_label_radius` 配置项；例如 `2` 表示每个动作位置只训练真实 bin、左侧 2 个 bin、右侧 2 个 bin
+- radius 模式下 loss 只 gather 窗口内 action token logits，并只在该窗口内做 softmax；窗口外 action token 不参与该位置的 loss，也不会收到该位置的梯度
+- 未设置 `action_soft_label_radius` 时保持原行为：在全部 action bins 上计算 Gaussian soft-label CE

@@ -354,6 +354,9 @@ def _run_training(config, model, train_loader, val_loader, device,
         action_sigma = float(config.get("action_soft_label_sigma", 1.0))
         action_loss_weight = float(config.get("action_loss_weight", 1.0))
         action_stop_loss_weight = float(config.get("action_stop_loss_weight", 1.0))
+        action_soft_label_radius = config.get("action_soft_label_radius")
+        if action_soft_label_radius is not None:
+            action_soft_label_radius = int(action_soft_label_radius)
     progress_interval = float(config.get("progress_interval_seconds", 5.0))
     for epoch in range(1, num_epochs + 1):
         model.train()
@@ -384,6 +387,7 @@ def _run_training(config, model, train_loader, val_loader, device,
                     action_sigma,
                     action_loss_weight=action_loss_weight,
                     stop_loss_weight=action_stop_loss_weight,
+                    soft_label_radius=action_soft_label_radius,
                 )
             else:
                 outputs = model(
@@ -451,6 +455,7 @@ def _run_training(config, model, train_loader, val_loader, device,
                         action_sigma,
                         action_loss_weight=action_loss_weight,
                         stop_loss_weight=action_stop_loss_weight,
+                        soft_label_radius=action_soft_label_radius,
                     )
                 else:
                     outputs = model(
