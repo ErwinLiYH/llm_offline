@@ -376,3 +376,33 @@ type: project
 - `evaluate.py` 的 bin / gaussian_bin 模式会保留 special tokens 解码，解析 `<act_XX>` 后映射回连续动作；解析失败仍走原有 retry/fallback 流程
 - standalone eval 的 action 编码配置固定来自 checkpoint 内 `config.yaml`，`eval.yaml` 不允许覆盖 action 相关配置
 - `record_step_logs: true` 且 `action_token_mode: gaussian_bin` 时，step log 会额外记录每个动作维度上所有 action bin 的生成概率分布
+
+---
+
+## utils/variant_selection.py / config docs（2026-04-27）
+
+**`all` 模式支持显式 variant 子集：**
+- `train_mode: all` / `eval_mode: all` 下，如果 `variants` / `eval_variants` 非空，则只选择列表中指定的 variants
+- `all` 模式下如果 variant 列表为空或省略，仍选择所有可用 variants
+- 子集 all 的 `selection_tag` 改为 `all-<selected variants joined by +>`，避免实际只跑子集时路径仍显示为 `all`
+- 同步更新 `config.yaml`、`eval.yaml`、`AGENTS.md` 和 `DESIGN.md` 中关于 `all` 模式列表语义的说明
+
+---
+
+## prompt selection by filename（2026-04-27）
+
+**训练 prompt 选择从数量切换为文件名列表：**
+- `config.yaml` 将 `prompt_template_count` 替换为 `prompt_templete_index: ["0"]`，列表元素是 `prompts/<env_family>/` 下 `.txt` 文件名去掉扩展名后的 prompt 名
+- `utils/prompt_loader.py` 不再要求 prompt 文件名是连续数字；现在按 filename stem 建立 prompt name 到模板文本的映射
+- `PointMazeDataset` 按 `prompt_templete_index` 的顺序选择模板，每个 timestep 仍按所选模板数展开为多条训练样本
+- dataset cache 文件名中的 prompt 部分从 `prompts<N>` 改为 `prompts-<prompt_names>`，避免不同 prompt 组合误复用同一份 tokenized cache
+- 保留旧 `prompt_template_count` 作为未配置 `prompt_templete_index` 时的兼容 fallback；`train.py` 也兼容正确拼写别名 `prompt_template_index`
+
+---
+
+## config.yaml organization（2026-04-27）
+
+**训练配置字段与分组整理：**
+- `config.yaml` 中训练 variant 列表从 `variants` 改名为 `train_varients`，与 `eval_variants` 对称；`train.py` 优先读取新字段，并保留旧 `variants` 作为兼容 fallback
+- `config.yaml` 重新整理为 `General settings`、`Train-related settings`、`Eval-related settings` 三个大板块，并在训练板块内细分 variant、prompt、data、history、action、optimization、LoRA 等小节
+- 重排时保留现有配置值、注释掉的 `experiment_id`、注释掉的 `max_data_num` 和旧 LoRA target_modules 示例

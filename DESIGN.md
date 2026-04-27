@@ -148,9 +148,9 @@ POINTMAZE_VARIANTS = {
 
 #### 核心原则（通用，适用于所有环境族）
 
-- 共享风格模板按环境族存放在 `prompts/<env_family>/<idx>.txt`，索引从 `0` 连续编号
+- 共享风格模板按环境族存放在 `prompts/<env_family>/<prompt_name>.txt`，文件名 stem 就是 prompt 名
 - 每个 variant 只在 `data/<env_family>/variants.py` 中维护自己的 `prompt_vars`，提供环境名、迷宫拓扑、迷宫可视化、结构说明等差异化信息
-- 训练时使用前 `prompt_template_count` 个共享模板，因此每个 timestep 产生 `prompt_template_count` 条训练样本
+- 训练时使用 `prompt_templete_index` 指定的共享模板名，因此每个 timestep 产生“所选模板数”条训练样本
 - 评估时固定使用模板 `0`，保证可复现
 - 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的动态字段；PointMaze 当前动态字段至少包括 `obs_text`、`map_sensing_en/zh`、`history_block_en/zh`
 - 共享模板当前按“静态 Env Description 在前、动态 Current Status 在后”的结构组织，以提高前缀 cache 命中率
@@ -173,7 +173,7 @@ Action:
 
 #### PointMaze 当前实现
 
-- 当前 `prompts/pointmaze/` 下定义了 5 个共享模板：0–2 英文、3–4 中文
+- 当前 `prompts/pointmaze/` 下定义了 5 个共享模板：`0`–`2` 英文、`3`–`4` 中文
 - `POINTMAZE_VARIANTS` 中的每个变种通过 `prompt_vars` 提供共享模板需要的静态字段，如 `env_name`、`maze_map`、`maze_shape`、`maze_visual`、`structure_desc_en`、`structure_desc_zh`
 - PointMaze prompt 当前不再使用 reward 描述；`prompt 0` 也不再输出 raw matrix，只保留 visual maze
 - target 文本仍由 `data/pointmaze/formatting.py` 定义，动作格式为紧凑的百分位整数，如 `35,-72`
@@ -183,7 +183,7 @@ Action:
 
 ### 数据处理
 
-- 每个 timestep 的 `(obs, [goal,] action)` 元组展开为 `prompt_template_count` 条训练样本（对应前 `prompt_template_count` 个共享模板）
+- 每个 timestep 的 `(obs, [goal,] action)` 元组展开为多条训练样本，每条对应 `prompt_templete_index` 中指定的一个共享模板
 - obs、goal 的序列化方式（精度、格式）由各环境族的 `formatting.py` 中的 `format_obs` 函数定义，结果填入模板占位符
 - 如启用历史 prompt，训练数据会在同一 episode 内按 `t-1`、`t-1-history_stride`、... 回溯采样过去 transition，最多取 `history_num` 条，再通过 `format_history(...)` 注入 prompt
 - action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` 使用共享特殊 token `<act_XX>` 表示离散动作 bin
@@ -202,12 +202,13 @@ Action:
 # 环境与任务
 env_family: pointmaze
 train_mode: single       # single | all | except
-variants: [open]         # single: 恰好一个；except: 排除列表；all: 留空
+train_varients: [open]   # single: 恰好一个；all: 指定子集或留空表示全部；except: 排除列表
 history_num: 0           # 采样多少条历史 transition 注入 prompt；0 = 关闭历史
 history_stride: 1        # 每隔多少步采样一条历史
 
 # 基座模型
 model_name: Qwen/Qwen3-0.6B   # 任意 HuggingFace causal LM
+prompt_templete_index: ["0"]  # 使用的 prompt 文件名（不含 .txt）
 
 # 训练超参数
 learning_rate: 1e-4
@@ -291,19 +292,19 @@ Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置
 
 ```
 dataset_cache/
-├── <env_family>-<variant>-train-prompts<N>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.pkl
-├── <env_family>-<variant>-train-prompts<N>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.jsonl
-├── <env_family>-<variant>-val-prompts<N>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.pkl
-└── <env_family>-<variant>-val-prompts<N>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.jsonl
+├── <env_family>-<variant>-train-prompts-<prompt_names>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.pkl
+├── <env_family>-<variant>-train-prompts-<prompt_names>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.jsonl
+├── <env_family>-<variant>-val-prompts-<prompt_names>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.pkl
+└── <env_family>-<variant>-val-prompts-<prompt_names>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.jsonl
 ```
 
-**示例：** `dataset_cache/pointmaze-open-train-prompts1-hist4-stride1-split95.pkl`
+**示例：** `dataset_cache/pointmaze-open-train-prompts-0+3-hist4-stride1-split95-action-text-bins10-range-1to1.pkl`
 
 - `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
 - `.jsonl` 每行是 `{"prompt": "...", "action": "35,-72"}` 或 `{"prompt": "...", "action": "<act_03><act_48>"}`，供人工抽检数据质量
 - 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
 - `max_data_num` 截断发生在 cache 读取之后的内存中，cache 文件始终保存完整数据
-- 不同 `history_num/history_stride` 和 action 编码配置会写入不同 cache 文件名，避免不同历史或动作 tokenization 配置误复用同一份 tokenized 数据
+- 不同 `prompt_templete_index`、`history_num/history_stride` 和 action 编码配置会写入不同 cache 文件名，避免不同 prompt、历史或动作 tokenization 配置误复用同一份 tokenized 数据
 - `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed` 只在未命中 cache 时参与 episode 抽样；命中现有 cache 时会直接复用 `.pkl`，并打印这些设置本次未生效
 
 ---
@@ -385,7 +386,7 @@ python evaluate.py --config eval.yaml
 model_path: checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/final
 env_family: pointmaze
 eval_mode: single       # single | all | except
-variants: [open]         # single: 恰好一个；except: 排除列表；all: 留空
+variants: [open]         # single: 恰好一个；all: 指定子集或留空表示全部；except: 排除列表
 num_episodes: 20
 parse_retry_limit: 3
 env_kwargs:
@@ -404,7 +405,7 @@ project/
 ├── config.yaml
 ├── prompts/
 │   └── <env_family>/            # 每个环境族一个子目录
-│       └── <idx>.txt            # 共享 prompt 模板，按 0..N 连续编号
+│       └── <prompt_name>.txt    # 共享 prompt 模板，文件名 stem 是 prompt 名
 ├── data/
 │   ├── <env_family>/            # 每个环境族一个子目录
 │   │   ├── variants.py          # 该族所有变种的元信息字典
@@ -445,7 +446,7 @@ def validate_action(action) -> bool:
 ### 关键实现细节
 
 1. **Loss masking**：labels 中 `user` turn 与 assistant 前缀部分设为 `-100`，只训练 assistant 动作文本及其结束标记
-2. **每 timestep 展开 `prompt_template_count` 条**：`dataset.py` 构造数据时对每个 timestep 遍历前 `prompt_template_count` 个共享模板，生成对应数量的独立样本
+2. **每 timestep 按所选 prompt 展开**：`dataset.py` 构造数据时对每个 timestep 遍历 `prompt_templete_index` 指定的共享模板名，生成对应数量的独立样本
 3. **Action parsing（环境族绑定）**：evaluate.py 通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 和 `validate_action`。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
    - *PointMaze 实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回
    - 其他环境族在各自 `formatting.py` 中实现对应逻辑，格式和校验规则完全自定义

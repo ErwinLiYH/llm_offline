@@ -91,11 +91,12 @@ def _should_log_progress(step: int, total_steps: int, last_log_time: float, inte
 
 
 def resolve_train_selection(config: dict, available_variants: list[str]) -> VariantSelection:
+    train_variants = config.get("train_varients", config.get("variants"))
     return resolve_selection(
         mode=config["train_mode"],
-        variants=config.get("variants"),
+        variants=train_variants,
         available_variants=available_variants,
-        field_name="variants",
+        field_name="train_varients",
     )
 
 
@@ -170,6 +171,7 @@ def build_dataset(config: dict, tokenizer, variant: str, split: str):
         cache_dir=config.get("dataset_cache_dir"),
         max_data_num=config.get("max_data_num"),
         prompt_template_count=config.get("prompt_template_count", 1),
+        prompt_templete_index=config.get("prompt_templete_index", config.get("prompt_template_index")),
         train_data_ratio=config.get("train_data_ratio", 0.9),
         episode_keep_ratio=config.get("episode_keep_ratio", 1.0),
         balance_variant_episode_count=config.get("balance_variant_episode_count", False),
@@ -552,7 +554,8 @@ def main():
     train_selection = resolve_train_selection(config, available_variants)
     eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)
 
-    config["variants"] = train_selection.configured_variants
+    config["train_varients"] = train_selection.configured_variants
+    config.pop("variants", None)
     config["resolved_train_variants"] = train_selection.selected_variants
     config["train_selection_tag"] = train_selection.selection_tag
     config["resolved_eval_mode"] = eval_selection.mode

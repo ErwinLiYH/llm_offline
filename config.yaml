@@ -1,30 +1,76 @@
+# General settings
 env_family: pointmaze
-train_mode: except        # single | all | except
-variants: [large, large-dense]         # single: exactly one; except: excluded variants; all: leave empty
 
-model_name: Qwen/Qwen3-0.6B
+model_name: Qwen/Qwen3.5-0.8B
 load_in_4bit: false       # true = enable Unsloth 4-bit quantized loading
-prompt_template_count: 1 # number of prompt templates used to build each training split
+max_length: 1024
+
 checkpoint_root: checkpoints  # root directory for saved checkpoints
-dataset_workers: 8            # threads for parallel episode tokenization
+result_root: resultsV2        # root directory for train/eval result outputs
+# experiment_id: ab12cd34     # optional; if omitted, auto-generated per run
+
+
+# Train-related settings
+
+## Variant selection
+train_mode: except        # single | all | except
+train_varients: [large-dense, large]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
+
+## Prompt templates
+prompt_templete_index: ["0"]  # prompt file names without .txt used for each training split
+
+## Data
+dataset_workers: 16            # threads for parallel episode tokenization
 dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable
+train_data_ratio: 0.95         # train uses the first 95% of episodes; val uses the remaining 5%
+episode_keep_ratio: 1          # keep this fraction of training episodes before tokenization; val is derived from the train quota
+balance_variant_episode_count: false  # true = align each selected variant's train episode count to the smallest target
+sampling_seed: 42              # reproducible seed for episode-level train/val sampling
+# max_data_num: 320            # debug only: cap samples per dataset split; comment out for formal training
 
+## History prompts
+history_num: 0                 # number of sampled history transitions to include in each prompt; 0 disables history
+history_stride: 1              # sample every n past transitions when building history
+
+## Action mode
+action_token_mode: gaussian_bin  # text | bin | gaussian_bin
+action_num_bins: 50              # shared action-bin tokens: <act_00> ... <act_49>
+action_bin_min: -1.0
+action_bin_max: 1.0
+action_soft_label_sigma: 1.0     # gaussian_bin only, in bin-index units
+action_loss_weight: 1.0          # gaussian_bin action-token loss
+action_stop_loss_weight: 1.0     # gaussian_bin chat-end token loss
+
+## Optimization
 learning_rate: 0.0001
-num_epochs: 3
-batch_size: 16
-max_length: 512
+num_epochs: 5
+batch_size: 2
 
+# LoRA
 lora_r: 16
 lora_alpha: 32
 lora_dropout: 0.05
-lora_target_modules: ["q_proj", "v_proj"]
+# lora_target_modules: ["q_proj", "v_proj"]
+lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
 
-parse_retry_limit: 3
-max_data_num: 32    # debug only: cap samples per dataset split; comment out for full training
 
-# Epoch-level environment evaluation
+# Eval-related settings
+
+## Epoch-level environment evaluation
 eval_num_episodes: 20    # episodes per variant per epoch; 0 = disable
-eval_mode: all         # optional; defaults to following train_mode
-# eval_variants: [open]  # single: one variant; except: excluded variants; all: leave empty
+eval_mode: all           # optional; defaults to following train_mode
+eval_variants: [open, umaze, medium, large]  # single: one variant; all: selected variants or omit for all; except: excluded variants
 eval_env_kwargs:
   continuing_task: false
+
+## Parsing and logs
+parse_retry_limit: 3
+record_step_logs: true   # whether to save one txt per eval step under the eval result artifacts directory
+
+## Video recording
+record_video: true       # whether to save rollout videos during epoch eval
+record_all: true         # true = record every eval episode; overrides video_episode_index
+video_episode_index: 0   # int or list of ints; which eval episodes to record when record_all=false
+video_fps: 30
+video_format: mp4        # gif works out of the box; mp4 requires ffmpeg backend support
+mujoco_gl: egl           # headless MuJoCo recording backend on this machine

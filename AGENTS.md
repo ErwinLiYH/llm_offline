@@ -34,22 +34,22 @@ Key files:
 - `data/registry.py`: routes `env_family` to dataset + formatter
 - `data/base_dataset.py`: abstract dataset interface
 - `data/<env_family>/variants.py`: variant metadata
-- `data/<env_family>/dataset.py`: load data, expand to `prompt_template_count` samples per timestep, tokenize
+- `data/<env_family>/dataset.py`: load data, expand to one sample per selected prompt template per timestep, tokenize
 - `data/<env_family>/formatting.py`: `format_obs`, `format_action`, `parse_action`, `validate_action`
 - `model/policy.py`: load base model and LoRA adapters
 - `utils/prompt_loader.py`: load shared prompt templates for an environment family
 - `utils/variant_selection.py`: resolve `single | all | except` plus variant lists into concrete training/eval sets
-- `prompts/<env_family>/<idx>.txt`: shared prompt templates for that family; PointMaze currently defines 5
+- `prompts/<env_family>/<prompt_name>.txt`: shared prompt templates for that family; the filename stem is the prompt name
 
 Data flow:
 - dataset
 - episode-level train/val split using randomized sampling: train first draws `floor(total_episodes * episode_keep_ratio)` episodes (at least 1), then val draws from the remaining episodes using the implied `train_data_ratio`
 - per timestep: `format_obs(obs, meta)` + optional sampled history via `format_history(...)` + `format_action`
-- fill the first `prompt_template_count` templates
+- fill the prompt templates named by `prompt_templete_index`; prompt names are `.txt` filenames without the extension
 - wrap the rendered prompt using the tokenizer's native `chat_template` as a user turn; training also appends the action as the assistant turn
 - tokenize with prompt-turn tokens masked out (`labels = -100`)
 - when `action_token_mode: gaussian_bin`, action token positions use a Gaussian soft-label CE over action-bin tokens while non-action assistant tokens such as the chat-template end token use ordinary CE
-- `prompt_template_count` samples per timestep
+- one sample per selected prompt template per timestep
 
 To add a new environment family:
 - add `prompts/<family>/`
@@ -73,18 +73,18 @@ To add a new environment family:
 - PointMaze history entries contain the past step's start position plus executed action. Positions are shown as both grid coordinates and continuous `x/y`.
 - If `history_num > 0`, training samples history from the same episode using indices `t-1`, `t-1-history_stride`, ... and renders entries in chronological order. The first step in each episode has no history block.
 - Standalone eval and training-time epoch eval maintain an online history buffer of actually executed actions, including fallback zero actions on parse failure.
-- Training uses the first `prompt_template_count` templates from shared family prompt files; evaluation always uses template 0. PointMaze currently defines 5 templates, but the loader uses however many indexed `.txt` templates are actually present.
-- Training config uses `train_mode: single | all | except` plus list-valued `variants`.
-  - `single`: `variants` must contain exactly one variant
-  - `all`: `variants` should be empty/omitted
-  - `except`: `variants` is the exclusion list
+- Training uses the templates named by `prompt_templete_index` from shared family prompt files. Prompt names are file stems under `prompts/<env_family>/`, so `prompts/pointmaze/0.txt` is selected as `"0"`. Evaluation uses the first template in filename order unless evaluation code is explicitly changed.
+- Training config uses `train_mode: single | all | except` plus list-valued `train_varients`.
+  - `single`: `train_varients` must contain exactly one variant
+  - `all`: if `train_varients` is non-empty, train exactly those variants; if empty/omitted, use every available variant
+  - `except`: `train_varients` is the exclusion list
 - Epoch eval selection is independent from training selection via optional `eval_mode` and `eval_variants`.
   - If `eval_mode` is omitted, epoch eval follows the resolved training selection.
   - `eval_variants` also uses list semantics; under `except` it is an exclusion list.
 - Multi-variant training, including `all` and `except`, uses weighted sampling by variant sample count. Optional `balance_variant_episode_count: true` first equalizes the offline train episode quota across selected variants to the smallest per-variant target.
-- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, how many prompt templates are used for dataset construction via `prompt_template_count`, action encoding via `action_token_mode` / `action_num_bins` / `action_bin_min` / `action_bin_max` / `action_soft_label_sigma`, offline episode sampling via `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed`, history prompt settings via `history_num` / `history_stride`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
+- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, which prompt templates are used for dataset construction via `prompt_templete_index`, action encoding via `action_token_mode` / `action_num_bins` / `action_bin_min` / `action_bin_max` / `action_soft_label_sigma`, offline episode sampling via `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed`, history prompt settings via `history_num` / `history_stride`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/`.
-  - `selection_tag` is the single variant name, `all`, or `except-<excluded variants joined by +>`.
+  - `selection_tag` is the single variant name, `all`, `all-<selected variants joined by +>`, or `except-<excluded variants joined by +>`.
 - Training-time eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/epoch_<n>/eval=<env_family>-<variant>/result.json`.
 - Standalone eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/standalone_<eval_uuid>/eval=<env_family>-<variant>/result.json`.
 - `eval.yaml` uses the same list-based variant selection semantics as training via `eval_mode` + `variants`; legacy `variant: <name|all>` is still accepted for compatibility.

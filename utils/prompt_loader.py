@@ -3,12 +3,7 @@ from string import Formatter
 from typing import List
 
 
-def load_templates(env_family: str) -> List[str]:
-    """Load shared prompt templates for an environment family.
-
-    Templates live at prompts/<env_family>/<idx>.txt and are loaded in ascending
-    numeric index order. Indices must be contiguous starting from 0.
-    """
+def _get_prompt_dir(env_family: str) -> str:
     prompt_dir = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
         "prompts",
@@ -16,32 +11,48 @@ def load_templates(env_family: str) -> List[str]:
     )
     if not os.path.isdir(prompt_dir):
         raise FileNotFoundError(f"Prompt directory not found: {prompt_dir}")
+    return prompt_dir
 
-    indexed_paths: list[tuple[int, str]] = []
+
+def load_template_map(env_family: str) -> dict[str, str]:
+    """Load shared prompt templates keyed by prompt filename stem."""
+    prompt_dir = _get_prompt_dir(env_family)
+
+    templates: dict[str, str] = {}
     for name in os.listdir(prompt_dir):
         stem, ext = os.path.splitext(name)
         if ext != ".txt":
             continue
-        if not stem.isdigit():
-            raise ValueError(f"Prompt template filename must be numeric: {name}")
-        indexed_paths.append((int(stem), os.path.join(prompt_dir, name)))
-
-    if not indexed_paths:
-        raise ValueError(f"No prompt templates found in {prompt_dir}")
-
-    indexed_paths.sort()
-    expected = list(range(len(indexed_paths)))
-    actual = [idx for idx, _ in indexed_paths]
-    if actual != expected:
-        raise ValueError(
-            f"Prompt template indices must be contiguous from 0 in {prompt_dir}; got {actual}"
-        )
-
-    templates = []
-    for _, path in indexed_paths:
+        path = os.path.join(prompt_dir, name)
         with open(path, "r", encoding="utf-8") as f:
-            templates.append(f.read())
+            templates[stem] = f.read()
+
+    if not templates:
+        raise ValueError(f"No prompt templates found in {prompt_dir}")
     return templates
+
+
+def load_template_names(env_family: str) -> list[str]:
+    """Return available prompt template names in deterministic order."""
+    return sorted(load_template_map(env_family))
+
+
+def load_named_templates(env_family: str, prompt_names: list[str]) -> list[str]:
+    """Load prompt templates by filename stem, preserving the requested order."""
+    templates_by_name = load_template_map(env_family)
+    missing = [name for name in prompt_names if name not in templates_by_name]
+    if missing:
+        available = ", ".join(sorted(templates_by_name))
+        raise ValueError(
+            f"Unknown prompt template names for {env_family}: {missing}. Available: {available}"
+        )
+    return [templates_by_name[name] for name in prompt_names]
+
+
+def load_templates(env_family: str) -> List[str]:
+    """Load all shared prompt templates for an environment family by filename order."""
+    templates_by_name = load_template_map(env_family)
+    return [templates_by_name[name] for name in sorted(templates_by_name)]
 
 
 def render_template(template: str, prompt_vars: dict, **extra_vars) -> str:

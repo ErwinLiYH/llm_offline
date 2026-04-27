@@ -33,7 +33,7 @@ from utils.action_bins import (
     register_action_tokens,
 )
 from utils.chat_template import build_generation_prompt, build_training_conversation
-from utils.prompt_loader import load_templates, render_template
+from utils.prompt_loader import load_named_templates, load_template_names, render_template
 
 DEFAULT_TRAIN_DATA_RATIO = 0.9
 DEFAULT_EPISODE_KEEP_RATIO = 1.0
@@ -151,6 +151,7 @@ class PointMazeDataset(BaseOfflineDataset):
         cache_dir: str | None = None,
         max_data_num: int | None = None,
         prompt_template_count: int = 1,
+        prompt_templete_index: list[str] | None = None,
         train_data_ratio: float = DEFAULT_TRAIN_DATA_RATIO,
         episode_keep_ratio: float = DEFAULT_EPISODE_KEEP_RATIO,
         balance_variant_episode_count: bool = False,
@@ -177,6 +178,7 @@ class PointMazeDataset(BaseOfflineDataset):
         self.cache_dir = cache_dir
         self.max_data_num = max_data_num
         self.prompt_template_count = prompt_template_count
+        self.prompt_templete_index = self._normalize_prompt_templete_index(prompt_templete_index)
         self.train_data_ratio = train_data_ratio
         self.episode_keep_ratio = episode_keep_ratio
         self.balance_variant_episode_count = balance_variant_episode_count
@@ -202,11 +204,61 @@ class PointMazeDataset(BaseOfflineDataset):
         train_pct = int(round(self.train_data_ratio * 100))
         return f"split{train_pct:02d}"
 
+    @staticmethod
+    def _normalize_prompt_templete_index(value) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError(
+                f"prompt_templete_index must be a list of prompt names, got {type(value).__name__}"
+            )
+        names = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(f"prompt_templete_index must contain non-empty strings, got {item!r}")
+            names.append(item.strip())
+        if not names:
+            raise ValueError("prompt_templete_index must not be empty when provided")
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"prompt_templete_index contains duplicate prompt names: {duplicates}")
+        return names
+
+    def _resolve_prompt_names(self) -> list[str]:
+        available_names = load_template_names("pointmaze")
+        if self.prompt_templete_index is not None:
+            missing = [name for name in self.prompt_templete_index if name not in available_names]
+            if missing:
+                available = ", ".join(available_names)
+                raise ValueError(
+                    f"Unknown prompt template names for pointmaze: {missing}. Available: {available}"
+                )
+            return list(self.prompt_templete_index)
+
+        if self.prompt_template_count < 1:
+            raise ValueError(
+                f"prompt_template_count must be >= 1, got {self.prompt_template_count}"
+            )
+        if self.prompt_template_count > len(available_names):
+            raise ValueError(
+                "prompt_template_count exceeds available templates: "
+                f"requested {self.prompt_template_count}, available {len(available_names)}"
+            )
+        return available_names[: self.prompt_template_count]
+
+    def _prompt_cache_tag(self) -> str:
+        prompt_names = self._resolve_prompt_names()
+        joined = "+".join(prompt_names)
+        if len(joined) <= 80 and all(ch.isalnum() or ch in "._+-" for ch in joined):
+            return joined
+        digest = hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
+        return f"hash-{digest}"
+
     def _cache_path(self, variant: str, split: str) -> str | None:
         if self.cache_dir is None:
             return None
         fname = (
-            f"pointmaze-{variant}-{split}-prompts{self.prompt_template_count}-"
+            f"pointmaze-{variant}-{split}-prompts-{self._prompt_cache_tag()}-"
             f"hist{self.history_num}-stride{self.history_stride}-{self._split_tag()}-"
             f"action-{self.action_token_mode}-bins{self.action_num_bins}-"
             f"range{self.action_bin_min:g}to{self.action_bin_max:g}.pkl"
@@ -258,17 +310,8 @@ class PointMazeDataset(BaseOfflineDataset):
             raise ValueError(f"history_stride must be >= 1, got {self.history_stride}")
 
         meta = POINTMAZE_VARIANTS[variant]
-        all_templates = load_templates("pointmaze")
-        if self.prompt_template_count < 1:
-            raise ValueError(
-                f"prompt_template_count must be >= 1, got {self.prompt_template_count}"
-            )
-        if self.prompt_template_count > len(all_templates):
-            raise ValueError(
-                "prompt_template_count exceeds available templates: "
-                f"requested {self.prompt_template_count}, available {len(all_templates)}"
-            )
-        templates = all_templates[: self.prompt_template_count]
+        prompt_names = self._resolve_prompt_names()
+        templates = load_named_templates("pointmaze", prompt_names)
         prompt_vars = meta["prompt_vars"]
 
         selection = select_variant_episode_indices(

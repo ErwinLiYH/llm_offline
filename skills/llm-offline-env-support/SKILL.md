@@ -10,7 +10,7 @@ description: Use this skill when adding or updating environment-family support o
 Use this skill when the user wants to add a new PointMaze variant, add a new environment family, or refactor how prompt metadata, formatting, and action decoding are connected.
 
 This repo uses:
-- family-level shared prompt templates in `prompts/<env_family>/<idx>.txt`
+- family-level shared prompt templates in `prompts/<env_family>/<prompt_name>.txt`
 - variant metadata in `data/<env_family>/variants.py`
 - family formatter/decoder functions in `data/<env_family>/formatting.py`
 - family dataset construction in `data/<env_family>/dataset.py`
@@ -59,7 +59,7 @@ For PointMaze today that includes at least:
 - `structure_desc_zh`
 
 3. Do not add a new prompt file for the variant unless the user explicitly wants a prompt-system change.
-The current design is that variants provide metadata and all variants in the family reuse `prompts/<env_family>/<idx>.txt`.
+The current design is that variants provide metadata and all variants in the family reuse `prompts/<env_family>/<prompt_name>.txt`.
 
 4. Verify the shared templates can render with the new `prompt_vars`.
 Missing variables must fail loudly. Extra variables are allowed.
@@ -86,15 +86,15 @@ These are the family boundary. If these are incomplete, training or evaluation i
 The dataset must:
 - load the offline data for the family
 - split train/val at episode level when applicable
-- load shared family templates from `prompts/<env_family>/<idx>.txt`
+- load shared family templates from `prompts/<env_family>/<prompt_name>.txt`
 - render prompts with `render_template(template, prompt_vars, obs_text=...)`
-- respect `prompt_template_count`
-- use cache filenames that include `prompts<N>`
+- respect `prompt_templete_index` prompt-name selection
+- use cache filenames that include the selected prompt-name tag
 
-4. Create `prompts/<env_family>/0.txt`, `1.txt`, and any additional indexed templates.
+4. Create `prompts/<env_family>/<prompt_name>.txt` templates.
 Requirements:
-- filenames must be numeric and contiguous from `0`
-- template `0` is the evaluation template unless the code is intentionally changed
+- filenames define prompt names; they do not need to be numeric
+- evaluation uses the first template in filename order unless the code is intentionally changed
 - templates should be style variants, not variant-specific copies
 
 5. Register the family in `data/registry.py`.
@@ -108,11 +108,11 @@ Prefer not to add special cases. Follow the existing family abstraction.
 ## Prompt Rules
 
 The current prompt system is strict:
-- shared prompt files live at `prompts/<env_family>/<idx>.txt`
-- `utils/prompt_loader.py` loads templates by numeric index
+- shared prompt files live at `prompts/<env_family>/<prompt_name>.txt`
+- `utils/prompt_loader.py` loads templates by filename stem
 - `render_template(...)` raises on missing variables
-- evaluation uses template `0`
-- training uses the first `prompt_template_count` templates
+- evaluation uses the first template in filename order
+- training uses the templates named by `prompt_templete_index`
 
 When updating prompts, avoid these mistakes:
 - do not reintroduce per-variant duplicated prompt files
@@ -125,11 +125,11 @@ When updating prompts, avoid these mistakes:
 After adding a variant or family, validate at minimum:
 - `python -m py_compile` passes for the touched Python files
 - shared templates load successfully
-- one representative variant can render template `0` with `render_template(...)`
-- `prompt_template_count=1` works
-- `prompt_template_count` greater than available templates fails clearly
+- one representative variant can render a selected prompt template with `render_template(...)`
+- `prompt_templete_index: ["0"]` works for the current PointMaze prompts
+- unknown prompt names fail clearly
 - training and evaluation still import the family without special-case edits unless intentionally required
-- dataset cache naming still includes `prompts<N>`
+- dataset cache naming still includes the selected prompt-name tag
 
 ## Project-Specific Notes
 

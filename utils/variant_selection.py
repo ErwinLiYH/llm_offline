@@ -63,6 +63,11 @@ def _except_tag(excluded_variants: list[str]) -> str:
     return f"except-{joined}"
 
 
+def _all_subset_tag(selected_variants: list[str]) -> str:
+    joined = "+".join(sorted(selected_variants))
+    return f"all-{joined}"
+
+
 
 def resolve_selection(
     *,
@@ -85,11 +90,9 @@ def resolve_selection(
         selection_tag = selected_variants[0]
         configured_for_record = configured_variants or selected_variants
     elif mode == "all":
-        if configured_variants:
-            raise ValueError(f"{field_name} must be empty when mode='all', got {configured_variants}")
-        selected_variants = list(available_variants)
-        selection_tag = "all"
-        configured_for_record = []
+        selected_variants = configured_variants or list(available_variants)
+        selection_tag = "all" if not configured_variants else _all_subset_tag(selected_variants)
+        configured_for_record = configured_variants
     elif mode == "except":
         excluded_variants = configured_variants or list(default_variants or [])
         if not excluded_variants:
