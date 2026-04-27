@@ -189,7 +189,7 @@ Action:
 - action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` 使用共享特殊 token `<act_XX>` 表示离散动作 bin
 - 训练 tokenization 不再直接编码 `prompt + action_text`；而是将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence
 - `gaussian_bin` 会额外在 dataset 中记录 `action_bin_labels`，动作 token 位置使用高斯 soft-label CE，chat-template 结束 token 等非动作 assistant token 仍使用普通 CE
-- train/val 划分在 **episode 级别**进行：先按 `episode_keep_ratio` 随机无放回抽样 train episodes（至少保留 1 条），再按 `train_data_ratio` 反推 val quota，并从剩余 episodes 中随机无放回补足 val，避免同一 episode 同时出现在 train 和 val 中
+- train/val 划分在 **episode 级别**进行：先按 `episode_keep_ratio` 随机无放回抽样一个 episode pool（至少保留 1 条），再在该 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余 episodes 作为 val，避免同一 episode 同时出现在 train 和 val 中
 - 每个 episode 的第一个 timestep 没有历史；评估 rollout 中也同样如此，只有一步实际动作执行完成后才会写入在线 history buffer
 
 ---
@@ -232,8 +232,8 @@ action_soft_label_sigma: 1.0  # gaussian_bin 的高斯宽度，单位是 bin ind
 
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
-episode_keep_ratio: 1.0  # 训练 episode 保留比例，只作用于未命中 cache 的 offline dataset 构建
-balance_variant_episode_count: false  # 多 variant 时是否把 train episode quota 对齐到最小 variant
+episode_keep_ratio: 1.0  # 参与 train/val 划分的 episode pool 比例，只作用于未命中 cache 的 offline dataset 构建
+balance_variant_episode_count: false  # 多 variant 时是否把 sampled episode pool 对齐到最小 variant
 sampling_seed: 0         # 控制 episode 随机抽样的可复现性
 ```
 
@@ -453,7 +453,7 @@ def validate_action(action) -> bool:
 4. **Obs/Action 序列化（环境族绑定）**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs` 和 `format_action`，不依赖任何全局 formatting 工具
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text` 以及动态 `map_sensing_en` / `map_sensing_zh`
    - `map_sensing` 会直接给出当前位置格子、目标格子，以及上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数
-5. **Episode 级别 train/val 划分**：先按 `episode_keep_ratio` 随机抽样 train episodes，再从剩余 episodes 中按 `train_data_ratio` 反推得到的 quota 抽样 val，防止数据泄露
+5. **Episode 级别 train/val 划分**：先按 `episode_keep_ratio` 随机抽样 episode pool，再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 6. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖
 7. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
 

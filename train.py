@@ -10,6 +10,7 @@ import uuid
 import os
 import json
 import time
+import math
 
 import yaml
 import torch
@@ -198,14 +199,14 @@ def _resolve_balanced_train_episode_count(config: dict, selected_variants: list[
 
     keep_ratio = config.get("episode_keep_ratio", 1.0)
     variant_stats = [collect_variant_episode_stats(variant, keep_ratio) for variant in selected_variants]
-    balanced_target = min(stat["initial_train_target"] for stat in variant_stats)
+    balanced_target = min(stat["sampled_episode_target"] for stat in variant_stats)
     stats_text = ", ".join(
         f"{stat['variant']}: total_episodes={stat['total_episodes']}, "
-        f"initial_train_target={stat['initial_train_target']}"
+        f"sampled_episode_target={stat['sampled_episode_target']}"
         for stat in variant_stats
     )
     print(f"[train] Multi-variant episode balance stats -> {stats_text}")
-    print(f"[train] Balanced train episode target across variants: {balanced_target}")
+    print(f"[train] Balanced sampled episode target across variants: {balanced_target}")
     return balanced_target
 
 
@@ -419,9 +420,14 @@ def _run_training(config, model, train_loader, val_loader, device,
         train_loss = total_loss / max(num_batches, 1)
 
         model.eval()
-        val_loss = 0.0
-        val_batches = 0
         val_total = len(val_loader)
+        if val_total == 0:
+            print(f"[epoch {epoch}/{num_epochs}] WARNING: val_loader is empty; val_loss will be reported as NaN.")
+            val_loss = math.nan
+            val_batches = 0
+        else:
+            val_loss = 0.0
+            val_batches = 0
         val_start = time.monotonic()
         val_last_log = val_start - progress_interval
         val_desc = f"Epoch {epoch}/{num_epochs} [val]"
@@ -474,7 +480,8 @@ def _run_training(config, model, train_loader, val_loader, device,
                     )
                     val_last_log = time.monotonic()
 
-        val_loss = val_loss / max(val_batches, 1)
+        if val_batches > 0:
+            val_loss = val_loss / val_batches
         print(f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
 
         epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)

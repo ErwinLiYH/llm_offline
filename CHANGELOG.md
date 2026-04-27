@@ -406,3 +406,13 @@ type: project
 - `config.yaml` 中训练 variant 列表从 `variants` 改名为 `train_varients`，与 `eval_variants` 对称；`train.py` 优先读取新字段，并保留旧 `variants` 作为兼容 fallback
 - `config.yaml` 重新整理为 `General settings`、`Train-related settings`、`Eval-related settings` 三个大板块，并在训练板块内细分 variant、prompt、data、history、action、optimization、LoRA 等小节
 - 重排时保留现有配置值、注释掉的 `experiment_id`、注释掉的 `max_data_num` 和旧 LoRA target_modules 示例
+
+---
+
+## episode sampling split semantics（2026-04-27）
+
+**`episode_keep_ratio` 改为先抽 pool 再划分 train/val：**
+- PointMaze dataset 现在先按 `floor(total_episodes * episode_keep_ratio)` 随机无放回抽取 episode pool（至少 1 条）
+- 在抽取出的 pool 内再按 `floor(pool_size * train_data_ratio)` 划分 train episodes，剩余 episodes 全部作为 val
+- `episode_keep_ratio: 1` 现在会使用全部 episodes 作为 pool，并按 `train_data_ratio` 正常产生 val，不再出现“train 预留全部 episode 后 val 剩余 0”的 fallback
+- 多 variant balance 现在对齐的是 sampled episode pool 大小；相同 `train_data_ratio` 下各 variant 的 train split 规模随之对齐

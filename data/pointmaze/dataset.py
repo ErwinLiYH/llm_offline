@@ -48,7 +48,7 @@ def _load_variant_episodes(variant: str):
     return meta, episodes, step_counts
 
 
-def _compute_train_episode_target(total_episodes: int, episode_keep_ratio: float) -> int:
+def _compute_sampled_episode_target(total_episodes: int, episode_keep_ratio: float) -> int:
     if total_episodes < 1:
         raise ValueError("Offline dataset contains no episodes.")
     if not (0.0 < episode_keep_ratio <= 1.0):
@@ -68,12 +68,13 @@ def collect_variant_episode_stats(variant: str, episode_keep_ratio: float) -> di
     _, episodes, step_counts = _load_variant_episodes(variant)
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
-    initial_train_target = _compute_train_episode_target(total_episodes, episode_keep_ratio)
+    sampled_episode_target = _compute_sampled_episode_target(total_episodes, episode_keep_ratio)
     return {
         "variant": variant,
         "total_episodes": total_episodes,
         "total_steps": total_steps,
-        "initial_train_target": initial_train_target,
+        "initial_train_target": sampled_episode_target,
+        "sampled_episode_target": sampled_episode_target,
     }
 
 
@@ -95,36 +96,36 @@ def select_variant_episode_indices(
     _, episodes, step_counts = _load_variant_episodes(variant)
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
-    initial_train_target = _compute_train_episode_target(total_episodes, episode_keep_ratio)
-    train_target = initial_train_target if balanced_train_target is None else balanced_train_target
-    train_target = min(total_episodes, train_target)
-    if train_target < 1:
-        raise ValueError(f"train_target must be >= 1 for variant={variant}, got {train_target}")
+    initial_sampled_target = _compute_sampled_episode_target(total_episodes, episode_keep_ratio)
+    sampled_target = initial_sampled_target if balanced_train_target is None else balanced_train_target
+    sampled_target = min(total_episodes, sampled_target)
+    if sampled_target < 1:
+        raise ValueError(f"sampled_target must be >= 1 for variant={variant}, got {sampled_target}")
 
-    val_target = math.floor(train_target * (1.0 - train_data_ratio) / train_data_ratio)
     rng = np.random.default_rng(_variant_sampling_seed(variant, sampling_seed))
     permutation = rng.permutation(total_episodes).tolist()
-    train_indices = sorted(permutation[:train_target])
-    remaining_indices = permutation[train_target:]
-    actual_val_target = min(val_target, len(remaining_indices))
-    val_indices = sorted(remaining_indices[:actual_val_target])
+    sampled_indices = permutation[:sampled_target]
+    train_target = math.floor(sampled_target * train_data_ratio)
+    if train_target < 1:
+        raise ValueError(
+            "train_data_ratio and episode_keep_ratio selected zero train episodes: "
+            f"sampled_target={sampled_target}, train_data_ratio={train_data_ratio}"
+        )
+    val_target = sampled_target - train_target
+    train_indices = sorted(sampled_indices[:train_target])
+    val_indices = sorted(sampled_indices[train_target:])
 
     train_steps = sum(step_counts[idx] for idx in train_indices)
     val_steps = sum(step_counts[idx] for idx in val_indices)
-
-    val_shortfall_reason = None
-    if actual_val_target < val_target:
-        val_shortfall_reason = (
-            f"requested {val_target} val episodes but only {len(remaining_indices)} remained "
-            f"after reserving {train_target} train episodes"
-        )
 
     return {
         "variant": variant,
         "episodes": episodes,
         "total_episodes": total_episodes,
         "total_steps": total_steps,
-        "initial_train_target": initial_train_target,
+        "initial_train_target": initial_sampled_target,
+        "initial_sampled_target": initial_sampled_target,
+        "sampled_episode_count": sampled_target,
         "balanced_train_target": balanced_train_target,
         "train_indices": train_indices,
         "val_indices": val_indices,
@@ -133,7 +134,7 @@ def select_variant_episode_indices(
         "train_steps": train_steps,
         "val_steps": val_steps,
         "val_target": val_target,
-        "val_shortfall_reason": val_shortfall_reason,
+        "val_shortfall_reason": None,
     }
 
 
@@ -327,21 +328,26 @@ class PointMazeDataset(BaseOfflineDataset):
             "not applied"
             if balanced_target is None
             else (
-                f"clipped to {selection['train_episode_count']}"
-                if balanced_target < selection["initial_train_target"]
+                f"sampled pool clipped to {selection['sampled_episode_count']}"
+                if balanced_target < selection["initial_sampled_target"]
                 else "enabled, unchanged"
             )
         )
         if split == "train":
             print(
                 f"[dataset] Variant {variant}: total_episodes={selection['total_episodes']}, "
-                f"total_steps={selection['total_steps']}, initial_train_target={selection['initial_train_target']}, "
-                f"balance={balance_text}, final_train_episodes={selection['train_episode_count']}, "
+                f"total_steps={selection['total_steps']}, initial_sampled_target={selection['initial_sampled_target']}, "
+                f"balance={balance_text}, sampled_episodes={selection['sampled_episode_count']}, "
+                f"final_train_episodes={selection['train_episode_count']}, "
                 f"train_steps={selection['train_steps']}, final_val_episodes={selection['val_episode_count']}, "
                 f"val_steps={selection['val_steps']}"
             )
-            if selection["val_shortfall_reason"]:
-                print(f"[dataset] Variant {variant}: val fallback -> {selection['val_shortfall_reason']}")
+        if split == "val" and selection["val_episode_count"] == 0:
+            print(
+                f"[dataset] WARNING: Variant {variant} val split is empty "
+                f"(sampled_episodes={selection['sampled_episode_count']}, "
+                f"train_data_ratio={self.train_data_ratio})."
+            )
 
         if split == "train":
             episodes = [all_episodes[idx] for idx in selection["train_indices"]]
