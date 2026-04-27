@@ -11,7 +11,7 @@
 - **训练框架**：PyTorch + HuggingFace Transformers + PEFT（LoRA）+ Unsloth（训练加速）
 
 **依赖版本约束：**
-- `transformers==4.56.1`：Unsloth 2026.3.x 与 transformers 5.x 不兼容（`generate()` 路径中 `DynamicCache` 与 Unsloth fast inference 返回格式冲突，导致 Qwen3 RoPE shape mismatch）。如需升级 transformers，请先验证 `model.generate()` 在 Unsloth 模型上是否正常工作，或切换 `generate_action` 为注释中的 manual greedy fallback。
+- 当前环境验证为 `unsloth==2026.4.8` + `transformers==5.2.0`。早期 Unsloth 2026.3.x 曾与 transformers 5.x 的 `generate()` / cache 行为不兼容，需要临时降级到 4.56.1；该问题在当前环境中已解决，不再默认要求降级 transformers。
 
 ---
 
