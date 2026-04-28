@@ -7,6 +7,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor
 
 import minari
+from minari import MinariDataset
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -24,7 +25,11 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from data.base_dataset import BaseOfflineDataset
 from data.pointmaze import formatting
-from data.pointmaze.variants import POINTMAZE_VARIANTS
+from data.pointmaze.variants import (
+    POINTMAZE_VARIANTS,
+    get_pointmaze_variant_type,
+    resolve_local_dataset_path,
+)
 from utils.action_bins import (
     get_action_bin_range,
     get_action_bin_token_ids,
@@ -42,10 +47,32 @@ DEFAULT_SAMPLING_SEED = 0
 
 def _load_variant_episodes(variant: str):
     meta = POINTMAZE_VARIANTS[variant]
-    dataset = minari.load_dataset(meta["dataset_id"], download=True)
+    if get_pointmaze_variant_type(meta) == "local":
+        dataset_root = resolve_local_dataset_path(meta["dataset_path"])
+        data_path = dataset_root / "data"
+        if not data_path.exists():
+            raise FileNotFoundError(
+                f"Local PointMaze dataset for variant={variant!r} not found at {data_path}. "
+                "Generate it with local_varient_gen.py first."
+            )
+        dataset = MinariDataset(data_path)
+    else:
+        dataset = minari.load_dataset(meta["dataset_id"], download=True)
     episodes = list(dataset.iterate_episodes())
     step_counts = [len(episode.actions) for episode in episodes]
     return meta, episodes, step_counts
+
+
+def _local_dataset_step_signature(meta: dict) -> str:
+    dataset_root = resolve_local_dataset_path(meta["dataset_path"])
+    data_path = dataset_root / "data"
+    if not data_path.exists():
+        raise FileNotFoundError(
+            f"Local PointMaze dataset not found at {data_path}. "
+            "Generate it with local_varient_gen.py first."
+        )
+    dataset = MinariDataset(data_path)
+    return f"localsteps{int(dataset.total_steps)}"
 
 
 def _compute_sampled_episode_target(total_episodes: int, episode_keep_ratio: float) -> int:
@@ -258,8 +285,12 @@ class PointMazeDataset(BaseOfflineDataset):
     def _cache_path(self, variant: str, split: str) -> str | None:
         if self.cache_dir is None:
             return None
+        meta = POINTMAZE_VARIANTS[variant]
+        data_signature = ""
+        if get_pointmaze_variant_type(meta) == "local":
+            data_signature = f"-{_local_dataset_step_signature(meta)}"
         fname = (
-            f"pointmaze-{variant}-{split}-prompts-{self._prompt_cache_tag()}-"
+            f"pointmaze-{variant}-{split}{data_signature}-prompts-{self._prompt_cache_tag()}-"
             f"hist{self.history_num}-stride{self.history_stride}-{self._split_tag()}-"
             f"action-{self.action_token_mode}-bins{self.action_num_bins}-"
             f"range{self.action_bin_min:g}to{self.action_bin_max:g}.pkl"

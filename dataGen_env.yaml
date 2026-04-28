@@ -1,0 +1,10 @@
+name: d4rl_datagen
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - gymnasium==0.29.1
+    - -r third_party/minari-dataset-generation-scripts/scripts/pointmaze/requirements.txt
+    - -r third_party/minari-dataset-generation-scripts/checks/requirements.txt

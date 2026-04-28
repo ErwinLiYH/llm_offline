@@ -25,6 +25,7 @@ results/
 resultsV2/
 
 # Datasets / caches
+local_datasets/
 *.hdf5
 *.npz
 *.pkl

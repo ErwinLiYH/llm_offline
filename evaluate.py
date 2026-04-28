@@ -18,7 +18,7 @@ import torch
 import yaml
 
 from data.registry import get_formatter
-from data.pointmaze.variants import POINTMAZE_VARIANTS
+from data.pointmaze.variants import POINTMAZE_VARIANTS, get_pointmaze_variant_type
 from model.policy import load_from_checkpoint
 from utils.action_bins import (
     bin_to_continuous,
@@ -374,7 +374,13 @@ def evaluate_variant(
 ) -> dict:
     formatter = get_formatter(config["env_family"])
     meta = POINTMAZE_VARIANTS[variant]
-    env_id = meta["env_id"]
+    if get_pointmaze_variant_type(meta) == "local":
+        env_paras = dict(meta["env_paras"])
+        env_id = env_paras.pop("id")
+        env_kwargs = env_paras
+    else:
+        env_id = meta["env_id"]
+        env_kwargs = {}
     num_episodes = config["num_episodes"]
     parse_retry_limit = config["parse_retry_limit"]
     history_num = int(config.get("history_num", 0))
@@ -384,7 +390,7 @@ def evaluate_variant(
     if history_stride < 1:
         raise ValueError(f"history_stride must be >= 1, got {history_stride}")
 
-    env_kwargs = dict(config.get("env_kwargs") or {})
+    env_kwargs.update(dict(config.get("env_kwargs") or {}))
     record_video = bool(config.get("record_video", False))
     video_episode_indices = _resolve_video_episode_indices(config, num_episodes)
     video_episode_index_set = set(video_episode_indices)
