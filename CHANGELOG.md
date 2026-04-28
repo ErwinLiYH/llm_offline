@@ -425,3 +425,42 @@ type: project
 - 新增 `action_soft_label_radius` 配置项；例如 `2` 表示每个动作位置只训练真实 bin、左侧 2 个 bin、右侧 2 个 bin
 - radius 模式下 loss 只 gather 窗口内 action token logits，并只在该窗口内做 softmax；窗口外 action token 不参与该位置的 loss，也不会收到该位置的梯度
 - 未设置 `action_soft_label_radius` 时保持原行为：在全部 action bins 上计算 Gaussian soft-label CE
+
+---
+
+## PointMaze local dataset + official generation（2026-04-28）
+
+**新增 local / remote variant 数据源区分：**
+- `data/pointmaze/variants.py`：remote variant 补充 `varient_type: "remote"`；新增 local variant 元数据，使用 `dataset_path`、`env_paras` 和本地 `maze_map`
+- `data/pointmaze/dataset.py`：remote 继续通过 `minari.load_dataset(..., download=True)` 读取；local 通过本地 Minari dataset 的 `data/` 目录读取
+- local dataset cache 文件名加入 `localsteps<total_steps>` 签名，避免本地数据扩展后误读旧 tokenized cache
+- `evaluate.py`：local variant 评估时用 `env_paras` 创建环境，并保留 `env_kwargs` 覆盖能力
+
+**新增 9 个正式本地 PointMaze layout：**
+- 新增 `local-layout-01` 到 `local-layout-09`
+- 地图尺寸覆盖 8 到 14 行列范围
+- 每行地图右侧增加 `#` / `.` 可视化注释，便于直接在代码里检查墙体和通路
+- 移除临时 `custom-open-01` / `custom-open-02` variant
+
+**官方 PointMaze 数据生成接入：**
+- 新增 `local_varient_gen.py`，核心生成逻辑 import Farama 官方 `minari-dataset-generation-scripts` 的 PointMaze 代码
+- 官方仓库作为 git submodule 放在 `third_party/minari-dataset-generation-scripts`
+- 保留项目侧薄封装：variant 选择、本地输出路径、并行 shard、合并、覆盖已有 dataset、读取已有进度
+- 数据生成目标从 `--target-steps` 改为 `--target-episodes`，按成功 episode 数收集数据
+- 动作噪声和 controller 逻辑沿用官方脚本方式
+
+**独立数据生成环境：**
+- `environment.yaml` 改名为 `dataGen_env.yaml`
+- data generation 使用独立 `d4rl_datagen` 环境，避免污染训练环境 `llm_offline`
+
+---
+
+## episode_keep_num sampling（2026-04-28）
+
+**`episode_keep_ratio` 改为 `episode_keep_num`：**
+- `config.yaml` 改为 `episode_keep_num: 5000`
+- `train.py` 和 `data/pointmaze/dataset.py` 不再按比例保留 episode，而是按具体 episode 数上限抽样
+- 如果真实 episode 数少于 `episode_keep_num`，自动使用全部 episode
+- 不配置或配置为 `null` 时使用全部 episode
+- `train.py` 对旧字段 `episode_keep_ratio` 做显式报错，避免配置被静默忽略
+- `AGENTS.md` 和 `DESIGN.md` 已同步更新说明

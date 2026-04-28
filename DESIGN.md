@@ -189,7 +189,7 @@ Action:
 - action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` 使用共享特殊 token `<act_XX>` 表示离散动作 bin
 - 训练 tokenization 不再直接编码 `prompt + action_text`；而是将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence
 - `gaussian_bin` 会额外在 dataset 中记录 `action_bin_labels`，动作 token 位置使用高斯 soft-label CE；若设置 `action_soft_label_radius`，则每个动作位置只在中心 bin 及左右 n 个相邻 bin 上做 softmax，窗口外 action token 不产生梯度。chat-template 结束 token 等非动作 assistant token 仍使用普通 CE
-- train/val 划分在 **episode 级别**进行：先按 `episode_keep_ratio` 随机无放回抽样一个 episode pool（至少保留 1 条），再在该 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余 episodes 作为 val，避免同一 episode 同时出现在 train 和 val 中
+- train/val 划分在 **episode 级别**进行：先按 `episode_keep_num` 随机无放回抽样一个 episode pool（如果真实 episode 数更少则使用全部），再在该 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余 episodes 作为 val，避免同一 episode 同时出现在 train 和 val 中
 - 每个 episode 的第一个 timestep 没有历史；评估 rollout 中也同样如此，只有一步实际动作执行完成后才会写入在线 history buffer
 
 ---
@@ -233,7 +233,7 @@ action_soft_label_radius: 2   # gaussian_bin 的局部训练窗口，中心 bin 
 
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
-episode_keep_ratio: 1.0  # 参与 train/val 划分的 episode pool 比例，只作用于未命中 cache 的 offline dataset 构建
+episode_keep_num: 5000  # 参与 train/val 划分的最大 episode 数；真实 episode 更少时使用全部，只作用于未命中 cache 的 offline dataset 构建
 balance_variant_episode_count: false  # 多 variant 时是否把 sampled episode pool 对齐到最小 variant
 sampling_seed: 0         # 控制 episode 随机抽样的可复现性
 ```
@@ -306,7 +306,7 @@ dataset_cache/
 - 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
 - `max_data_num` 截断发生在 cache 读取之后的内存中，cache 文件始终保存完整数据
 - 不同 `prompt_templete_index`、`history_num/history_stride` 和 action 编码配置会写入不同 cache 文件名，避免不同 prompt、历史或动作 tokenization 配置误复用同一份 tokenized 数据
-- `episode_keep_ratio` / `balance_variant_episode_count` / `sampling_seed` 只在未命中 cache 时参与 episode 抽样；命中现有 cache 时会直接复用 `.pkl`，并打印这些设置本次未生效
+- `episode_keep_num` / `balance_variant_episode_count` / `sampling_seed` 只在未命中 cache 时参与 episode 抽样；命中现有 cache 时会直接复用 `.pkl`，并打印这些设置本次未生效
 
 ---
 
@@ -454,7 +454,7 @@ def validate_action(action) -> bool:
 4. **Obs/Action 序列化（环境族绑定）**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs` 和 `format_action`，不依赖任何全局 formatting 工具
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text` 以及动态 `map_sensing_en` / `map_sensing_zh`
    - `map_sensing` 会直接给出当前位置格子、目标格子，以及上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数
-5. **Episode 级别 train/val 划分**：先按 `episode_keep_ratio` 随机抽样 episode pool，再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
+5. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 6. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖
 7. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
 

@@ -174,7 +174,7 @@ def build_dataset(config: dict, tokenizer, variant: str, split: str):
         prompt_template_count=config.get("prompt_template_count", 1),
         prompt_templete_index=config.get("prompt_templete_index", config.get("prompt_template_index")),
         train_data_ratio=config.get("train_data_ratio", 0.9),
-        episode_keep_ratio=config.get("episode_keep_ratio", 1.0),
+        episode_keep_num=config.get("episode_keep_num"),
         balance_variant_episode_count=config.get("balance_variant_episode_count", False),
         balanced_train_episode_count=config.get("balanced_train_episode_count"),
         sampling_seed=config.get("sampling_seed", 0),
@@ -197,8 +197,8 @@ def _resolve_balanced_train_episode_count(config: dict, selected_variants: list[
     if not balance_enabled:
         return None
 
-    keep_ratio = config.get("episode_keep_ratio", 1.0)
-    variant_stats = [collect_variant_episode_stats(variant, keep_ratio) for variant in selected_variants]
+    keep_num = config.get("episode_keep_num")
+    variant_stats = [collect_variant_episode_stats(variant, keep_num) for variant in selected_variants]
     balanced_target = min(stat["sampled_episode_target"] for stat in variant_stats)
     stats_text = ", ".join(
         f"{stat['variant']}: total_episodes={stat['total_episodes']}, "
@@ -560,6 +560,8 @@ def main():
     args = parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+    if "episode_keep_ratio" in config:
+        raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
 
     experiment_id = ensure_experiment_id(config)
     available_variants = get_available_variants(config["env_family"])

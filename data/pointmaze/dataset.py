@@ -41,7 +41,7 @@ from utils.chat_template import build_generation_prompt, build_training_conversa
 from utils.prompt_loader import load_named_templates, load_template_names, render_template
 
 DEFAULT_TRAIN_DATA_RATIO = 0.9
-DEFAULT_EPISODE_KEEP_RATIO = 1.0
+DEFAULT_EPISODE_KEEP_NUM = None
 DEFAULT_SAMPLING_SEED = 0
 
 
@@ -75,15 +75,26 @@ def _local_dataset_step_signature(meta: dict) -> str:
     return f"localsteps{int(dataset.total_steps)}"
 
 
-def _compute_sampled_episode_target(total_episodes: int, episode_keep_ratio: float) -> int:
+def _normalize_episode_keep_num(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            "episode_keep_num must be an integer episode count or null/omitted to use all episodes, "
+            f"got {type(value).__name__}"
+        )
+    if value < 1:
+        raise ValueError(f"episode_keep_num must be >= 1 when provided, got {value}")
+    return value
+
+
+def _compute_sampled_episode_target(total_episodes: int, episode_keep_num: int | None) -> int:
     if total_episodes < 1:
         raise ValueError("Offline dataset contains no episodes.")
-    if not (0.0 < episode_keep_ratio <= 1.0):
-        raise ValueError(
-            "Invalid episode_keep_ratio: expected 0 < episode_keep_ratio <= 1, "
-            f"got episode_keep_ratio={episode_keep_ratio}"
-        )
-    return min(total_episodes, max(1, math.floor(total_episodes * episode_keep_ratio)))
+    episode_keep_num = _normalize_episode_keep_num(episode_keep_num)
+    if episode_keep_num is None:
+        return total_episodes
+    return min(total_episodes, episode_keep_num)
 
 
 def _variant_sampling_seed(variant: str, sampling_seed: int) -> int:
@@ -91,11 +102,11 @@ def _variant_sampling_seed(variant: str, sampling_seed: int) -> int:
     return int.from_bytes(digest[:8], "big", signed=False)
 
 
-def collect_variant_episode_stats(variant: str, episode_keep_ratio: float) -> dict:
+def collect_variant_episode_stats(variant: str, episode_keep_num: int | None) -> dict:
     _, episodes, step_counts = _load_variant_episodes(variant)
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
-    sampled_episode_target = _compute_sampled_episode_target(total_episodes, episode_keep_ratio)
+    sampled_episode_target = _compute_sampled_episode_target(total_episodes, episode_keep_num)
     return {
         "variant": variant,
         "total_episodes": total_episodes,
@@ -108,7 +119,7 @@ def collect_variant_episode_stats(variant: str, episode_keep_ratio: float) -> di
 def select_variant_episode_indices(
     variant: str,
     train_data_ratio: float,
-    episode_keep_ratio: float,
+    episode_keep_num: int | None,
     sampling_seed: int,
     balanced_train_target: int | None = None,
 ) -> dict:
@@ -123,7 +134,7 @@ def select_variant_episode_indices(
     _, episodes, step_counts = _load_variant_episodes(variant)
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
-    initial_sampled_target = _compute_sampled_episode_target(total_episodes, episode_keep_ratio)
+    initial_sampled_target = _compute_sampled_episode_target(total_episodes, episode_keep_num)
     sampled_target = initial_sampled_target if balanced_train_target is None else balanced_train_target
     sampled_target = min(total_episodes, sampled_target)
     if sampled_target < 1:
@@ -135,7 +146,7 @@ def select_variant_episode_indices(
     train_target = math.floor(sampled_target * train_data_ratio)
     if train_target < 1:
         raise ValueError(
-            "train_data_ratio and episode_keep_ratio selected zero train episodes: "
+            "train_data_ratio and episode_keep_num selected zero train episodes: "
             f"sampled_target={sampled_target}, train_data_ratio={train_data_ratio}"
         )
     val_target = sampled_target - train_target
@@ -181,7 +192,7 @@ class PointMazeDataset(BaseOfflineDataset):
         prompt_template_count: int = 1,
         prompt_templete_index: list[str] | None = None,
         train_data_ratio: float = DEFAULT_TRAIN_DATA_RATIO,
-        episode_keep_ratio: float = DEFAULT_EPISODE_KEEP_RATIO,
+        episode_keep_num: int | None = DEFAULT_EPISODE_KEEP_NUM,
         balance_variant_episode_count: bool = False,
         balanced_train_episode_count: int | None = None,
         sampling_seed: int = DEFAULT_SAMPLING_SEED,
@@ -208,7 +219,7 @@ class PointMazeDataset(BaseOfflineDataset):
         self.prompt_template_count = prompt_template_count
         self.prompt_templete_index = self._normalize_prompt_templete_index(prompt_templete_index)
         self.train_data_ratio = train_data_ratio
-        self.episode_keep_ratio = episode_keep_ratio
+        self.episode_keep_num = _normalize_episode_keep_num(episode_keep_num)
         self.balance_variant_episode_count = balance_variant_episode_count
         self.balanced_train_episode_count = balanced_train_episode_count
         self.sampling_seed = sampling_seed
@@ -313,7 +324,7 @@ class PointMazeDataset(BaseOfflineDataset):
             print(f"[dataset] Loading cached dataset from {cache_path}")
             print(
                 "[dataset] Cached split bypasses episode sampling settings: "
-                f"episode_keep_ratio={self.episode_keep_ratio}, "
+                f"episode_keep_num={self.episode_keep_num}, "
                 f"balance_variant_episode_count={self.balance_variant_episode_count}, "
                 f"sampling_seed={self.sampling_seed}. This run did not apply them."
             )
@@ -328,11 +339,6 @@ class PointMazeDataset(BaseOfflineDataset):
             raise ValueError(
                 "Invalid train_data_ratio: expected 0 < train_data_ratio < 1, "
                 f"got train_data_ratio={self.train_data_ratio}"
-            )
-        if not (0.0 < self.episode_keep_ratio <= 1.0):
-            raise ValueError(
-                "Invalid episode_keep_ratio: expected 0 < episode_keep_ratio <= 1, "
-                f"got episode_keep_ratio={self.episode_keep_ratio}"
             )
         if not isinstance(self.sampling_seed, int):
             raise ValueError(f"sampling_seed must be an int, got {type(self.sampling_seed).__name__}")
@@ -349,7 +355,7 @@ class PointMazeDataset(BaseOfflineDataset):
         selection = select_variant_episode_indices(
             variant=variant,
             train_data_ratio=self.train_data_ratio,
-            episode_keep_ratio=self.episode_keep_ratio,
+            episode_keep_num=self.episode_keep_num,
             sampling_seed=self.sampling_seed,
             balanced_train_target=self.balanced_train_episode_count,
         )
