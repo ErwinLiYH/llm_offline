@@ -42,6 +42,7 @@ local_datasets/
 
 # Logs
 logs/
+progress/
 *.log
 wandb/
 runs/

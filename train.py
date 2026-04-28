@@ -25,6 +25,7 @@ from utils.action_bins import (
     get_action_num_bins,
     get_action_token_mode,
 )
+from utils.file_progress import FileProgress
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 
 
@@ -43,52 +44,6 @@ def ensure_experiment_id(config: dict) -> str:
     experiment_id = uuid.uuid4().hex[:8]
     config["experiment_id"] = experiment_id
     return experiment_id
-
-
-def _format_duration(seconds: float) -> str:
-    total_seconds = max(int(seconds), 0)
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
-
-def _render_progress(desc: str, current: int, total: int, start_time: float, extra: str = "") -> str:
-    total = max(total, 1)
-    current = min(current, total)
-    ratio = current / total
-    width = 24
-    filled = min(width, int(ratio * width))
-    bar = "#" * filled + "-" * (width - filled)
-    elapsed = max(time.monotonic() - start_time, 0.0)
-    rate = current / elapsed if elapsed > 0 else 0.0
-    remaining = (total - current) / rate if rate > 0 else 0.0
-    elapsed_text = _format_duration(elapsed)
-    eta_text = _format_duration(remaining)
-    suffix = f" {extra}" if extra else ""
-    return (
-        f"{desc} [{bar}] {ratio * 100:6.2f}% "
-        f"{current}/{total} elapsed={elapsed_text} eta={eta_text}{suffix}"
-    )
-
-
-def _print_progress(
-    desc: str,
-    current: int,
-    total: int,
-    start_time: float,
-    *,
-    extra: str = "",
-    done: bool = False,
-):
-    line = _render_progress(desc, current, total, start_time, extra=extra)
-    print(line, end="\n" if done else "\r", flush=True)
-
-
-def _should_log_progress(step: int, total_steps: int, last_log_time: float, interval_seconds: float) -> bool:
-    if step == 1 or step == total_steps:
-        return True
-    return (time.monotonic() - last_log_time) >= interval_seconds
-
 
 
 def resolve_train_selection(config: dict, available_variants: list[str]) -> VariantSelection:
@@ -339,7 +294,7 @@ def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, 
 
 
 def _run_training(config, model, train_loader, val_loader, device,
-                  selection_tag: str, tokenizer=None, eval_variants=None):
+                  selection_tag: str, progress: FileProgress, tokenizer=None, eval_variants=None):
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config["learning_rate"],
@@ -357,14 +312,12 @@ def _run_training(config, model, train_loader, val_loader, device,
         action_soft_label_radius = config.get("action_soft_label_radius")
         if action_soft_label_radius is not None:
             action_soft_label_radius = int(action_soft_label_radius)
-    progress_interval = float(config.get("progress_interval_seconds", 5.0))
     for epoch in range(1, num_epochs + 1):
         model.train()
         total_loss = 0.0
         num_batches = 0
         train_total = len(train_loader)
         train_start = time.monotonic()
-        train_last_log = train_start - progress_interval
         train_desc = f"Epoch {epoch}/{num_epochs} [train]"
         for step, batch in enumerate(train_loader, start=1):
             input_ids = batch["input_ids"].to(device)
@@ -403,23 +356,20 @@ def _run_training(config, model, train_loader, val_loader, device,
 
             total_loss += loss.item()
             num_batches += 1
-            if _should_log_progress(step, train_total, train_last_log, progress_interval):
-                _print_progress(
-                    train_desc,
-                    step,
-                    train_total,
-                    train_start,
-                    extra=(
-                        f"loss={loss.item():.4f}"
-                        if loss_parts is None
-                        else (
-                            f"loss={loss.item():.4f} action={loss_parts['action_loss']:.4f} "
-                            f"stop={loss_parts['stop_loss']:.4f}"
-                        )
-                    ),
-                    done=step == train_total,
-                )
-                train_last_log = time.monotonic()
+            progress.update(
+                train_desc,
+                step,
+                train_total,
+                train_start,
+                extra=(
+                    f"loss={loss.item():.4f}"
+                    if loss_parts is None
+                    else (
+                        f"loss={loss.item():.4f} action={loss_parts['action_loss']:.4f} "
+                        f"stop={loss_parts['stop_loss']:.4f}"
+                    )
+                ),
+            )
 
         train_loss = total_loss / max(num_batches, 1)
 
@@ -433,7 +383,6 @@ def _run_training(config, model, train_loader, val_loader, device,
             val_loss = 0.0
             val_batches = 0
         val_start = time.monotonic()
-        val_last_log = val_start - progress_interval
         val_desc = f"Epoch {epoch}/{num_epochs} [val]"
         with torch.no_grad():
             for step, batch in enumerate(val_loader, start=1):
@@ -467,23 +416,20 @@ def _run_training(config, model, train_loader, val_loader, device,
                     loss_parts = None
                 val_loss += loss.item()
                 val_batches += 1
-                if _should_log_progress(step, val_total, val_last_log, progress_interval):
-                    _print_progress(
-                        val_desc,
-                        step,
-                        val_total,
-                        val_start,
-                        extra=(
-                            f"loss={loss.item():.4f}"
-                            if loss_parts is None
-                            else (
-                                f"loss={loss.item():.4f} action={loss_parts['action_loss']:.4f} "
-                                f"stop={loss_parts['stop_loss']:.4f}"
-                            )
-                        ),
-                        done=step == val_total,
-                    )
-                    val_last_log = time.monotonic()
+                progress.update(
+                    val_desc,
+                    step,
+                    val_total,
+                    val_start,
+                    extra=(
+                        f"loss={loss.item():.4f}"
+                        if loss_parts is None
+                        else (
+                            f"loss={loss.item():.4f} action={loss_parts['action_loss']:.4f} "
+                            f"stop={loss_parts['stop_loss']:.4f}"
+                        )
+                    ),
+                )
 
         if val_batches > 0:
             val_loss = val_loss / val_batches
@@ -540,19 +486,23 @@ def train_with_selection(
     print(f"[train] Resolved eval variants: {eval_selection.selected_variants}")
 
     train_loader, val_loader = build_data_loaders(config, tokenizer, train_selection.selected_variants)
-    _run_training(
-        config,
-        model,
-        train_loader,
-        val_loader,
-        device,
-        selection_tag=train_selection.selection_tag,
-        tokenizer=tokenizer,
-        eval_variants=eval_selection.selected_variants,
-    )
+    progress_interval = float(config.get("progress_interval_seconds", 5.0))
+    with FileProgress(interval_seconds=progress_interval) as progress:
+        print(f"[train] Progress in file: {progress.path.resolve()}")
+        _run_training(
+            config,
+            model,
+            train_loader,
+            val_loader,
+            device,
+            selection_tag=train_selection.selection_tag,
+            progress=progress,
+            tokenizer=tokenizer,
+            eval_variants=eval_selection.selected_variants,
+        )
 
-    checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
-    _save_checkpoint(config, model, tokenizer, checkpoint_dir)
+        checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
+        _save_checkpoint(config, model, tokenizer, checkpoint_dir)
 
 
 

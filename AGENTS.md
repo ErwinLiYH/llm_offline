@@ -20,6 +20,7 @@ Stack:
 
 Training:
 - `micromamba run -n llm_offline python train.py --config config.yaml`
+- Training progress is written to `progress/<uuid>.txt`; `train.py` prints the path once, deletes it on successful completion, and leaves it behind on failure.
 
 Evaluation:
 - `micromamba run -n llm_offline python evaluate.py --config eval.yaml`

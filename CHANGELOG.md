@@ -464,3 +464,14 @@ type: project
 - 不配置或配置为 `null` 时使用全部 episode
 - `train.py` 对旧字段 `episode_keep_ratio` 做显式报错，避免配置被静默忽略
 - `AGENTS.md` 和 `DESIGN.md` 已同步更新说明
+
+---
+
+## file-based training progress（2026-04-28）
+
+**训练进度条改为文件快照：**
+- 新增 `utils/file_progress.py`，提供可复用 `FileProgress`，用 `seek()` / `write()` / `truncate()` / `flush()` 覆盖写入单行进度快照
+- `train.py` 删除原有 stdout carriage-return progress helper，train / val batch 进度统一调用 `FileProgress.update(...)`
+- 每次训练创建 `progress/<uuid>.txt`，启动后只打印一次进度文件路径；epoch summary、warning、checkpoint 和 eval 输出继续正常 print
+- 正常训练结束并保存 final checkpoint 后删除进度文件，异常退出时保留最后一次进度快照
+- `.gitignore` 新增 `progress/`
