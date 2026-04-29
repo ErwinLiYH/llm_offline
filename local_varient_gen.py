@@ -120,6 +120,13 @@ def _official_requirements() -> list[str]:
     ]
 
 
+def _minari_version_specifier() -> str:
+    version_parts = minari.__version__.split(".")
+    if len(version_parts) < 2:
+        return f"~={minari.__version__}"
+    return f"~={version_parts[0]}.{version_parts[1]}"
+
+
 def _official_description(env_id: str) -> str:
     description_path = OFFICIAL_POINTMAZE_DIR / "description.md"
     return description_path.read_text(encoding="utf-8").format(env_id=env_id)
@@ -149,7 +156,7 @@ def _collect_shard(
         record_infos=True,
     )
     np.random.seed(seed)
-    controller = WaypointController(maze=env.maze, maze_solver="QIteration")
+    controller = WaypointController(maze=env.unwrapped.maze, maze_solver="QIteration")
     obs, _ = collector.reset(seed=seed)
     steps = 0
     episodes = 0
@@ -171,7 +178,7 @@ def _collect_shard(
     eval_env_paras["continuing_task"] = True
     eval_env_paras["reset_target"] = False
     eval_env = gym.make(eval_env_id, **eval_env_paras)
-    eval_controller = WaypointController(maze=eval_env.maze, maze_solver="QIteration")
+    eval_controller = WaypointController(maze=eval_env.unwrapped.maze, maze_solver="QIteration")
 
     _create_dataset(
         collector,
@@ -189,9 +196,14 @@ def _collect_shard(
             f"target_episodes={target_episodes}, collected_steps={steps}, seed={seed}."
         ),
         requirements=_official_requirements(),
+        minari_version=_minari_version_specifier(),
     )
     eval_env.close()
     collector.close()
+    print(
+        f"[local-gen] {variant} worker={worker_index}: shard={dataset_id}, "
+        f"target_episodes={target_episodes}, collected_steps={steps}, seed={seed}."
+    )
     return dataset_id, str(get_dataset_path(dataset_id))
 
 
