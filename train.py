@@ -16,8 +16,8 @@ import yaml
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler, ConcatDataset
 
+from data.base_dataset import DatasetBuildRequest
 from data.registry import get_dataset
-from data.pointmaze.dataset import collate_fn, collect_variant_episode_stats
 from model.policy import load_model_and_tokenizer, get_model_slug
 from utils.action_bins import (
     gaussian_action_loss,
@@ -115,9 +115,8 @@ def get_eval_variant_results_dir(config: dict, train_selection_tag: str, variant
 
 
 
-def build_dataset(config: dict, tokenizer, variant: str, split: str):
-    dataset_cls = get_dataset(config["env_family"])
-    return dataset_cls(
+def build_dataset_request(config: dict, tokenizer, variant: str, split: str) -> DatasetBuildRequest:
+    return DatasetBuildRequest(
         variant=variant,
         split=split,
         tokenizer=tokenizer,
@@ -139,10 +138,11 @@ def build_dataset(config: dict, tokenizer, variant: str, split: str):
         action_num_bins=config.get("action_num_bins", 10),
         action_bin_min=config.get("action_bin_min", -1.0),
         action_bin_max=config.get("action_bin_max", 1.0),
+        progress_interval_seconds=config.get("progress_interval_seconds", 5.0),
     )
 
 
-def _resolve_balanced_train_episode_count(config: dict, selected_variants: list[str]) -> int | None:
+def _resolve_balanced_train_episode_count(config: dict, dataset_cls, selected_variants: list[str]) -> int | None:
     balance_enabled = config.get("balance_variant_episode_count", False)
     if len(selected_variants) <= 1:
         if balance_enabled:
@@ -153,7 +153,10 @@ def _resolve_balanced_train_episode_count(config: dict, selected_variants: list[
         return None
 
     keep_num = config.get("episode_keep_num")
-    variant_stats = [collect_variant_episode_stats(variant, keep_num) for variant in selected_variants]
+    variant_stats = [
+        dataset_cls.collect_variant_episode_stats(variant, keep_num)
+        for variant in selected_variants
+    ]
     balanced_target = min(stat["sampled_episode_target"] for stat in variant_stats)
     stats_text = ", ".join(
         f"{stat['variant']}: total_episodes={stat['total_episodes']}, "
@@ -168,15 +171,29 @@ def _resolve_balanced_train_episode_count(config: dict, selected_variants: list[
 def build_data_loaders(config: dict, tokenizer, selected_variants: list[str]):
     train_datasets = []
     val_datasets = []
+    dataset_cls = get_dataset(config["env_family"])
     dataset_config = dict(config)
     dataset_config["balanced_train_episode_count"] = _resolve_balanced_train_episode_count(
-        config, selected_variants
+        config, dataset_cls, selected_variants
     )
+
+    dataset_jobs = []
+    dataset_requests = []
 
     for variant in selected_variants:
         print(f"[train] Loading data for variant: {variant}")
-        train_datasets.append(build_dataset(dataset_config, tokenizer, variant, "train"))
-        val_datasets.append(build_dataset(dataset_config, tokenizer, variant, "val"))
+        for split in ("train", "val"):
+            dataset_jobs.append((variant, split))
+            dataset_requests.append(build_dataset_request(dataset_config, tokenizer, variant, split))
+
+    datasets = dataset_cls.build_batch(dataset_requests)
+    collate_fn = dataset_cls.collate_fn
+
+    for (_, split), dataset in zip(dataset_jobs, datasets):
+        if split == "train":
+            train_datasets.append(dataset)
+        elif split == "val":
+            val_datasets.append(dataset)
 
     if len(selected_variants) == 1:
         train_dataset = train_datasets[0]
