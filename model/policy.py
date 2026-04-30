@@ -8,10 +8,15 @@ import yaml
 with contextlib.redirect_stdout(io.StringIO()):
     from unsloth import FastLanguageModel
 
-from utils.action_bins import get_tokenizer_backend, register_action_tokens, uses_action_bins
+from utils.action_bins import (
+    get_action_bin_token_ids,
+    get_tokenizer_backend,
+    register_action_tokens,
+    uses_action_bins,
+)
 
 
-ACTION_BIN_MODULES_TO_SAVE = ("embed_tokens", "lm_head")
+ACTION_BIN_TRAINABLE_TOKEN_MODULE = "embed_tokens"
 
 
 def get_model_slug(model_name: str) -> str:
@@ -23,6 +28,7 @@ def get_model_slug(model_name: str) -> str:
 
 
 def _embedding_vocab_size(model) -> int | None:
+    """Return the current input-embedding row count, or None if it cannot be read."""
     embeddings = model.get_input_embeddings()
     weight = getattr(embeddings, "weight", None)
     if weight is None:
@@ -30,27 +36,73 @@ def _embedding_vocab_size(model) -> int | None:
     return int(weight.shape[0])
 
 
-def _ensure_tokenizer_and_embedding_size(model, tokenizer, config: dict):
+def _ensure_pad_token(tokenizer):
+    """Make causal-LM tokenizers usable for padded batches by reusing EOS as PAD."""
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+
+def _prepare_action_tokens_for_training(model, tokenizer, config: dict) -> list[int]:
+    """Prepare a fresh training model for action-bin tokens.
+
+    In `bin` / `gaussian_bin` mode this registers `<act_xx>` tokens on the
+    tokenizer, resizes the model input embedding if the tokenizer grew, and
+    returns the action token ids used by PEFT `trainable_token_indices`.
+    This is the only path that is allowed to resize embeddings.
+    """
+    _ensure_pad_token(tokenizer)
+    if not uses_action_bins(config):
+        return []
+    register_action_tokens(tokenizer, config)
+    tok = get_tokenizer_backend(tokenizer)
+    vocab_size = _embedding_vocab_size(model)
+    if vocab_size is None or vocab_size < len(tok):
+        model.resize_token_embeddings(len(tok))
+    return get_action_bin_token_ids(tokenizer, config)
+
+
+def _validate_action_tokens_for_checkpoint(model, tokenizer, config: dict):
+    """Validate action-token structure after loading an adapter checkpoint.
+
+    Checkpoint loading should restore the tokenizer and PEFT trainable-token
+    adapter from disk. Therefore this function only checks that action tokens
+    can be resolved and that the loaded model embedding is large enough for the
+    tokenizer vocab. It intentionally does not resize embeddings; a mismatch
+    means the checkpoint/tokenizer/base-model combination is inconsistent.
+    """
+    _ensure_pad_token(tokenizer)
     if not uses_action_bins(config):
         return
     register_action_tokens(tokenizer, config)
     tok = get_tokenizer_backend(tokenizer)
     vocab_size = _embedding_vocab_size(model)
-    if vocab_size is None or vocab_size != len(tok):
-        model.resize_token_embeddings(len(tok))
+    if vocab_size is None or vocab_size < len(tok):
+        raise ValueError(
+            "Tokenizer/model vocab size mismatch after loading action-bin checkpoint: "
+            f"tokenizer={len(tok)}, model_embeddings={vocab_size}. The checkpoint tokenizer may be missing "
+            "saved action tokens, or the adapter was saved with an incompatible base model."
+        )
+    get_action_bin_token_ids(tokenizer, config)
 
 
-def _has_required_action_modules(adapter_config: dict) -> bool:
-    modules_to_save = adapter_config.get("modules_to_save") or []
-    return all(
-        any(module_name == required or module_name.endswith(f".{required}") for module_name in modules_to_save)
-        for required in ACTION_BIN_MODULES_TO_SAVE
-    )
+def _has_action_trainable_token_indices(adapter_config: dict) -> bool:
+    """Return whether adapter_config declares saved trainable action-token rows."""
+    token_indices = adapter_config.get("trainable_token_indices")
+    if isinstance(token_indices, dict):
+        indices = token_indices.get(ACTION_BIN_TRAINABLE_TOKEN_MODULE)
+        return isinstance(indices, list) and len(indices) > 0
+    return isinstance(token_indices, list) and len(token_indices) > 0
 
 
 def _validate_action_bin_checkpoint(model_path: str, saved_config: dict):
+    """Validate action-bin checkpoint metadata before loading model tensors.
+
+    An action-bin adapter must declare `trainable_token_indices` in
+    `adapter_config.json`; otherwise the `<act_xx>` embedding deltas were not
+    saved and eval would usually produce near-uniform action-token probabilities.
+    This metadata check is separate from `_validate_action_tokens_for_checkpoint`,
+    which validates the loaded tokenizer/model embedding structure.
+    """
     if not uses_action_bins(saved_config):
         return
     adapter_cfg_path = os.path.join(model_path, "adapter_config.json")
@@ -58,14 +110,14 @@ def _validate_action_bin_checkpoint(model_path: str, saved_config: dict):
         return
     with open(adapter_cfg_path) as f:
         adapter_config = json.load(f)
-    if _has_required_action_modules(adapter_config):
+    if _has_action_trainable_token_indices(adapter_config):
         return
     raise ValueError(
         "This checkpoint was trained with action_token_mode="
-        f"{saved_config.get('action_token_mode')!r}, but adapter_config.json does not save "
-        f"{list(ACTION_BIN_MODULES_TO_SAVE)}. Its action-token embeddings/lm_head cannot be restored, "
-        "which makes action-bin probabilities uniform and parsing fail. Re-train from a checkpoint "
-        "created after this fix, or evaluate a text-mode checkpoint."
+        f"{saved_config.get('action_token_mode')!r}, but adapter_config.json does not save action-token "
+        "weights via trainable_token_indices. Its action-token embeddings cannot be restored, which makes "
+        "action-bin probabilities uniform and parsing fail. Re-train with the current action-token setup, "
+        "or evaluate a text-mode checkpoint."
     )
 
 
@@ -81,7 +133,12 @@ def load_model_and_tokenizer(config: dict):
         load_in_4bit=load_in_4bit,
         trust_remote_code=True,
     )
-    _ensure_tokenizer_and_embedding_size(model, tokenizer, config)
+    action_token_ids = _prepare_action_tokens_for_training(model, tokenizer, config)
+    trainable_token_indices = (
+        {ACTION_BIN_TRAINABLE_TOKEN_MODULE: action_token_ids}
+        if uses_action_bins(config)
+        else None
+    )
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -92,8 +149,7 @@ def load_model_and_tokenizer(config: dict):
         bias="none",
         use_gradient_checkpointing="unsloth",  # 30% less VRAM vs standard checkpointing
         random_state=42,
-        modules_to_save=list(ACTION_BIN_MODULES_TO_SAVE) if uses_action_bins(config) else None,
-        ensure_weight_tying=uses_action_bins(config),
+        trainable_token_indices=trainable_token_indices,
     )
     model.print_trainable_parameters()
     return model, tokenizer
@@ -132,7 +188,10 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
         load_in_4bit=load_in_4bit,
         trust_remote_code=True,
     )
-    _ensure_tokenizer_and_embedding_size(model, tokenizer, saved_config)
+    if os.path.exists(adapter_cfg_path):
+        _validate_action_tokens_for_checkpoint(model, tokenizer, saved_config)
+    else:
+        _prepare_action_tokens_for_training(model, tokenizer, saved_config)
 
     model.eval()
     FastLanguageModel.for_inference(model)
