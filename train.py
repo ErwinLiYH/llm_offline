@@ -4,8 +4,9 @@ Usage:
     python train.py --config config.yaml
 """
 
-from unsloth import FastLanguageModel
 import argparse
+import contextlib
+import io
 import uuid
 import os
 import json
@@ -15,6 +16,9 @@ import math
 import yaml
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler, ConcatDataset
+
+with contextlib.redirect_stdout(io.StringIO()):
+    from unsloth import FastLanguageModel
 
 from data.base_dataset import DatasetBuildRequest
 from data.registry import get_dataset

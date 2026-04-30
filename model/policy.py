@@ -1,7 +1,11 @@
 import os
+import contextlib
+import io
 
 import yaml
-from unsloth import FastLanguageModel
+
+with contextlib.redirect_stdout(io.StringIO()):
+    from unsloth import FastLanguageModel
 
 from utils.action_bins import get_tokenizer_backend, register_action_tokens, uses_action_bins
 
