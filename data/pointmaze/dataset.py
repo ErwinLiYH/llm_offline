@@ -502,6 +502,8 @@ class PointMazeDataset(BaseOfflineDataset):
             job = cls._create_tokenization_job(base_config, cache_path, selection)
             jobs.append(job)
 
+        cls._print_total_selection_summary(list(selections_by_variant.values()))
+
         if jobs:
             num_workers = max(job.config.num_workers for job in jobs)
             progress_interval_seconds = min(job.config.progress_interval_seconds for job in jobs)
@@ -835,6 +837,22 @@ class PointMazeDataset(BaseOfflineDataset):
                 f"(sampled_episodes={selection['sampled_episode_count']}, "
                 f"train_data_ratio={config.train_data_ratio})."
             )
+
+    @staticmethod
+    def _print_total_selection_summary(selections: list[dict]):
+        if not selections:
+            return
+        train_episodes = sum(selection["train_episode_count"] for selection in selections)
+        val_episodes = sum(selection["val_episode_count"] for selection in selections)
+        train_steps = sum(selection["train_steps"] for selection in selections)
+        val_steps = sum(selection["val_steps"] for selection in selections)
+        sampled_episodes = sum(selection["sampled_episode_count"] for selection in selections)
+        print(
+            "[dataset] Total selected across variants: "
+            f"sampled_episodes={sampled_episodes}, "
+            f"train_episodes={train_episodes}, train_steps={train_steps}, "
+            f"val_episodes={val_episodes}, val_steps={val_steps}"
+        )
 
     @classmethod
     def _execute_tokenization_jobs(
