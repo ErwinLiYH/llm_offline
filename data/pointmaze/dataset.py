@@ -203,7 +203,12 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[dict, dict]]:
         for template in templates:
             prompt = render_template(template, prompt_vars, **obs_payload, **history_payload)
             token_sample = _tokenize_pointmaze_sample(prompt, action_text, config)
-            text_record = {"prompt": prompt, "action": action_text}
+            text_record = {
+                "episode_idx": episode_idx,
+                "timestep": t,
+                "prompt": prompt,
+                "action": action_text,
+            }
             results.append((text_record, token_sample))
 
     _POINTMAZE_WORKER_DONE += 1
@@ -435,9 +440,10 @@ class PointMazeBuildConfig:
 @dataclass
 class PointMazeTokenizationJob:
     job_id: str
-    dataset: "PointMazeDataset"
     config: PointMazeBuildConfig
     cache_path: str | None
+    total_episodes: int
+    episode_indices: list[int]
     episode_payloads: list[dict]
     worker_config: dict
     shared_config: dict
@@ -459,18 +465,41 @@ class PointMazeDataset(BaseOfflineDataset):
     @classmethod
     def build_batch(cls, requests: list[DatasetBuildRequest]) -> list["PointMazeDataset"]:
         configs = [cls._normalize_request(request) for request in requests]
-        datasets: list[PointMazeDataset] = []
+        datasets: list[PointMazeDataset | None] = [None] * len(configs)
         jobs: list[PointMazeTokenizationJob] = []
+        pending_variant_indices: dict[str, list[int]] = {}
+        selections_by_variant: dict[str, dict] = {}
 
-        for config in configs:
-            cache_path = cls._cache_path(config)
-            cached_dataset = cls._load_cached_dataset(config, cache_path)
-            if cached_dataset is not None:
-                datasets.append(cached_dataset)
+        for idx, config in enumerate(configs):
+            cls._validate_config(config)
+            pending_variant_indices.setdefault(config.variant, []).append(idx)
+
+        for variant, request_indices in pending_variant_indices.items():
+            variant_configs = [configs[idx] for idx in request_indices]
+            cls._validate_variant_request_group(variant_configs)
+            base_config = variant_configs[0]
+            selection = select_variant_episode_indices(
+                variant=base_config.variant,
+                train_data_ratio=base_config.train_data_ratio,
+                episode_keep_num=base_config.episode_keep_num,
+                sampling_seed=base_config.sampling_seed,
+                balanced_train_target=base_config.balanced_train_episode_count,
+            )
+            selections_by_variant[variant] = selection
+            cls._print_selection_summary(base_config, selection)
+            cache_path = cls._cache_path(base_config)
+            cached_episodes = cls._load_cached_episodes(base_config, cache_path, selection)
+            if cached_episodes is not None:
+                cls._fill_datasets_from_episode_cache(
+                    datasets=datasets,
+                    request_indices=request_indices,
+                    configs=configs,
+                    selection=selection,
+                    episode_samples=cached_episodes,
+                )
                 continue
 
-            dataset, job = cls._create_tokenization_job(config, cache_path)
-            datasets.append(dataset)
+            job = cls._create_tokenization_job(base_config, cache_path, selection)
             jobs.append(job)
 
         if jobs:
@@ -482,9 +511,19 @@ class PointMazeDataset(BaseOfflineDataset):
                 progress_interval_seconds=progress_interval_seconds,
             )
             for job in jobs:
-                cls._finalize_tokenization_job(job, results_by_job[job.job_id])
+                episode_samples = cls._finalize_tokenization_job(job, results_by_job[job.job_id])
+                request_indices = pending_variant_indices[job.config.variant]
+                cls._fill_datasets_from_episode_cache(
+                    datasets=datasets,
+                    request_indices=request_indices,
+                    configs=configs,
+                    selection=selections_by_variant[job.config.variant],
+                    episode_samples=episode_samples,
+                )
 
-        return datasets
+        if any(dataset is None for dataset in datasets):
+            raise RuntimeError("PointMazeDataset.build_batch did not construct every requested dataset.")
+        return [dataset for dataset in datasets if dataset is not None]
 
     @classmethod
     def _normalize_request(cls, request: DatasetBuildRequest) -> PointMazeBuildConfig:
@@ -579,9 +618,15 @@ class PointMazeDataset(BaseOfflineDataset):
         return f"hash-{digest}"
 
     @staticmethod
-    def _split_tag(config: PointMazeBuildConfig) -> str:
-        train_pct = int(round(config.train_data_ratio * 100))
-        return f"split{train_pct:02d}"
+    def _cache_safe_tag(value: str, *, limit: int = 80) -> str:
+        if len(value) <= limit and all(ch.isalnum() or ch in "._+-" for ch in value):
+            return value
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+        return f"hash-{digest}"
+
+    @classmethod
+    def _tokenizer_cache_tag(cls, config: PointMazeBuildConfig) -> str:
+        return cls._cache_safe_tag(config.tokenizer_name_or_path.replace("/", "+"), limit=80)
 
     @classmethod
     def _cache_path(cls, config: PointMazeBuildConfig) -> str | None:
@@ -592,80 +637,75 @@ class PointMazeDataset(BaseOfflineDataset):
         if get_pointmaze_variant_type(meta) == "local":
             data_signature = f"-{_local_dataset_step_signature(meta)}"
         fname = (
-            f"pointmaze-{config.variant}-{config.split}{data_signature}-"
+            f"pointmaze-{config.variant}{data_signature}-"
+            f"tok-{cls._tokenizer_cache_tag(config)}-len{config.max_length}-"
             f"prompts-{cls._prompt_cache_tag(config)}-"
-            f"hist{config.history_num}-stride{config.history_stride}-{cls._split_tag(config)}-"
+            f"hist{config.history_num}-stride{config.history_stride}-"
             f"action-{config.action_token_mode}-bins{config.action_num_bins}-"
             f"range{config.action_bin_min:g}to{config.action_bin_max:g}.pkl"
         )
         return os.path.join(config.cache_dir, fname)
 
     @classmethod
-    def _load_cached_dataset(
+    def _load_cached_episodes(
         cls,
         config: PointMazeBuildConfig,
         cache_path: str | None,
-    ) -> "PointMazeDataset | None":
+        selection: dict,
+    ) -> dict[int, list[dict]] | None:
         if not cache_path or not os.path.exists(cache_path):
             return None
-        print(f"[dataset] Loading cached dataset from {cache_path}")
-        print(
-            "[dataset] Cached split bypasses episode sampling settings: "
-            f"episode_keep_num={config.episode_keep_num}, "
-            f"balance_variant_episode_count={config.balance_variant_episode_count}, "
-            f"sampling_seed={config.sampling_seed}. This run did not apply them."
-        )
         with open(cache_path, "rb") as f:
-            samples = pickle.load(f)
-        if config.max_data_num is not None:
-            samples = samples[: config.max_data_num]
-            print(f"[dataset] max_data_num={config.max_data_num}: using {len(samples)} samples")
-        return cls(config.variant, config.split, samples)
+            cache = pickle.load(f)
+        episode_samples = {
+            int(episode_idx): samples
+            for episode_idx, samples in cache.get("episodes", {}).items()
+        }
+        required_indices = set(selection["train_indices"]) | set(selection["val_indices"])
+        cached_indices = set(episode_samples)
+        if not required_indices.issubset(cached_indices):
+            missing_count = len(required_indices - cached_indices)
+            print(
+                f"[dataset] Cache at {cache_path} does not cover current sampled episodes "
+                f"for variant {config.variant} (missing {missing_count}); rebuilding cache."
+            )
+            return None
+        print(
+            f"[dataset] Loading cached tokenized episodes from {cache_path} "
+            f"(using {len(required_indices)} / cached {len(cached_indices)} episodes)"
+        )
+        return episode_samples
 
     @classmethod
     def _create_tokenization_job(
         cls,
         config: PointMazeBuildConfig,
         cache_path: str | None,
-    ) -> tuple["PointMazeDataset", PointMazeTokenizationJob]:
-        cls._validate_config(config)
-
+        selection: dict,
+    ) -> PointMazeTokenizationJob:
         meta = POINTMAZE_VARIANTS[config.variant]
         prompt_names = cls._resolve_prompt_names(config)
         templates = load_named_templates("pointmaze", prompt_names)
         prompt_vars = meta["prompt_vars"]
 
-        selection = select_variant_episode_indices(
-            variant=config.variant,
-            train_data_ratio=config.train_data_ratio,
-            episode_keep_num=config.episode_keep_num,
-            sampling_seed=config.sampling_seed,
-            balanced_train_target=config.balanced_train_episode_count,
-        )
         all_episodes = selection["episodes"]
-        cls._print_selection_summary(config, selection)
+        episode_indices = sorted(set(selection["train_indices"]) | set(selection["val_indices"]))
 
-        if config.split == "train":
-            episodes = [all_episodes[idx] for idx in selection["train_indices"]]
-        elif config.split == "val":
-            episodes = [all_episodes[idx] for idx in selection["val_indices"]]
-        else:
-            raise ValueError(f"Unknown split: {config.split!r}. Expected 'train' or 'val'.")
-
-        job_id = f"{config.variant}:{config.split}:{len(episodes)}:{id(config)}"
+        job_id = f"{config.variant}:episodes:{len(episode_indices)}:{id(config)}"
         episode_payloads = [
             {
                 "job_id": job_id,
-                "episode_idx": idx,
+                "episode_idx": episode_idx,
                 "observations": episode.observations["observation"],
                 "goals": episode.observations["desired_goal"],
                 "actions": episode.actions,
             }
-            for idx, episode in enumerate(episodes)
+            for episode_idx in episode_indices
+            for episode in [all_episodes[episode_idx]]
         ]
         worker_config = {
             "variant": config.variant,
-            "split": config.split,
+            "split": "cache",
             "max_length": config.max_length,
             "templates": templates,
             "prompt_vars": prompt_vars,
@@ -683,17 +723,16 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_min": config.action_bin_min,
             "action_bin_max": config.action_bin_max,
         }
-        dataset = cls(config.variant, config.split, [])
-        job = PointMazeTokenizationJob(
+        return PointMazeTokenizationJob(
             job_id=job_id,
-            dataset=dataset,
             config=config,
             cache_path=cache_path,
+            total_episodes=selection["total_episodes"],
+            episode_indices=episode_indices,
             episode_payloads=episode_payloads,
             worker_config=worker_config,
             shared_config=shared_config,
         )
-        return dataset, job
 
     @staticmethod
     def _validate_config(config: PointMazeBuildConfig):
@@ -708,6 +747,66 @@ class PointMazeDataset(BaseOfflineDataset):
             raise ValueError(f"history_num must be >= 0, got {config.history_num}")
         if config.history_stride < 1:
             raise ValueError(f"history_stride must be >= 1, got {config.history_stride}")
+
+    @staticmethod
+    def _validate_variant_request_group(configs: list[PointMazeBuildConfig]):
+        if not configs:
+            return
+        base = configs[0]
+        for config in configs[1:]:
+            fields = (
+                "tokenizer_name_or_path",
+                "max_length",
+                "num_workers",
+                "cache_dir",
+                "prompt_template_count",
+                "prompt_templete_index",
+                "train_data_ratio",
+                "episode_keep_num",
+                "balance_variant_episode_count",
+                "balanced_train_episode_count",
+                "sampling_seed",
+                "history_num",
+                "history_stride",
+                "action_token_mode",
+                "action_num_bins",
+                "action_bin_min",
+                "action_bin_max",
+            )
+            for field in fields:
+                if getattr(config, field) != getattr(base, field):
+                    raise ValueError(
+                        "PointMazeDataset.build_batch requires requests for the same variant "
+                        f"to share {field}; got {getattr(base, field)!r} and {getattr(config, field)!r}."
+                    )
+
+    @classmethod
+    def _fill_datasets_from_episode_cache(
+        cls,
+        *,
+        datasets: list["PointMazeDataset | None"],
+        request_indices: list[int],
+        configs: list[PointMazeBuildConfig],
+        selection: dict,
+        episode_samples: dict[int, list[dict]],
+    ):
+        for request_idx in request_indices:
+            config = configs[request_idx]
+            if config.split == "train":
+                selected_indices = selection["train_indices"]
+            elif config.split == "val":
+                selected_indices = selection["val_indices"]
+            else:
+                raise ValueError(f"Unknown split: {config.split!r}. Expected 'train' or 'val'.")
+
+            samples = []
+            for episode_idx in selected_indices:
+                samples.extend(episode_samples[int(episode_idx)])
+
+            if config.max_data_num is not None:
+                samples = samples[: config.max_data_num]
+                print(f"[dataset] max_data_num={config.max_data_num}: using {len(samples)} samples")
+            datasets[request_idx] = cls(config.variant, config.split, samples)
 
     @staticmethod
     def _print_selection_summary(config: PointMazeBuildConfig, selection: dict):
@@ -806,18 +905,40 @@ class PointMazeDataset(BaseOfflineDataset):
         cls,
         job: PointMazeTokenizationJob,
         episode_results_list: list[list[tuple[dict, dict]]],
-    ):
-        samples = []
+    ) -> dict[int, list[dict]]:
+        episode_samples: dict[int, list[dict]] = {}
         text_records = []
         for episode_results in episode_results_list:
+            episode_idx = None
+            samples = []
             for text_record, token_sample in episode_results:
+                episode_idx = int(text_record["episode_idx"])
                 text_records.append(text_record)
                 samples.append(token_sample)
+            if episode_idx is not None:
+                episode_samples[episode_idx] = samples
 
         if job.cache_path:
             os.makedirs(job.config.cache_dir, exist_ok=True)
+            cache = {
+                "metadata": {
+                    "variant": job.config.variant,
+                    "total_episodes": job.total_episodes,
+                    "episode_indices": job.episode_indices,
+                    "tokenizer_name_or_path": job.config.tokenizer_name_or_path,
+                    "max_length": job.config.max_length,
+                    "prompt_names": cls._resolve_prompt_names(job.config),
+                    "history_num": job.config.history_num,
+                    "history_stride": job.config.history_stride,
+                    "action_token_mode": job.config.action_token_mode,
+                    "action_num_bins": job.config.action_num_bins,
+                    "action_bin_min": job.config.action_bin_min,
+                    "action_bin_max": job.config.action_bin_max,
+                },
+                "episodes": episode_samples,
+            }
             with open(job.cache_path, "wb") as f:
-                pickle.dump(samples, f)
+                pickle.dump(cache, f)
             print(f"[dataset] Saved dataset cache to {job.cache_path}")
             jsonl_path = job.cache_path.replace(".pkl", ".jsonl")
             with open(jsonl_path, "w") as f:
@@ -825,10 +946,7 @@ class PointMazeDataset(BaseOfflineDataset):
                     f.write(json.dumps(record, ensure_ascii=False) + "\n")
             print(f"[dataset] Saved human-readable cache to {jsonl_path}")
 
-        if job.config.max_data_num is not None:
-            samples = samples[: job.config.max_data_num]
-            print(f"[dataset] max_data_num={job.config.max_data_num}: using {len(samples)} samples")
-        job.dataset._samples = samples
+        return episode_samples
 
     def __len__(self) -> int:
         return len(self._samples)
