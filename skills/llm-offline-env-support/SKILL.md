@@ -105,6 +105,133 @@ Add:
 6. Check `train.py` and `evaluate.py` only if the new family needs special-case behavior.
 Prefer not to add special cases. Follow the existing family abstraction.
 
+## Dataset Implementation Guide
+
+New environment families should implement the `BaseOfflineDataset` interface in
+`data/base_dataset.py`. There are two implementation levels:
+
+- **Basic implementation**: enough for `train.py` to construct train/val loaders.
+- **Advanced implementation**: optional PointMaze-style batching, cache reuse, multiprocessing, and file progress.
+
+### Basic Dataset Implementation
+
+Create `data/<env_family>/dataset.py` with a dataset class registered in
+`data/registry.py`. The class must inherit `BaseOfflineDataset` and implement:
+
+```python
+@classmethod
+def build_batch(cls, requests: list[DatasetBuildRequest]) -> list[BaseOfflineDataset]:
+    ...
+
+@classmethod
+def collect_variant_episode_stats(
+    cls,
+    variant: str,
+    episode_keep_num: int | None,
+) -> VariantEpisodeStats:
+    ...
+
+def __len__(self) -> int:
+    ...
+
+def __getitem__(self, idx: int) -> TensorSample:
+    ...
+```
+
+`train.py` calls only `dataset_cls.build_batch(dataset_requests)`. It expects:
+
+- Return length equals `len(requests)`.
+- Return item `i` corresponds exactly to request `i`.
+- Each returned object is a loaded PyTorch `Dataset`.
+- The class exposes `collate_fn`; using the inherited `BaseOfflineDataset.collate_fn` is usually enough.
+
+`DatasetBuildRequest` is the full input contract from training. The important fields are:
+
+- `variant`, `split`: requested dataset identity; `split` is normally `"train"` or `"val"`.
+- `tokenizer`, `tokenizer_name_or_path`, `max_length`: tokenizer context for building model-ready samples.
+- `num_workers`, `cache_dir`, `max_data_num`: offline construction controls.
+- `prompt_templete_index` / `prompt_template_count`: prompt template selection.
+- `train_data_ratio`, `episode_keep_num`, `sampling_seed`, `balance_variant_episode_count`, `balanced_train_episode_count`: episode sampling/split controls.
+- `history_num`, `history_stride`: optional history prompt controls.
+- `action_token_mode`, `action_num_bins`, `action_bin_min`, `action_bin_max`: action target encoding controls.
+
+For a minimal `build_batch`:
+
+1. Iterate through `requests` in order.
+2. Load offline data for `request.variant`.
+3. Split at episode level when the family has episode structure:
+   - select up to `episode_keep_num` episodes, or all if `None`
+   - use `sampling_seed` for reproducible random selection
+   - use `floor(pool_size * train_data_ratio)` train episodes and the rest as val
+4. Load templates from `prompts/<env_family>/<prompt_name>.txt` using `prompt_templete_index`.
+5. For each selected timestep and each selected template:
+   - call the family formatter's `format_obs(...)`
+   - render the prompt with `render_template(...)`
+   - format the action target with the family formatter or action-token helper
+   - wrap prompt/action using the tokenizer chat template, matching the existing training format
+   - tokenize to `input_ids`, `attention_mask`, `labels`
+6. Return one dataset object per request, preserving request order.
+
+Each `__getitem__` result must be:
+
+```python
+{
+    "input_ids": torch.LongTensor[seq_len],
+    "attention_mask": torch.LongTensor[seq_len],
+    "labels": torch.LongTensor[seq_len],
+    "action_bin_labels": torch.LongTensor[seq_len],
+}
+```
+
+Padding and masking conventions:
+
+- `input_ids`: padded with `0` by `collate_fn`
+- `attention_mask`: padded with `0`
+- `labels`: prompt/user positions are `-100`; padding is also `-100`
+- `action_bin_labels`: action-token positions contain the true bin index; all other positions and padding are `-1`
+
+For text-only action families, still return `action_bin_labels` as all `-1` so the shared loss path works.
+
+`collect_variant_episode_stats(...)` is used before multi-variant training balance. It must return:
+
+```python
+{
+    "variant": variant,
+    "total_episodes": int,
+    "total_steps": int,
+    "initial_train_target": int,
+    "sampled_episode_target": int,
+}
+```
+
+For current semantics, `sampled_episode_target` should be
+`total_episodes` when `episode_keep_num is None`, otherwise
+`min(total_episodes, episode_keep_num)`. `initial_train_target` is kept for compatibility and should match the same target unless a family has a documented reason to differ.
+
+### Advanced Dataset Features Used By PointMaze
+
+PointMaze implements more than the minimum. New families may copy this pattern when offline tokenization is expensive or multi-variant training is common:
+
+- **Single batch construction path**: `build_batch()` receives all selected variants and train/val requests at once, groups requests by variant, and builds every dataset in one call.
+- **Shared process pool**: cache misses are tokenized with one `ProcessPoolExecutor`; worker payloads are episode-level, and each worker initializes its tokenizer once.
+- **Multi-plan worker config**: each episode payload carries a `job_id`; workers use `job_id -> config` to select variant prompt vars, templates, history settings, and action encoding.
+- **Joint file progress**: `MultiWorkerFileProgress` writes one total progress file plus per-worker sub-progress rows. `train.py` prints only the joint progress path.
+- **Episode-level cache**: cache stores `episode_idx -> tokenized samples`, not split-level flattened samples.
+- **Cache hit resampling**: `episode_keep_num`, `train_data_ratio`, `sampling_seed`, and variant balancing are reapplied after cache load. If the cache lacks any current sampled episode, rebuild and overwrite that variant cache.
+- **Cache signature discipline**: include only tokenization-changing settings in cache filenames, such as data signature, tokenizer/model tag, `max_length`, selected prompt names, history settings, and action encoding. Do not include runtime sampling settings or `max_data_num`.
+- **Debug truncation**: apply `max_data_num` only after final train/val samples are assembled; never truncate what is written to cache.
+
+Important implementation notes for advanced mode:
+
+- Use `spawn` multiprocessing unless there is a specific reason not to; this avoids unsafe fork state around CUDA/PyTorch/tokenizers.
+- Require all pending jobs in the same process pool to share tokenizer and action-token schema. Raise a clear `ValueError` if they differ.
+- Preserve request order exactly even when grouping by variant internally.
+- Preserve episode boundaries in cache; a flattened cache cannot safely reapply later `episode_keep_num` or `train_data_ratio` changes.
+- Keep cache files per variant and per tokenization signature. Do not merge variants into one cache file.
+- Cache hit should not enter the process pool or count toward tokenization progress.
+- If the family supports `bin` / `gaussian_bin`, register action special tokens inside worker tokenizers before tokenizing and fill `action_bin_labels` only at generated action-token positions.
+- `.jsonl` debug cache should include enough provenance to inspect records, typically `episode_idx`, `timestep`, `prompt`, and `action`.
+
 ## Prompt Rules
 
 The current prompt system is strict:

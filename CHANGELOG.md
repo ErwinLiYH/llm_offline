@@ -475,3 +475,50 @@ type: project
 - 每次训练创建 `progress/<uuid>.txt`，启动后只打印一次进度文件路径；epoch summary、warning、checkpoint 和 eval 输出继续正常 print
 - 正常训练结束并保存 final checkpoint 后删除进度文件，异常退出时保留最后一次进度快照
 - `.gitignore` 新增 `progress/`
+
+---
+
+## dataset build/cache refactor（2026-04-30）
+
+**PointMaze dataset 构建接口统一为 batch 路径：**
+- `train.py` 统一通过 `dataset_cls.build_batch(...)` 构造所有 selected variants 的 train/val dataset
+- `data/base_dataset.py` 明确 `DatasetBuildRequest`、样本 schema、`collate_fn` padding 规则和 `build_batch` 契约
+- `PointMazeDataset` 的直接构造只表示已加载样本容器；offline load/tokenize/cache 逻辑统一集中在 `build_batch`
+
+**dataset tokenization 从线程并行改为进程并行：**
+- PointMaze tokenization 改为 `ProcessPoolExecutor`，避免 Python 线程在 tokenizer-heavy 工作上的 GIL/资源争用
+- 多 variant、train/val cache miss 共用一个进程池；worker 初始化时只加载一次 tokenizer
+- 并行粒度改为 episode payload，worker 在单个 episode 内处理所有 timestep 和 prompt templates
+- worker 通过 `job_id` 区分不同 variant 的 prompt、history、action 配置；同一批 pending jobs 要求 tokenizer/action-bin schema 一致
+
+**新增 `MultiWorkerFileProgress`：**
+- `utils/file_progress.py` 新增 `MultiWorkerFileProgress`，支持一个总进度文件叠加多个 worker 子进度
+- dataset tokenization 现在只打印一个 joint progress path：`Tokenizing pointmaze datasets`
+- worker 子进度会显示当前处理的 variant、cache job、episode 和样本/step 信息
+
+**PointMaze cache 改为 episode 级、不分 split：**
+- tokenized cache 保存为 `episode_idx -> tokenized samples`，保留 episode 边界
+- cache 文件名不再包含 `train/val`、`train_data_ratio`、`episode_keep_num`、`sampling_seed`、`max_data_num`
+- cache 命中后重新按当前 `episode_keep_num`、`train_data_ratio`、`sampling_seed` 和 balance 配置选择 episode 并切分 train/val
+- 如果 cache 不覆盖当前 sampled episodes，则重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
+- `max_data_num` 只截断最终返回 dataset，不影响 cache 内容和 cache 命中判断
+
+---
+
+## action-token checkpoint / local dataset / tooling（2026-04-30）
+
+**action-bin special token checkpoint 修复：**
+- `bin` / `gaussian_bin` 模式下 LoRA 保存加入 `embed_tokens` 和 `lm_head`
+- 加载 action-bin checkpoint 时检查旧 checkpoint 是否缺少 action token 相关权重，并给出明确错误
+- tokenizer 注册 action tokens 后会同步 resize embedding，避免 eval 时 action token 概率均匀、持续解析失败
+
+**本地 PointMaze HDF5 fallback：**
+- local dataset 读取先尝试 Minari reader；如果当前 Minari reader 无法识别已有 `main_data.hdf5` 布局，则 fallback 直接读取 HDF5 episode
+- local cache 签名继续使用数据步数，避免本地数据变化后误复用旧 cache
+
+**Unsloth import banner 静音：**
+- `train.py` / `model/policy.py` 对 Unsloth import 的 stdout 做 redirect
+- 只屏蔽 import 阶段 banner，不屏蔽训练/评估过程中的正常日志
+
+**project-changelog skill 规则更新：**
+- `skills/project-changelog/SKILL.md` 明确：记录 changelog 前必须先给用户看总结，并等用户同意后才能写入

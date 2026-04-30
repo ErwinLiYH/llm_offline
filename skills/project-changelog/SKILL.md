@@ -12,7 +12,7 @@ Use this skill when the user wants to record recent project changes into `CHANGE
 In this repo, changelog updates should be grounded in actual recent work, not generic summaries. The workflow is:
 - inspect the current conversation context for changes the user explicitly asked Codex to make
 - compare against existing `CHANGELOG.md` to avoid duplicates
-- give the user a concise change summary first
+- give the user a concise change summary first and wait for explicit approval before editing
 - append new changelog content to the bottom of `CHANGELOG.md`
 - scan `AGENTS.md` and `DESIGN.md` to see whether the recent changes should also be reflected there
 
@@ -42,7 +42,7 @@ Check only what is needed to avoid duplicates and keep docs consistent:
 Do not duplicate items that are already recorded. Prefer using the current conversation context to infer what is new; inspect files only to clarify uncertain details.
 
 3. Before writing, give the user a concise summary of the changes you believe should be logged.
-Keep that summary short and high-signal.
+Keep that summary short and high-signal. Do not edit `CHANGELOG.md` until the user explicitly agrees to the summary.
 
 4. Append the new changelog entry to the bottom of `CHANGELOG.md`.
 Do not insert the entry in the middle of the file. Preserve the existing writing style and chronological ordering already used in the file.

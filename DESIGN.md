@@ -233,7 +233,7 @@ action_soft_label_radius: 2   # gaussian_bin 的局部训练窗口，中心 bin 
 
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
-episode_keep_num: 5000  # 参与 train/val 划分的最大 episode 数；真实 episode 更少时使用全部，只作用于未命中 cache 的 offline dataset 构建
+episode_keep_num: 5000  # 参与 train/val 划分的最大 episode 数；真实 episode 更少时使用全部，cache 命中后仍会重新生效
 balance_variant_episode_count: false  # 多 variant 时是否把 sampled episode pool 对齐到最小 variant
 sampling_seed: 0         # 控制 episode 随机抽样的可复现性
 ```
@@ -295,20 +295,20 @@ Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置
 
 ```
 dataset_cache/
-├── <env_family>-<variant>-train-prompts-<prompt_names>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.pkl
-├── <env_family>-<variant>-train-prompts-<prompt_names>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.jsonl
-├── <env_family>-<variant>-val-prompts-<prompt_names>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.pkl
-└── <env_family>-<variant>-val-prompts-<prompt_names>-hist<H>-stride<S>-split<train_pct>-action-<mode>-bins<B>-range<min>to<max>.jsonl
+├── <env_family>-<variant>-tok-<model>-len<L>-prompts-<prompt_names>-hist<H>-stride<S>-action-<mode>-bins<B>-range<min>to<max>.pkl
+└── <env_family>-<variant>-tok-<model>-len<L>-prompts-<prompt_names>-hist<H>-stride<S>-action-<mode>-bins<B>-range<min>to<max>.jsonl
 ```
 
-**示例：** `dataset_cache/pointmaze-open-train-prompts-0+3-hist4-stride1-split95-action-text-bins10-range-1to1.pkl`
+**示例：** `dataset_cache/pointmaze-open-tok-Qwen+Qwen3-0.6B-len512-prompts-0+3-hist4-stride1-action-text-bins10-range-1to1.pkl`
 
 - `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
-- `.jsonl` 每行是 `{"prompt": "...", "action": "35,-72"}` 或 `{"prompt": "...", "action": "<act_03><act_48>"}`，供人工抽检数据质量
+- `.pkl` 按 `episode_idx -> tokenized samples` 保存，不再按 train/val split 分文件
+- `.jsonl` 每行包含 `episode_idx`、`timestep`、`prompt` 和 `action`，供人工抽检数据质量
 - 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
-- `max_data_num` 截断发生在 cache 读取之后的内存中，cache 文件始终保存完整数据
-- 不同 `prompt_templete_index`、`history_num/history_stride` 和 action 编码配置会写入不同 cache 文件名，避免不同 prompt、历史或动作 tokenization 配置误复用同一份 tokenized 数据
-- `episode_keep_num` / `balance_variant_episode_count` / `sampling_seed` 只在未命中 cache 时参与 episode 抽样；命中现有 cache 时会直接复用 `.pkl`，并打印这些设置本次未生效
+- `episode_keep_num`、`train_data_ratio`、`sampling_seed` 和 `balance_variant_episode_count` 不写入 cache 文件名；cache 命中后会重新按当前配置选择 episode 并切分 train/val
+- 如果现有 cache 不覆盖当前 sampled episodes，则忽略旧 cache，重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
+- `max_data_num` 截断发生在最终 dataset 组装之后，只影响本次训练返回的数据，不影响 cache 内容和 cache 命中判断
+- 不同 tokenizer/max length、`prompt_templete_index`、`history_num/history_stride` 和 action 编码配置会写入不同 cache 文件名，避免不同 tokenization 配置误复用同一份 tokenized 数据
 
 ---
 
