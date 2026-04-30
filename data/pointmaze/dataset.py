@@ -7,7 +7,9 @@ import math
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from types import SimpleNamespace
 
+import h5py
 import minari
 from minari import MinariDataset
 import numpy as np
@@ -226,12 +228,50 @@ def _load_variant_episodes(variant: str):
                 f"Local PointMaze dataset for variant={variant!r} not found at {data_path}. "
                 "Generate it with local_varient_gen.py first."
             )
-        dataset = MinariDataset(data_path)
+        try:
+            dataset = MinariDataset(data_path)
+        except ValueError as exc:
+            if "No data found in data path" not in str(exc):
+                raise
+            episodes = _load_local_hdf5_episodes(data_path)
+            step_counts = [len(episode.actions) for episode in episodes]
+            return meta, episodes, step_counts
     else:
         dataset = minari.load_dataset(meta["dataset_id"], download=True)
     episodes = list(dataset.iterate_episodes())
     step_counts = [len(episode.actions) for episode in episodes]
     return meta, episodes, step_counts
+
+
+def _load_local_hdf5_episodes(data_path):
+    h5_path = data_path / "main_data.hdf5"
+    if not h5_path.exists():
+        raise FileNotFoundError(
+            f"Local PointMaze data file not found at {h5_path}. "
+            "Generate it with local_varient_gen.py first."
+        )
+    episodes = []
+    with h5py.File(h5_path, "r") as f:
+        episode_names = sorted(
+            (name for name in f.keys() if name.startswith("episode_")),
+            key=lambda name: int(name.split("_", 1)[1]),
+        )
+        for name in episode_names:
+            group = f[name]
+            obs_group = group["observations"]
+            observations = {
+                obs_name: obs_group[obs_name][()]
+                for obs_name in obs_group.keys()
+            }
+            episodes.append(
+                SimpleNamespace(
+                    observations=observations,
+                    actions=group["actions"][()],
+                )
+            )
+    if not episodes:
+        raise ValueError(f"No episodes found in local PointMaze data file {h5_path}")
+    return episodes
 
 
 def _local_dataset_step_signature(meta: dict) -> str:
@@ -242,8 +282,28 @@ def _local_dataset_step_signature(meta: dict) -> str:
             f"Local PointMaze dataset not found at {data_path}. "
             "Generate it with local_varient_gen.py first."
         )
-    dataset = MinariDataset(data_path)
-    return f"localsteps{int(dataset.total_steps)}"
+    try:
+        dataset = MinariDataset(data_path)
+        total_steps = int(dataset.total_steps)
+    except ValueError as exc:
+        if "No data found in data path" not in str(exc):
+            raise
+        h5_path = data_path / "main_data.hdf5"
+        if not h5_path.exists():
+            raise FileNotFoundError(
+                f"Local PointMaze data file not found at {h5_path}. "
+                "Generate it with local_varient_gen.py first."
+            )
+        with h5py.File(h5_path, "r") as f:
+            if "total_steps" in f.attrs:
+                total_steps = int(f.attrs["total_steps"])
+            else:
+                total_steps = sum(
+                    int(f[name]["actions"].shape[0])
+                    for name in f.keys()
+                    if name.startswith("episode_")
+                )
+    return f"localsteps{total_steps}"
 
 
 def _normalize_episode_keep_num(value) -> int | None:
