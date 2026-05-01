@@ -6,6 +6,7 @@ import hashlib
 import math
 import signal
 import time
+import gc
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -529,9 +530,11 @@ class PointMazeDataset(BaseOfflineDataset):
                     selection=selection,
                     episode_samples=cached_episodes,
                 )
+                selection.pop("episodes", None)
                 continue
 
             job = cls._create_tokenization_job(base_config, cache_path, selection)
+            selection.pop("episodes", None)
             jobs.append(job)
 
         cls._print_total_selection_summary(list(selections_by_variant.values()))
@@ -546,6 +549,7 @@ class PointMazeDataset(BaseOfflineDataset):
             )
             for job in jobs:
                 episode_samples = cls._finalize_tokenization_job(job, results_by_job[job.job_id])
+                results_by_job.pop(job.job_id, None)
                 request_indices = pending_variant_indices[job.config.variant]
                 cls._fill_datasets_from_episode_cache(
                     datasets=datasets,
@@ -554,6 +558,12 @@ class PointMazeDataset(BaseOfflineDataset):
                     selection=selections_by_variant[job.config.variant],
                     episode_samples=episode_samples,
                 )
+                job.episode_payloads.clear()
+                del episode_samples
+                gc.collect()
+            results_by_job.clear()
+            jobs.clear()
+            gc.collect()
 
         if any(dataset is None for dataset in datasets):
             raise RuntimeError("PointMazeDataset.build_batch did not construct every requested dataset.")
@@ -943,15 +953,18 @@ class PointMazeDataset(BaseOfflineDataset):
                 initializer=_init_pointmaze_tokenization_worker,
                 initargs=(progress_initializer, progress_initargs, worker_config),
             ) as executor:
-                futures = list(
+                for idx, episode_results in enumerate(
                     executor.map(
                         _process_pointmaze_episode,
                         episode_payloads,
                         chunksize=chunksize,
                     )
-                )
-        for payload, episode_results in zip(episode_payloads, futures):
-            results_by_job[str(payload["job_id"])].append(episode_results)
+                ):
+                    payload = episode_payloads[idx]
+                    results_by_job[str(payload["job_id"])].append(episode_results)
+                    episode_payloads[idx] = None
+        episode_payloads.clear()
+        gc.collect()
         return results_by_job
 
     @classmethod
