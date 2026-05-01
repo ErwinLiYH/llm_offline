@@ -522,3 +522,30 @@ type: project
 
 **project-changelog skill 规则更新：**
 - `skills/project-changelog/SKILL.md` 明确：记录 changelog 前必须先给用户看总结，并等用户同意后才能写入
+
+---
+
+## action-bin precision and tokenization memory fixes（2026-05-01）
+
+**action-bin loss 精度修复：**
+- `gaussian_action_loss()` 中 action-bin logits 在 `log_softmax` 前转为 float32，避免 bf16 下 `log(50)` 显示/计算成 `3.90625`
+- radius/window 模式下 gather 出来的 action logits 也转为 float32
+- stop-token CE 改为用 float32 logits 计算，和 HuggingFace `ForCausalLMLoss` 的 upcast 行为对齐
+- 训练进度中的 `action_loss` 从 4 位改为 6 位，便于观察细微变化
+- eval 记录 action-bin 概率时，softmax 前也将 bin logits 转为 float32
+
+**tokenization worker 生命周期保护：**
+- PointMaze tokenization worker 初始化时设置 Linux `PR_SET_PDEATHSIG=SIGTERM`
+- 父进程 `train.py` 被 kill 或异常退出时，worker 会收到 SIGTERM，避免残留 `PPID=1` 孤儿进程继续占内存
+- 增加父进程已在初始化竞态中死亡时的直接退出保护
+
+**human-readable jsonl cache 限制：**
+- `.jsonl` inspect cache 只保留每个 tokenization job 前 3 个 episode 的 `prompt/action` 文本记录
+- `.pkl` 训练 cache 不变，仍保存完整 tokenized samples
+- worker 返回结构调整为 `(episode_idx, text_record_or_none, token_sample)`，把 episode 归档信息和可选文本记录分离
+
+**tokenization 阶段内存生命周期优化：**
+- 创建 tokenization job 或 cache hit 后，及时释放 `selection["episodes"]` 中的完整原始 episode 引用
+- 去掉 `futures = list(executor.map(...))`，改为边接收 worker 结果边归档
+- 每接收一个 episode 结果后清掉对应 payload，降低原始轨迹数组保留时间
+- 每 finalize 一个 job 后清理 `results_by_job`、`job.episode_payloads` 和临时 `episode_samples`，并触发 `gc.collect()` 降低峰值内存
