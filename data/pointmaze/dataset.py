@@ -42,6 +42,7 @@ from utils.prompt_loader import load_named_templates, load_template_names, rende
 DEFAULT_TRAIN_DATA_RATIO = 0.9
 DEFAULT_EPISODE_KEEP_NUM = None
 DEFAULT_SAMPLING_SEED = 0
+HUMAN_READABLE_CACHE_EPISODE_LIMIT = 3
 
 _POINTMAZE_WORKER_TOKENIZER = None
 _POINTMAZE_WORKER_CONFIGS: dict[str, dict] | None = None
@@ -168,7 +169,7 @@ def _tokenize_pointmaze_sample(prompt: str, action_text: str, config: dict) -> d
     }
 
 
-def _process_pointmaze_episode(payload: dict) -> list[tuple[dict, dict]]:
+def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, dict]]:
     global _POINTMAZE_WORKER_DONE
 
     configs = _POINTMAZE_WORKER_CONFIGS
@@ -184,6 +185,7 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[dict, dict]]:
     actions = payload["actions"]
     templates = config["templates"]
     prompt_vars = config["prompt_vars"]
+    include_text_records = bool(payload.get("include_text_records", False))
     worker_total = int(shared_config["worker_total"])
     split = config["split"]
     variant = config["variant"]
@@ -231,13 +233,15 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[dict, dict]]:
         for template in templates:
             prompt = render_template(template, prompt_vars, **obs_payload, **history_payload)
             token_sample = _tokenize_pointmaze_sample(prompt, action_text, config)
-            text_record = {
-                "episode_idx": episode_idx,
-                "timestep": t,
-                "prompt": prompt,
-                "action": action_text,
-            }
-            results.append((text_record, token_sample))
+            text_record = None
+            if include_text_records:
+                text_record = {
+                    "episode_idx": episode_idx,
+                    "timestep": t,
+                    "prompt": prompt,
+                    "action": action_text,
+                }
+            results.append((episode_idx, text_record, token_sample))
 
     _POINTMAZE_WORKER_DONE += 1
     sub_progress.update(
@@ -722,10 +726,14 @@ class PointMazeDataset(BaseOfflineDataset):
         episode_indices = sorted(set(selection["train_indices"]) | set(selection["val_indices"]))
 
         job_id = f"{config.variant}:episodes:{len(episode_indices)}:{id(config)}"
+        human_readable_episode_indices = set(
+            episode_indices[:HUMAN_READABLE_CACHE_EPISODE_LIMIT]
+        ) if cache_path else set()
         episode_payloads = [
             {
                 "job_id": job_id,
                 "episode_idx": episode_idx,
+                "include_text_records": episode_idx in human_readable_episode_indices,
                 "observations": episode.observations["observation"],
                 "goals": episode.observations["desired_goal"],
                 "actions": episode.actions,
@@ -889,7 +897,7 @@ class PointMazeDataset(BaseOfflineDataset):
         *,
         num_workers: int,
         progress_interval_seconds: float = 5.0,
-    ) -> dict[str, list[list[tuple[dict, dict]]]]:
+    ) -> dict[str, list[list[tuple[int, dict | None, dict]]]]:
         pending_jobs = [job for job in jobs if job.episode_payloads]
         if not pending_jobs:
             return {job.job_id: [] for job in jobs}
@@ -916,7 +924,7 @@ class PointMazeDataset(BaseOfflineDataset):
             },
             "plans": job_configs,
         }
-        results_by_job: dict[str, list[list[tuple[dict, dict]]]] = {
+        results_by_job: dict[str, list[list[tuple[int, dict | None, dict]]]] = {
             job.job_id: [] for job in jobs
         }
         ctx = multiprocessing.get_context("spawn")
@@ -950,16 +958,17 @@ class PointMazeDataset(BaseOfflineDataset):
     def _finalize_tokenization_job(
         cls,
         job: PointMazeTokenizationJob,
-        episode_results_list: list[list[tuple[dict, dict]]],
+        episode_results_list: list[list[tuple[int, dict | None, dict]]],
     ) -> dict[int, list[dict]]:
         episode_samples: dict[int, list[dict]] = {}
         text_records = []
         for episode_results in episode_results_list:
             episode_idx = None
             samples = []
-            for text_record, token_sample in episode_results:
-                episode_idx = int(text_record["episode_idx"])
-                text_records.append(text_record)
+            for result_episode_idx, text_record, token_sample in episode_results:
+                episode_idx = int(result_episode_idx)
+                if text_record is not None:
+                    text_records.append(text_record)
                 samples.append(token_sample)
             if episode_idx is not None:
                 episode_samples[episode_idx] = samples
