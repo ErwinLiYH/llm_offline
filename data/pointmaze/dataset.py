@@ -4,6 +4,7 @@ import os
 import pickle
 import hashlib
 import math
+import signal
 import time
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ _POINTMAZE_WORKER_SHARED_CONFIG: dict | None = None
 _POINTMAZE_WORKER_TOKEN_ID_TO_BIN: dict[int, int] | None = None
 _POINTMAZE_WORKER_DONE = 0
 _POINTMAZE_WORKER_START_TIME = 0.0
+_LINUX_PR_SET_PDEATHSIG = 1
 
 
 def _pointmaze_action_config(config: dict) -> dict:
@@ -59,6 +61,31 @@ def _pointmaze_action_config(config: dict) -> dict:
     }
 
 
+def _terminate_worker_when_parent_dies():
+    """Ask Linux to SIGTERM this worker if its parent process exits.
+
+    `ProcessPoolExecutor` does not expose a standard "kill workers when parent
+    dies" option. With the spawn context, each worker runs this initializer, so
+    setting PR_SET_PDEATHSIG here prevents tokenization workers from surviving
+    as PPID=1 orphans after the training process is killed.
+    """
+    if os.name != "posix" or not hasattr(os, "getppid"):
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None)
+        result = libc.prctl(_LINUX_PR_SET_PDEATHSIG, signal.SIGTERM)
+    except Exception:
+        return
+    if result != 0:
+        return
+
+    # Race guard: the parent can die between process spawn and prctl().
+    if os.getppid() == 1:
+        os._exit(1)
+
+
 def _init_pointmaze_tokenization_worker(progress_initializer, progress_initargs: tuple, worker_config: dict):
     global _POINTMAZE_WORKER_TOKENIZER
     global _POINTMAZE_WORKER_CONFIGS
@@ -67,6 +94,7 @@ def _init_pointmaze_tokenization_worker(progress_initializer, progress_initargs:
     global _POINTMAZE_WORKER_DONE
     global _POINTMAZE_WORKER_START_TIME
 
+    _terminate_worker_when_parent_dies()
     progress_initializer(*progress_initargs)
     _POINTMAZE_WORKER_SHARED_CONFIG = dict(worker_config["shared"])
     _POINTMAZE_WORKER_CONFIGS = dict(worker_config["plans"])
