@@ -387,7 +387,7 @@ def _run_training(config, model, train_loader, val_loader, device,
                     f"loss={loss.item():.4f}"
                     if loss_parts is None
                     else (
-                        f"loss={loss.item():.4f} action={loss_parts['action_loss']:.4f} "
+                        f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
                         f"stop={loss_parts['stop_loss']:.4f}"
                     )
                 ),
@@ -447,7 +447,7 @@ def _run_training(config, model, train_loader, val_loader, device,
                         f"loss={loss.item():.4f}"
                         if loss_parts is None
                         else (
-                            f"loss={loss.item():.4f} action={loss_parts['action_loss']:.4f} "
+                            f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
                             f"stop={loss_parts['stop_loss']:.4f}"
                         )
                     ),

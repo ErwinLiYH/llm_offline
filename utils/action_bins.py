@@ -183,7 +183,7 @@ def gaussian_action_loss(
     labelled_mask = shift_labels != -100
     stop_mask = labelled_mask & ~action_mask
 
-    total_loss = logits.sum() * 0.0
+    total_loss = logits.float().sum() * 0.0
     metrics = {
         "action_loss": math.nan,
         "stop_loss": math.nan,
@@ -196,7 +196,7 @@ def gaussian_action_loss(
         target_bins = shift_action_bins[action_mask]
         selected_logits = shift_logits[action_mask]
         if soft_label_radius is None or soft_label_radius >= num_bins:
-            action_logits = selected_logits.index_select(dim=-1, index=token_ids)
+            action_logits = selected_logits.index_select(dim=-1, index=token_ids).float()
             targets = gaussian_bin_targets(target_bins, num_bins, sigma)
         else:
             if soft_label_radius < 0:
@@ -211,7 +211,7 @@ def gaussian_action_loss(
             valid = (candidate_bins >= 0) & (candidate_bins < num_bins)
             safe_candidate_bins = candidate_bins.clamp(0, num_bins - 1)
             candidate_token_ids = token_ids[safe_candidate_bins]
-            action_logits = selected_logits.gather(dim=1, index=candidate_token_ids)
+            action_logits = selected_logits.gather(dim=1, index=candidate_token_ids).float()
             action_logits = action_logits.masked_fill(~valid, torch.finfo(action_logits.dtype).min)
             targets = gaussian_window_targets(target_bins, safe_candidate_bins, sigma)
             targets = targets.masked_fill(~valid, 0.0)
@@ -222,7 +222,7 @@ def gaussian_action_loss(
         metrics["action_loss"] = float(action_loss.detach().item())
 
     if stop_mask.any():
-        stop_loss = F.cross_entropy(shift_logits[stop_mask], shift_labels[stop_mask])
+        stop_loss = F.cross_entropy(shift_logits[stop_mask].float(), shift_labels[stop_mask])
         total_loss = total_loss + float(stop_loss_weight) * stop_loss
         metrics["stop_loss"] = float(stop_loss.detach().item())
 

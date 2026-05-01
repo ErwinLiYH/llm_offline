@@ -280,7 +280,7 @@ def _collect_action_bin_probabilities(
     bin_token_ids = torch.tensor(get_action_bin_token_ids(tokenizer, config), device=scores[0].device)
     distributions = []
     for score in scores[:action_dim]:
-        bin_logits = score[0].index_select(dim=-1, index=bin_token_ids)
+        bin_logits = score[0].index_select(dim=-1, index=bin_token_ids).float()
         bin_probs = torch.softmax(bin_logits, dim=-1)
         distributions.append([float(value) for value in bin_probs.detach().cpu().tolist()])
     return distributions
