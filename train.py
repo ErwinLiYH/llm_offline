@@ -322,6 +322,21 @@ def _run_training(config, model, train_loader, val_loader, device,
     )
 
     num_epochs = config["num_epochs"]
+    gradient_accumulation_steps = int(config.get("gradient_accumulation_steps", 1))
+    if gradient_accumulation_steps < 1:
+        raise ValueError(
+            "gradient_accumulation_steps must be >= 1, "
+            f"got {gradient_accumulation_steps}"
+        )
+    updates_per_epoch = math.ceil(len(train_loader) / gradient_accumulation_steps)
+    total_training_steps = max(updates_per_epoch * num_epochs, 1)
+    optimizer_step = 0
+    print(
+        "[train] Optimizer setup: "
+        f"gradient_accumulation_steps={gradient_accumulation_steps}, "
+        f"updates_per_epoch={updates_per_epoch}, total_updates={total_training_steps}, "
+        f"learning_rate={config['learning_rate']}"
+    )
     action_token_mode = get_action_token_mode(config)
     bin_token_ids = None
     if action_token_mode == "gaussian_bin":
@@ -340,12 +355,12 @@ def _run_training(config, model, train_loader, val_loader, device,
         train_total = len(train_loader)
         train_start = time.monotonic()
         train_desc = f"Epoch {epoch}/{num_epochs} [train]"
+        optimizer.zero_grad(set_to_none=True)
         for step, batch in enumerate(train_loader, start=1):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
             labels = batch["labels"].to(device)
 
-            optimizer.zero_grad()
             if action_token_mode == "gaussian_bin":
                 action_bin_labels = batch["action_bin_labels"].to(device)
                 outputs = model(
@@ -371,25 +386,34 @@ def _run_training(config, model, train_loader, val_loader, device,
                 )
                 loss = outputs.loss
                 loss_parts = None
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            (loss / gradient_accumulation_steps).backward()
+            should_step = step % gradient_accumulation_steps == 0 or step == train_total
+            if should_step:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                optimizer_step += 1
 
             total_loss += loss.item()
             num_batches += 1
+            accum_step = ((step - 1) % gradient_accumulation_steps) + 1
+            if loss_parts is None:
+                loss_extra = f"loss={loss.item():.4f}"
+            else:
+                loss_extra = (
+                    f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
+                    f"stop={loss_parts['stop_loss']:.4f}"
+                )
+            loss_extra += (
+                f" lr={config['learning_rate']:.2e} opt_step={optimizer_step}/{total_training_steps} "
+                f"accum={accum_step}/{gradient_accumulation_steps}"
+            )
             progress.update(
                 train_desc,
                 step,
                 train_total,
                 train_start,
-                extra=(
-                    f"loss={loss.item():.4f}"
-                    if loss_parts is None
-                    else (
-                        f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
-                        f"stop={loss_parts['stop_loss']:.4f}"
-                    )
-                ),
+                extra=loss_extra,
             )
 
         train_loss = total_loss / max(num_batches, 1)
