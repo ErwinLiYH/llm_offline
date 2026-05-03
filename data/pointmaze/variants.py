@@ -37,6 +37,18 @@ def _build_prompt_vars(
     }
 
 
+def _default_local_max_episode_steps(maze_map: list[list[int]]) -> int:
+    """Use a finite eval horizon for local layouts.
+
+    Official PointMaze horizons are roughly 300 for small maps and 800 for
+    large maps. Scaling by map area keeps custom layouts bounded without making
+    small layouts too short.
+    """
+    rows = len(maze_map)
+    cols = len(maze_map[0]) if maze_map else 0
+    return max(300, rows * cols * 6)
+
+
 _OPEN_MAZE = [
     [1, 1, 1, 1, 1, 1, 1],
     [1, 0, 0, 0, 0, 0, 1],
@@ -218,7 +230,7 @@ def _build_local_variant(
             "reward_type": "sparse",
             "continuing_task": True,
             "reset_target": True,
-            "max_episode_steps": 1000000,
+            "max_episode_steps": _default_local_max_episode_steps(maze_map),
         },
         "prompt_vars": _build_prompt_vars(
             env_name=f"PointMaze Local Layout {index:02d}",
