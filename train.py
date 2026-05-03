@@ -28,7 +28,6 @@ from utils.action_bins import (
     get_action_bin_token_ids,
     get_action_num_bins,
     get_action_token_mode,
-    uses_action_bins,
 )
 from utils.file_progress import FileProgress
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
@@ -477,10 +476,7 @@ def _run_training(config, model, train_loader, val_loader, device,
 
 def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
     os.makedirs(checkpoint_dir, exist_ok=True)
-    if uses_action_bins(config):
-        model.save_pretrained(checkpoint_dir, save_embedding_layers=False)
-    else:
-        model.save_pretrained(checkpoint_dir)
+    model.save_pretrained(checkpoint_dir)
     tokenizer.save_pretrained(checkpoint_dir)
     config_dst = os.path.join(checkpoint_dir, "config.yaml")
     with open(config_dst, "w") as f:

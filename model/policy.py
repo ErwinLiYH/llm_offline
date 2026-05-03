@@ -1,5 +1,4 @@
 import os
-import json
 import contextlib
 import io
 
@@ -16,7 +15,7 @@ from utils.action_bins import (
 )
 
 
-ACTION_BIN_TRAINABLE_TOKEN_MODULE = "embed_tokens"
+ACTION_BIN_LORA_MODULES = ("embed_tokens", "lm_head")
 
 
 def get_model_slug(model_name: str) -> str:
@@ -27,9 +26,10 @@ def get_model_slug(model_name: str) -> str:
     return model_name.split("/")[-1]
 
 
-def _embedding_vocab_size(model) -> int | None:
-    """Return the current input-embedding row count, or None if it cannot be read."""
-    embeddings = model.get_input_embeddings()
+def _embedding_vocab_size(embeddings) -> int | None:
+    """Return an embedding/output-head row count, or None if it cannot be read."""
+    if embeddings is None:
+        return None
     weight = getattr(embeddings, "weight", None)
     if weight is None:
         return None
@@ -42,83 +42,69 @@ def _ensure_pad_token(tokenizer):
         tokenizer.pad_token = tokenizer.eos_token
 
 
-def _prepare_action_tokens_for_training(model, tokenizer, config: dict) -> list[int]:
-    """Prepare a fresh training model for action-bin tokens.
+def _validate_model_vocab_size(model, tokenizer):
+    """Ensure input/output token matrices cover the tokenizer vocabulary."""
+    tok = get_tokenizer_backend(tokenizer)
+    input_vocab_size = _embedding_vocab_size(model.get_input_embeddings())
+    output_vocab_size = _embedding_vocab_size(model.get_output_embeddings())
+    if input_vocab_size is not None and input_vocab_size < len(tok):
+        raise ValueError(
+            "Model input embedding does not cover tokenizer vocabulary: "
+            f"tokenizer={len(tok)}, input_embeddings={input_vocab_size}."
+        )
+    if output_vocab_size is not None and output_vocab_size < len(tok):
+        raise ValueError(
+            "Model output head does not cover tokenizer vocabulary: "
+            f"tokenizer={len(tok)}, output_embeddings={output_vocab_size}."
+        )
 
-    In `bin` / `gaussian_bin` mode this registers `<act_xx>` tokens on the
-    tokenizer, resizes the model input embedding if the tokenizer grew, and
-    returns the action token ids used by PEFT `trainable_token_indices`.
-    This is the only path that is allowed to resize embeddings.
-    """
+
+def _prepare_action_tokens(model, tokenizer, config: dict, *, resize_embeddings: bool):
+    """Register action-bin tokens and ensure the model token matrices fit them."""
     _ensure_pad_token(tokenizer)
     if not uses_action_bins(config):
         return []
     register_action_tokens(tokenizer, config)
     tok = get_tokenizer_backend(tokenizer)
-    vocab_size = _embedding_vocab_size(model)
-    if vocab_size is None or vocab_size < len(tok):
+    input_vocab_size = _embedding_vocab_size(model.get_input_embeddings())
+    output_vocab_size = _embedding_vocab_size(model.get_output_embeddings())
+    needs_resize = (
+        input_vocab_size is None
+        or input_vocab_size < len(tok)
+        or (output_vocab_size is not None and output_vocab_size < len(tok))
+    )
+    if needs_resize:
+        if not resize_embeddings:
+            raise ValueError(
+                "Tokenizer/model vocab size mismatch after loading action-bin checkpoint: "
+                f"tokenizer={len(tok)}, input_embeddings={input_vocab_size}, "
+                f"output_embeddings={output_vocab_size}. Re-train with the current action-token setup."
+            )
         model.resize_token_embeddings(len(tok))
+    _validate_model_vocab_size(model, tokenizer)
     return get_action_bin_token_ids(tokenizer, config)
 
 
-def _validate_action_tokens_for_checkpoint(model, tokenizer, config: dict):
-    """Validate action-token structure after loading an adapter checkpoint.
+def _resolve_lora_target_modules(config: dict) -> list[str]:
+    """Return LoRA target modules, force-adding action-token input/output layers."""
+    raw_modules = config["lora_target_modules"]
+    if isinstance(raw_modules, str):
+        modules = [raw_modules]
+    else:
+        modules = list(raw_modules)
+    if uses_action_bins(config):
+        modules.extend(ACTION_BIN_LORA_MODULES)
 
-    Checkpoint loading should restore the tokenizer and PEFT trainable-token
-    adapter from disk. Therefore this function only checks that action tokens
-    can be resolved and that the loaded model embedding is large enough for the
-    tokenizer vocab. It intentionally does not resize embeddings; a mismatch
-    means the checkpoint/tokenizer/base-model combination is inconsistent.
-    """
-    _ensure_pad_token(tokenizer)
-    if not uses_action_bins(config):
-        return
-    register_action_tokens(tokenizer, config)
-    tok = get_tokenizer_backend(tokenizer)
-    vocab_size = _embedding_vocab_size(model)
-    if vocab_size is None or vocab_size < len(tok):
-        raise ValueError(
-            "Tokenizer/model vocab size mismatch after loading action-bin checkpoint: "
-            f"tokenizer={len(tok)}, model_embeddings={vocab_size}. The checkpoint tokenizer may be missing "
-            "saved action tokens, or the adapter was saved with an incompatible base model."
-        )
-    get_action_bin_token_ids(tokenizer, config)
-
-
-def _has_action_trainable_token_indices(adapter_config: dict) -> bool:
-    """Return whether adapter_config declares saved trainable action-token rows."""
-    token_indices = adapter_config.get("trainable_token_indices")
-    if isinstance(token_indices, dict):
-        indices = token_indices.get(ACTION_BIN_TRAINABLE_TOKEN_MODULE)
-        return isinstance(indices, list) and len(indices) > 0
-    return isinstance(token_indices, list) and len(token_indices) > 0
-
-
-def _validate_action_bin_checkpoint(model_path: str, saved_config: dict):
-    """Validate action-bin checkpoint metadata before loading model tensors.
-
-    An action-bin adapter must declare `trainable_token_indices` in
-    `adapter_config.json`; otherwise the `<act_xx>` embedding deltas were not
-    saved and eval would usually produce near-uniform action-token probabilities.
-    This metadata check is separate from `_validate_action_tokens_for_checkpoint`,
-    which validates the loaded tokenizer/model embedding structure.
-    """
-    if not uses_action_bins(saved_config):
-        return
-    adapter_cfg_path = os.path.join(model_path, "adapter_config.json")
-    if not os.path.exists(adapter_cfg_path):
-        return
-    with open(adapter_cfg_path) as f:
-        adapter_config = json.load(f)
-    if _has_action_trainable_token_indices(adapter_config):
-        return
-    raise ValueError(
-        "This checkpoint was trained with action_token_mode="
-        f"{saved_config.get('action_token_mode')!r}, but adapter_config.json does not save action-token "
-        "weights via trainable_token_indices. Its action-token embeddings cannot be restored, which makes "
-        "action-bin probabilities uniform and parsing fail. Re-train with the current action-token setup, "
-        "or evaluate a text-mode checkpoint."
-    )
+    resolved = []
+    seen = set()
+    for module in modules:
+        if not isinstance(module, str) or not module.strip():
+            raise ValueError(f"lora_target_modules must contain non-empty strings, got {module!r}")
+        module = module.strip()
+        if module not in seen:
+            resolved.append(module)
+            seen.add(module)
+    return resolved
 
 
 def load_model_and_tokenizer(config: dict):
@@ -133,23 +119,19 @@ def load_model_and_tokenizer(config: dict):
         load_in_4bit=load_in_4bit,
         trust_remote_code=True,
     )
-    action_token_ids = _prepare_action_tokens_for_training(model, tokenizer, config)
-    trainable_token_indices = (
-        {ACTION_BIN_TRAINABLE_TOKEN_MODULE: action_token_ids}
-        if uses_action_bins(config)
-        else None
-    )
+    _prepare_action_tokens(model, tokenizer, config, resize_embeddings=True)
+    target_modules = _resolve_lora_target_modules(config)
+    print(f"[model] LoRA target modules: {target_modules}")
 
     model = FastLanguageModel.get_peft_model(
         model,
         r=config["lora_r"],
         lora_alpha=config["lora_alpha"],
         lora_dropout=config["lora_dropout"],
-        target_modules=config["lora_target_modules"],
+        target_modules=target_modules,
         bias="none",
         use_gradient_checkpointing="unsloth",  # 30% less VRAM vs standard checkpointing
         random_state=42,
-        trainable_token_indices=trainable_token_indices,
     )
     model.print_trainable_parameters()
     return model, tokenizer
@@ -179,8 +161,6 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
 
     if load_in_4bit is None:
         load_in_4bit = saved_config.get("load_in_4bit", False)
-    _validate_action_bin_checkpoint(model_path, saved_config)
-
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model_path,
         max_seq_length=max_seq_length,
@@ -189,9 +169,9 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
         trust_remote_code=True,
     )
     if os.path.exists(adapter_cfg_path):
-        _validate_action_tokens_for_checkpoint(model, tokenizer, saved_config)
+        _prepare_action_tokens(model, tokenizer, saved_config, resize_embeddings=False)
     else:
-        _prepare_action_tokens_for_training(model, tokenizer, saved_config)
+        _prepare_action_tokens(model, tokenizer, saved_config, resize_embeddings=True)
 
     model.eval()
     FastLanguageModel.for_inference(model)
