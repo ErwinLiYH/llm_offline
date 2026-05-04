@@ -9,6 +9,7 @@ import json
 import os
 import time
 import uuid
+import warnings
 
 import gymnasium as gym
 import gymnasium_robotics  # noqa: F401  registers PointMaze envs
@@ -244,12 +245,23 @@ def generate_action(
     )
     input_ids = encoded.input_ids.to(device)
     attention_mask = encoded.attention_mask.to(device)
+    eos_token_id = tokenizer.eos_token_id
+    if eos_token_id is None:
+        eos_token_id = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
     generate_kwargs = {
         "attention_mask": attention_mask,
         "max_new_tokens": max_new_tokens,
         "do_sample": False,
-        "pad_token_id": tokenizer.eos_token_id,
     }
+    if eos_token_id is None:
+        warnings.warn(
+            "Tokenizer/model does not define eos_token_id; generation will stop only at max_new_tokens.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    else:
+        generate_kwargs["eos_token_id"] = eos_token_id
+        generate_kwargs["pad_token_id"] = eos_token_id
     if collect_scores:
         generate_kwargs.update(
             {
