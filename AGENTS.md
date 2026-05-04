@@ -66,7 +66,7 @@ To add a new environment family:
 - Formatting is per environment family. There is no shared global formatting helper.
 - Shared prompt templates render the environment/task text only; final training/eval token sequences are built through the model tokenizer's native `chat_template`, not by plain-text concatenation.
 - Qwen3.5 models loaded through Unsloth may return a `Qwen3VLProcessor` instead of a plain tokenizer. The outer processor does not expose tokenizer mutation methods such as `add_special_tokens`; unwrap `processor.tokenizer` first. In this repo, use `utils.action_bins.get_tokenizer_backend(...)` before adding action tokens, resizing embeddings, selecting reused action token ids, or looking up action token ids.
-- `evaluate.py` uses `registry.get_formatter(env_family)` for `parse_action` and `validate_action`.
+- `evaluate.py` uses `registry.get_formatter(env_family)` for text-mode `parse_action` and all-mode `validate_action`; bin-mode parsing is centralized in `utils.action_bins.ActionBinCodec` and uses generated token ids.
 - On parse failure or invalid output, evaluation retries up to `parse_retry_limit`, then falls back to a zero vector and logs fallback metrics.
 - `format_obs(obs, meta)` returns a dict of prompt render variables. It must contain `obs_text`, and may add family-specific fields.
 - PointMaze also implements `format_history(history_entries, meta)`, which renders optional history prompt blocks from sampled past transitions.

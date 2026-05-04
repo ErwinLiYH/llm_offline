@@ -321,15 +321,13 @@ def _format_action_bin_probability_log(distributions: list[list[float]], config:
     return "\n".join(lines)
 
 
-def _format_action_for_mode(formatter, action: np.ndarray, config: dict) -> str:
+def _format_action_for_mode(formatter, action: np.ndarray, config: dict, action_codec=None) -> str:
     if get_action_token_mode(config) == "text":
         return formatter.format_action(action)
-    return formatter.format_action_bin_tokens(
-        action,
-        num_bins=get_action_num_bins(config),
-        low=float(config.get("action_bin_min", -1.0)),
-        high=float(config.get("action_bin_max", 1.0)),
-    )
+    if action_codec is None:
+        raise RuntimeError("Action-bin display formatting requires an initialized action codec.")
+    low, high = get_action_bin_range(config)
+    return action_codec.display_text_for_action(action, low, high)
 
 
 def _parse_action_for_mode(
@@ -345,17 +343,8 @@ def _parse_action_for_mode(
         return formatter.parse_action(text)
     if action_codec is None:
         raise RuntimeError("Action-bin eval requires an initialized action codec.")
-    indices = action_codec.bin_indices_from_token_ids(token_ids, action_dim)
-    if len(indices) < action_dim:
-        return np.zeros(action_dim, dtype=np.float32), False
     low, high = get_action_bin_range(config)
-    return (
-        np.array(
-            [bin_to_continuous(index, action_codec.num_bins, low, high) for index in indices],
-            dtype=np.float32,
-        ),
-        True,
-    )
+    return action_codec.action_from_token_ids(token_ids, action_dim, low, high)
 
 
 
@@ -536,13 +525,13 @@ def evaluate_variant(
                 )
                 if success and formatter.validate_action(parsed_action):
                     action = np.clip(parsed_action, -1.0, 1.0)
-                    executed_action_text = _format_action_for_mode(formatter, action, config)
+                    executed_action_text = _format_action_for_mode(formatter, action, config, action_codec)
                     break
                 total_parse_failures += 1
 
             if action is None:
                 action = np.zeros(env.action_space.shape, dtype=np.float32)
-                executed_action_text = _format_action_for_mode(formatter, action, config)
+                executed_action_text = _format_action_for_mode(formatter, action, config, action_codec)
                 total_fallbacks += 1
                 parse_status = "fallback"
             else:

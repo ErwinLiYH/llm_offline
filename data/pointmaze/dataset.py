@@ -27,7 +27,6 @@ from data.pointmaze.variants import (
     resolve_local_dataset_path,
 )
 from utils.action_bins import (
-    action_to_bin_indices,
     get_action_bin_range,
     get_action_bin_codec,
     get_action_num_bins,
@@ -130,9 +129,8 @@ def _format_pointmaze_action_texts(action: np.ndarray, config: dict) -> dict:
 
     if _POINTMAZE_WORKER_TOKENIZER is None or _POINTMAZE_WORKER_ACTION_CODEC is None:
         raise RuntimeError("PointMaze action-bin codec was not initialized.")
-    bin_indices = action_to_bin_indices(
+    bin_indices = _POINTMAZE_WORKER_ACTION_CODEC.bin_indices_for_action(
         action,
-        num_bins=config["action_num_bins"],
         low=config["action_bin_min"],
         high=config["action_bin_max"],
     )

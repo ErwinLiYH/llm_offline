@@ -3,9 +3,6 @@ import re
 
 import numpy as np
 
-from utils.action_bins import format_action_bins as _format_action_bins
-from utils.action_bins import parse_action_bins as _parse_action_bins
-
 
 def _obs_xy_to_row_col(
     x: float,
@@ -165,16 +162,6 @@ def format_action(action: np.ndarray) -> str:
     return f"{int(np.clip(np.round(ax * 100), -100, 100))},{int(np.clip(np.round(ay * 100), -100, 100))}"
 
 
-def format_action_bin_tokens(
-    action: np.ndarray,
-    num_bins: int = 10,
-    low: float = -1.0,
-    high: float = 1.0,
-) -> str:
-    """Serialize an action vector as contiguous display action-bin tokens."""
-    return _format_action_bins(action, num_bins, low, high)
-
-
 _ACTION_PATTERN = re.compile(
     r"[-+]?\d+\s*,\s*[-+]?\d+"
 )
@@ -196,16 +183,6 @@ def parse_action(text: str) -> tuple[np.ndarray, bool]:
         return action, True
     except (ValueError, IndexError):
         return np.zeros(2, dtype=np.float32), False
-
-
-def parse_action_bin_tokens(
-    text: str,
-    num_bins: int = 10,
-    low: float = -1.0,
-    high: float = 1.0,
-) -> tuple[np.ndarray, bool]:
-    """Parse two display action-bin tokens into a 2D action vector."""
-    return _parse_action_bins(text, action_dim=2, num_bins=num_bins, low=low, high=high)
 
 
 def validate_action(action: np.ndarray) -> bool:

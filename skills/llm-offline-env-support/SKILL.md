@@ -12,8 +12,9 @@ Use this skill when the user wants to add a new PointMaze variant, add a new env
 This repo uses:
 - family-level shared prompt templates in `prompts/<env_family>/<prompt_name>.txt`
 - variant metadata in `data/<env_family>/variants.py`
-- family formatter/decoder functions in `data/<env_family>/formatting.py`
+- family text-mode formatter/decoder functions in `data/<env_family>/formatting.py`
 - family dataset construction in `data/<env_family>/dataset.py`
+- shared action-bin token/display/model-id logic in `utils/action_bins.py`
 - family registration in `data/registry.py`
 
 ## Decision Rule
@@ -29,8 +30,8 @@ Typical example:
 
 Do this when any of these change:
 - observation fields or how they should be serialized
-- action target text format
-- action parsing or validation logic
+- text-mode action target format
+- text-mode action parsing or action validation logic
 - dataset loading procedure
 - prompt variable schema needed by shared templates
 
@@ -80,7 +81,14 @@ Implement all four functions:
 - `parse_action`
 - `validate_action`
 
-These are the family boundary. If these are incomplete, training or evaluation is not done.
+These are the family boundary for observation rendering, text-mode action format, and final action validation. If these are incomplete, training or evaluation is not done.
+
+Do not add `format_action_bin_tokens` or `parse_action_bin_tokens` to new family formatters. Bin and gaussian-bin modes are shared:
+- action discretization, display text such as `<act_00>`, model token ids/text, mapping hashes, and token-id decoding live in `utils.action_bins.ActionBinCodec`
+- `new_token: false` reuses stable low-frequency tokenizer IDs internally and only displays `<act_XX>` in human-readable logs/cache JSONL
+- `new_token: true` preserves the older path that registers `<act_XX>` as additional special tokens
+- eval bin parsing uses generated token ids through the codec, not formatter text parsing
+- the environment formatter still supplies `validate_action(action)` for both text and bin modes
 
 3. Create `data/<env_family>/dataset.py`.
 The dataset must:
@@ -89,7 +97,12 @@ The dataset must:
 - load shared family templates from `prompts/<env_family>/<prompt_name>.txt`
 - render prompts with `render_template(template, prompt_vars, obs_text=...)`
 - respect `prompt_templete_index` prompt-name selection
-- use cache filenames that include the selected prompt-name tag
+- for text mode, use the family formatter's `format_action(action)` as the assistant target
+- for bin modes, use `ActionBinCodec` to compute bin indices, model action text, display action text, and model token ids
+- write display action text such as `<act_24><act_37>` to human-readable JSONL/history, while tokenized PKL samples contain the real model token ids
+- fill `action_bin_labels` only at action-token positions with the true bin index; all non-action and padding positions must be `-1`
+- use cache filenames that include the selected prompt-name tag, action mode/range/bin count, `newtok<0|1>`, and the action-token schema hash
+- store cache metadata for `new_token` and `action_token_schema_hash`, and fail loudly on schema mismatch rather than silently reusing stale tokenized samples
 
 4. Create `prompts/<env_family>/<prompt_name>.txt` templates.
 Requirements:
@@ -153,7 +166,7 @@ def __getitem__(self, idx: int) -> TensorSample:
 - `prompt_templete_index` / `prompt_template_count`: prompt template selection.
 - `train_data_ratio`, `episode_keep_num`, `sampling_seed`, `balance_variant_episode_count`, `balanced_train_episode_count`: episode sampling/split controls.
 - `history_num`, `history_stride`: optional history prompt controls.
-- `action_token_mode`, `action_num_bins`, `action_bin_min`, `action_bin_max`: action target encoding controls.
+- `action_token_mode`, `action_num_bins`, `action_bin_min`, `action_bin_max`, `new_token`: action target encoding controls.
 
 For a minimal `build_batch`:
 
@@ -167,9 +180,11 @@ For a minimal `build_batch`:
 5. For each selected timestep and each selected template:
    - call the family formatter's `format_obs(...)`
    - render the prompt with `render_template(...)`
-   - format the action target with the family formatter or action-token helper
+   - in text mode, format the action target with the family formatter's `format_action(...)`
+   - in bin modes, use `ActionBinCodec` for action bin indices, model action text, display text, and target token ids
    - wrap prompt/action using the tokenizer chat template, matching the existing training format
    - tokenize to `input_ids`, `attention_mask`, `labels`
+   - fill `action_bin_labels` at the exact action token positions in bin modes
 6. Return one dataset object per request, preserving request order.
 
 Each `__getitem__` result must be:
@@ -218,7 +233,7 @@ PointMaze implements more than the minimum. New families may copy this pattern w
 - **Joint file progress**: `MultiWorkerFileProgress` writes one total progress file plus per-worker sub-progress rows. `train.py` prints only the joint progress path.
 - **Episode-level cache**: cache stores `episode_idx -> tokenized samples`, not split-level flattened samples.
 - **Cache hit resampling**: `episode_keep_num`, `train_data_ratio`, `sampling_seed`, and variant balancing are reapplied after cache load. If the cache lacks any current sampled episode, rebuild and overwrite that variant cache.
-- **Cache signature discipline**: include only tokenization-changing settings in cache filenames, such as data signature, tokenizer/model tag, `max_length`, selected prompt names, history settings, and action encoding. Do not include runtime sampling settings or `max_data_num`.
+- **Cache signature discipline**: include only tokenization-changing settings in cache filenames, such as data signature, tokenizer/model tag, `max_length`, selected prompt names, history settings, action encoding, `newtok<0|1>`, and the action-token schema hash. Do not include runtime sampling settings or `max_data_num`.
 - **Debug truncation**: apply `max_data_num` only after final train/val samples are assembled; never truncate what is written to cache.
 
 Important implementation notes for advanced mode:
@@ -229,8 +244,9 @@ Important implementation notes for advanced mode:
 - Preserve episode boundaries in cache; a flattened cache cannot safely reapply later `episode_keep_num` or `train_data_ratio` changes.
 - Keep cache files per variant and per tokenization signature. Do not merge variants into one cache file.
 - Cache hit should not enter the process pool or count toward tokenization progress.
-- If the family supports `bin` / `gaussian_bin`, register action special tokens inside worker tokenizers before tokenizing and fill `action_bin_labels` only at generated action-token positions.
+- If the family supports `bin` / `gaussian_bin`, initialize `ActionBinCodec` inside worker tokenizers with `get_action_bin_codec(..., ensure_registered=True)`. This registers special action tokens only when `new_token: true`; with `new_token: false` it selects reused tokenizer ids without growing the vocabulary. Fill `action_bin_labels` only at generated action-token positions.
 - `.jsonl` debug cache should include enough provenance to inspect records, typically `episode_idx`, `timestep`, `prompt`, and `action`.
+- `.jsonl` debug cache and history text should use display actions such as `<act_24><act_37>`; tokenized PKL samples should contain the true model token ids.
 
 ## Prompt Rules
 
@@ -257,6 +273,13 @@ After adding a variant or family, validate at minimum:
 - unknown prompt names fail clearly
 - training and evaluation still import the family without special-case edits unless intentionally required
 - dataset cache naming still includes the selected prompt-name tag
+- text-mode eval uses the family formatter's `parse_action(...)`
+- bin-mode eval uses generated token ids and `ActionBinCodec`, not formatter text parsing
+- bin-mode dataset tokenization writes the correct number of non-negative `action_bin_labels` for the environment action dimension
+- dataset cache naming includes `newtok<0|1>` and the action-token schema hash
+- human-readable dataset JSONL and eval step logs display `<act_XX>` bins even when `new_token: false`
+- `new_token: false` does not add special tokens, resize embeddings, or force `embed_tokens` / `lm_head` into LoRA target modules
+- `new_token: true` still registers action special tokens and keeps the embedding/LoRA handling path valid
 
 ## Project-Specific Notes
 

@@ -176,7 +176,7 @@ Action:
 - 当前 `prompts/pointmaze/` 下定义了 5 个共享模板：`0`–`2` 英文、`3`–`4` 中文
 - `POINTMAZE_VARIANTS` 中的每个变种通过 `prompt_vars` 提供共享模板需要的静态字段，如 `env_name`、`maze_map`、`maze_shape`、`maze_visual`、`structure_desc_en`、`structure_desc_zh`
 - PointMaze prompt 当前不再使用 reward 描述；`prompt 0` 也不再输出 raw matrix，只保留 visual maze
-- target 文本仍由 `data/pointmaze/formatting.py` 定义，动作格式为紧凑的百分位整数，如 `35,-72`
+- text 模式 target 文本由 `data/pointmaze/formatting.py` 定义，动作格式为紧凑的百分位整数，如 `35,-72`；bin 模式由共享 action-bin codec 负责离散化、model token 映射和 display text
 - `format_obs(obs, meta)` 负责生成 `obs_text` 与动态 `map_sensing_en/zh`
 - `format_history(history_entries, meta)` 负责生成可选历史块 `history_block_en/zh`
 - 当历史块存在时，历史条目按时间从早到晚排列：第一条是最早采样到的历史 step，最后一条是当前 step 之前最近的采样历史 step
@@ -416,7 +416,7 @@ project/
 │   ├── <env_family>/            # 每个环境族一个子目录
 │   │   ├── variants.py          # 该族所有变种的元信息字典
 │   │   ├── dataset.py           # 数据加载、tokenize（每 timestep 展开5条）
-│   │   └── formatting.py        # obs 序列化/附加 prompt 变量、action 目标文本生成、action 解析
+│   │   └── formatting.py        # obs 序列化/附加 prompt 变量、text action 生成与解析、action 校验
 │   ├── base_dataset.py          # 抽象基类，定义通用接口（load、format、tokenize）
 │   └── registry.py              # 环境族注册表，按 env_family 路由 dataset 和 formatter
 ├── model/
@@ -436,10 +436,10 @@ def format_obs(obs, meta) -> dict:
     """返回 prompt 渲染变量字典；必须包含 obs_text，其他字段可自定义"""
 
 def format_action(action) -> str:
-    """将 action 向量序列化为训练 target 文本"""
+    """text 模式：将 action 向量序列化为训练 target 文本"""
 
 def parse_action(text) -> tuple[np.ndarray, bool]:
-    """从模型输出文本中解析 action 向量；返回 (action, success)"""
+    """text 模式：从模型输出文本中解析 action 向量；返回 (action, success)"""
 
 def validate_action(action) -> bool:
     """校验解析出的 action 是否在合法范围内"""
@@ -453,10 +453,10 @@ def validate_action(action) -> bool:
 
 1. **Loss masking**：labels 中 `user` turn 与 assistant 前缀部分设为 `-100`，只训练 assistant 动作文本及其结束标记。bin 模式另有 `action_bin_labels` mask：action token 位置记录 bin index，其余位置为 `-1`；`gaussian_bin` 用它选择 action 位置做 soft-label CE，`bin` 模式保留该 mask 但仍走普通 causal LM loss
 2. **每 timestep 按所选 prompt 展开**：`dataset.py` 构造数据时对每个 timestep 遍历 `prompt_templete_index` 指定的共享模板名，生成对应数量的独立样本
-3. **Action parsing（环境族绑定）**：evaluate.py 通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 和 `validate_action`。text 模式解析 decoded 文本；bin 模式优先从 generated token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
+3. **Action parsing**：text 模式通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 解析 decoded 文本；bin 模式不进入环境族 formatter，而是通过共享 `ActionBinCodec` 从 generated token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。两种模式都会调用环境族 `validate_action` 做合法性校验。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
    - *PointMaze text 模式实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回；bin 模式由共享 action-bin codec 从 generated token ids 解析
-   - 其他环境族在各自 `formatting.py` 中实现对应逻辑，格式和校验规则完全自定义
-4. **Obs/Action 序列化（环境族绑定）**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs` 和 `format_action`，不依赖任何全局 formatting 工具
+   - 其他环境族在各自 `formatting.py` 中实现 text action 解析和校验；bin action 的 token-id 解析保持共享
+4. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text` 以及动态 `map_sensing_en` / `map_sensing_zh`
    - `map_sensing` 会直接给出当前位置格子、目标格子，以及上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数
 5. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露

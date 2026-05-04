@@ -601,3 +601,15 @@ type: project
 **辅助诊断脚本：**
 - 新增 `scripts/added_token_lora_smoke.py`，用小模型和 PEFT 官方 notebook 数据集 smoke test 新增 special token 的 LoRA 训练、保存和加载流程
 - 新增 `scripts/set_oom_score_tree.py`，递归遍历给定主进程的子进程树并设置 `oom_score_adj`，便于降低长训练任务被 OOM killer 优先选中的概率
+
+---
+
+## action format/parse boundary cleanup（2026-05-04）
+
+**bin 动作解析职责集中到 ActionBinCodec：**
+- 环境族 `formatting.py` 只负责 text-mode action 的 `format_action` / `parse_action` 以及所有模式共享的 `validate_action`
+- bin / gaussian_bin 不再要求环境族实现 `format_action_bin_tokens` 或 `parse_action_bin_tokens`
+- `ActionBinCodec` 新增 action -> bin indices、action -> display text、generated token ids -> continuous action 的封装方法
+- `evaluate.py` 中 text 模式继续调用环境 formatter 解析 decoded 文本；bin 模式改为通过 codec 从 generated token ids 解码动作，并仅复用环境 formatter 做最终 action 校验
+- eval 执行动作与 fallback 动作的日志显示也改为通过 codec 生成 `<act_XX>` display text，避免 display/parse 逻辑散落到环境 formatter 中
+
