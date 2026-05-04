@@ -186,7 +186,7 @@ Action:
 - 每个 timestep 的 `(obs, [goal,] action)` 元组展开为多条训练样本，每条对应 `prompt_templete_index` 中指定的一个共享模板
 - obs、goal 的序列化方式（精度、格式）由各环境族的 `formatting.py` 中的 `format_obs` 函数定义，结果填入模板占位符
 - 如启用历史 prompt，训练数据会在同一 episode 内按 `t-1`、`t-1-history_stride`、... 回溯采样过去 transition，最多取 `history_num` 条，再通过 `format_history(...)` 注入 prompt
-- action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` 使用共享特殊 token `<act_XX>` 表示离散动作 bin
+- action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` 使用离散 action bin。默认 `new_token: false` 时，模型内部复用 tokenizer 词表末尾筛选出的稳定低频 token ID，但 jsonl、step log 和 history prompt 中的人类可读显示仍统一为 `<act_XX>`；`new_token: true` 时沿用新增 `<act_XX>` special token 的旧路径
 - 训练 tokenization 不再直接编码 `prompt + action_text`；而是将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence
 - `gaussian_bin` 会额外在 dataset 中记录 `action_bin_labels`，动作 token 位置使用高斯 soft-label CE；若设置 `action_soft_label_radius`，则每个动作位置只在中心 bin 及左右 n 个相邻 bin 上做 softmax，窗口外 action token 不产生梯度。chat-template 结束 token 等非动作 assistant token 仍使用普通 CE
 - train/val 划分在 **episode 级别**进行：先按 `episode_keep_num` 随机无放回抽样一个 episode pool（如果真实 episode 数更少则使用全部），再在该 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余 episodes 作为 val，避免同一 episode 同时出现在 train 和 val 中
@@ -226,6 +226,7 @@ lora_target_modules: ["q_proj", "v_proj"]
 parse_retry_limit: 3     # action 解析失败时的最大重试次数
 action_token_mode: text  # text | bin | gaussian_bin
 action_num_bins: 10      # bin 模式下的共享动作 token 数
+new_token: false         # false = 内部复用低频 token ID；true = 新增 <act_XX> special tokens
 action_bin_min: -1.0
 action_bin_max: 1.0
 action_soft_label_sigma: 1.0  # gaussian_bin 的高斯宽度，单位是 bin index
@@ -295,11 +296,11 @@ Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置
 
 ```
 dataset_cache/
-├── <env_family>-<variant>-tok-<model>-len<L>-prompts-<prompt_names>-hist<H>-stride<S>-action-<mode>-bins<B>-range<min>to<max>.pkl
-└── <env_family>-<variant>-tok-<model>-len<L>-prompts-<prompt_names>-hist<H>-stride<S>-action-<mode>-bins<B>-range<min>to<max>.jsonl
+├── <env_family>-<variant>-tok-<model>-len<L>-prompts-<prompt_names>-hist<H>-stride<S>-action-<mode>-bins<B>-range<min>to<max>-newtok<0|1>-map<schema_hash>.pkl
+└── <env_family>-<variant>-tok-<model>-len<L>-prompts-<prompt_names>-hist<H>-stride<S>-action-<mode>-bins<B>-range<min>to<max>-newtok<0|1>-map<schema_hash>.jsonl
 ```
 
-**示例：** `dataset_cache/pointmaze-open-tok-Qwen+Qwen3-0.6B-len512-prompts-0+3-hist4-stride1-action-text-bins10-range-1to1.pkl`
+**示例：** `dataset_cache/pointmaze-open-tok-Qwen+Qwen3-0.6B-len512-prompts-bin-hist0-stride1-action-gaussian_bin-bins50-range-1to1-newtok0-map3e7d118b04c36f84.pkl`
 
 - `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
 - `.pkl` 按 `episode_idx -> tokenized samples` 保存，不再按 train/val split 分文件
@@ -309,6 +310,8 @@ dataset_cache/
 - 如果现有 cache 不覆盖当前 sampled episodes，则忽略旧 cache，重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
 - `max_data_num` 截断发生在最终 dataset 组装之后，只影响本次训练返回的数据，不影响 cache 内容和 cache 命中判断
 - 不同 tokenizer/max length、`prompt_templete_index`、`history_num/history_stride` 和 action 编码配置会写入不同 cache 文件名，避免不同 tokenization 配置误复用同一份 tokenized 数据
+- bin 模式下，cache 文件名和 metadata 额外记录 `new_token` 与 `action_token_schema_hash`。该 hash 由 `new_token`、真实 model token ids 和 display tokens 计算得到；若 cache metadata 与当前 schema 不一致，加载阶段直接报错，避免把旧 action-token 映射下的 tokenized samples 用到新训练里
+- `.jsonl` 中的 `action` 永远使用 display text，例如 `<act_24><act_37>`；`.pkl` 中保存的 `input_ids` 则是模型实际训练使用的 token ids。`new_token: false` 时二者不是同一组文本 token
 
 ---
 
@@ -356,7 +359,7 @@ dataset_cache/
 | standalone 评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 | 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 区分不同轮次，standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；`gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 区分不同轮次，standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率与对应 token id。
 
 **结果文件字段：**
 
@@ -448,10 +451,10 @@ def validate_action(action) -> bool:
 
 ### 关键实现细节
 
-1. **Loss masking**：labels 中 `user` turn 与 assistant 前缀部分设为 `-100`，只训练 assistant 动作文本及其结束标记
+1. **Loss masking**：labels 中 `user` turn 与 assistant 前缀部分设为 `-100`，只训练 assistant 动作文本及其结束标记。bin 模式另有 `action_bin_labels` mask：action token 位置记录 bin index，其余位置为 `-1`；`gaussian_bin` 用它选择 action 位置做 soft-label CE，`bin` 模式保留该 mask 但仍走普通 causal LM loss
 2. **每 timestep 按所选 prompt 展开**：`dataset.py` 构造数据时对每个 timestep 遍历 `prompt_templete_index` 指定的共享模板名，生成对应数量的独立样本
-3. **Action parsing（环境族绑定）**：evaluate.py 通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 和 `validate_action`。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
-   - *PointMaze 实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回
+3. **Action parsing（环境族绑定）**：evaluate.py 通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 和 `validate_action`。text 模式解析 decoded 文本；bin 模式优先从 generated token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
+   - *PointMaze text 模式实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回；bin 模式由共享 action-bin codec 从 generated token ids 解析
    - 其他环境族在各自 `formatting.py` 中实现对应逻辑，格式和校验规则完全自定义
 4. **Obs/Action 序列化（环境族绑定）**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs` 和 `format_action`，不依赖任何全局 formatting 工具
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text` 以及动态 `map_sensing_en` / `map_sensing_zh`

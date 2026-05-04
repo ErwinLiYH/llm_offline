@@ -27,11 +27,11 @@ from data.pointmaze.variants import (
     resolve_local_dataset_path,
 )
 from utils.action_bins import (
+    action_to_bin_indices,
     get_action_bin_range,
-    get_action_bin_token_ids,
+    get_action_bin_codec,
     get_action_num_bins,
     get_action_token_mode,
-    register_action_tokens,
 )
 from utils.chat_template import build_generation_prompt, build_training_conversation
 from utils.file_progress import (
@@ -48,7 +48,7 @@ HUMAN_READABLE_CACHE_EPISODE_LIMIT = 3
 _POINTMAZE_WORKER_TOKENIZER = None
 _POINTMAZE_WORKER_CONFIGS: dict[str, dict] | None = None
 _POINTMAZE_WORKER_SHARED_CONFIG: dict | None = None
-_POINTMAZE_WORKER_TOKEN_ID_TO_BIN: dict[int, int] | None = None
+_POINTMAZE_WORKER_ACTION_CODEC = None
 _POINTMAZE_WORKER_DONE = 0
 _POINTMAZE_WORKER_START_TIME = 0.0
 _LINUX_PR_SET_PDEATHSIG = 1
@@ -60,6 +60,7 @@ def _pointmaze_action_config(config: dict) -> dict:
         "action_num_bins": config["action_num_bins"],
         "action_bin_min": config["action_bin_min"],
         "action_bin_max": config["action_bin_max"],
+        "new_token": config.get("new_token", False),
     }
 
 
@@ -92,7 +93,7 @@ def _init_pointmaze_tokenization_worker(progress_initializer, progress_initargs:
     global _POINTMAZE_WORKER_TOKENIZER
     global _POINTMAZE_WORKER_CONFIGS
     global _POINTMAZE_WORKER_SHARED_CONFIG
-    global _POINTMAZE_WORKER_TOKEN_ID_TO_BIN
+    global _POINTMAZE_WORKER_ACTION_CODEC
     global _POINTMAZE_WORKER_DONE
     global _POINTMAZE_WORKER_START_TIME
 
@@ -108,29 +109,62 @@ def _init_pointmaze_tokenization_worker(progress_initializer, progress_initargs:
     )
     action_config = _pointmaze_action_config(_POINTMAZE_WORKER_SHARED_CONFIG)
     if action_config["action_token_mode"] != "text":
-        register_action_tokens(_POINTMAZE_WORKER_TOKENIZER, action_config)
-        _POINTMAZE_WORKER_TOKEN_ID_TO_BIN = {
-            token_id: bin_idx
-            for bin_idx, token_id in enumerate(
-                get_action_bin_token_ids(_POINTMAZE_WORKER_TOKENIZER, action_config)
-            )
-        }
+        _POINTMAZE_WORKER_ACTION_CODEC = get_action_bin_codec(
+            _POINTMAZE_WORKER_TOKENIZER,
+            action_config,
+            ensure_registered=True,
+        )
     else:
-        _POINTMAZE_WORKER_TOKEN_ID_TO_BIN = None
+        _POINTMAZE_WORKER_ACTION_CODEC = None
 
 
-def _format_pointmaze_action_for_mode(action: np.ndarray, config: dict) -> str:
+def _format_pointmaze_action_texts(action: np.ndarray, config: dict) -> dict:
     if config["action_token_mode"] == "text":
-        return formatting.format_action(action)
-    return formatting.format_action_bin_tokens(
+        action_text = formatting.format_action(action)
+        return {
+            "model_text": action_text,
+            "display_text": action_text,
+            "bin_indices": [],
+            "token_ids": [],
+        }
+
+    if _POINTMAZE_WORKER_TOKENIZER is None or _POINTMAZE_WORKER_ACTION_CODEC is None:
+        raise RuntimeError("PointMaze action-bin codec was not initialized.")
+    bin_indices = action_to_bin_indices(
         action,
         num_bins=config["action_num_bins"],
         low=config["action_bin_min"],
         high=config["action_bin_max"],
     )
+    return {
+        "model_text": _POINTMAZE_WORKER_ACTION_CODEC.model_text_for_bins(
+            _POINTMAZE_WORKER_TOKENIZER,
+            bin_indices,
+        ),
+        "display_text": _POINTMAZE_WORKER_ACTION_CODEC.display_text_for_bins(bin_indices),
+        "bin_indices": bin_indices,
+        "token_ids": _POINTMAZE_WORKER_ACTION_CODEC.token_ids_for_bins(bin_indices),
+    }
 
 
-def _tokenize_pointmaze_sample(prompt: str, action_text: str, config: dict) -> dict:
+def _find_subsequence(values: list[int], needle: list[int], start: int) -> int | None:
+    if not needle:
+        return None
+    max_start = len(values) - len(needle)
+    for pos in range(max(start, 0), max_start + 1):
+        if values[pos : pos + len(needle)] == needle:
+            return pos
+    return None
+
+
+def _tokenize_pointmaze_sample(
+    prompt: str,
+    action_text: str,
+    config: dict,
+    *,
+    expected_action_token_ids: list[int] | None = None,
+    expected_action_bin_indices: list[int] | None = None,
+) -> dict:
     tok = _POINTMAZE_WORKER_TOKENIZER
     if tok is None:
         raise RuntimeError("PointMaze tokenization worker was not initialized.")
@@ -156,11 +190,17 @@ def _tokenize_pointmaze_sample(prompt: str, action_text: str, config: dict) -> d
 
     action_bin_labels = [-1] * len(input_ids)
     if config["action_token_mode"] != "text":
-        token_id_to_bin = _POINTMAZE_WORKER_TOKEN_ID_TO_BIN or {}
-        for pos in range(min(prompt_len, len(input_ids)), len(input_ids)):
-            bin_idx = token_id_to_bin.get(input_ids[pos])
-            if bin_idx is not None:
-                action_bin_labels[pos] = bin_idx
+        if not expected_action_token_ids or expected_action_bin_indices is None:
+            raise RuntimeError("Missing expected action-bin token IDs for PointMaze tokenization.")
+        action_start = _find_subsequence(input_ids, expected_action_token_ids, prompt_len)
+        if action_start is None:
+            raise ValueError(
+                "Tokenized PointMaze sample does not contain the expected action-bin token ID sequence. "
+                f"expected_ids={expected_action_token_ids}, prompt_len={prompt_len}, "
+                f"seq_len={len(input_ids)}, max_length={config['max_length']}."
+            )
+        for offset, bin_idx in enumerate(expected_action_bin_indices):
+            action_bin_labels[action_start + offset] = int(bin_idx)
 
     return {
         "input_ids": input_ids,
@@ -209,7 +249,7 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
             "observation": obs_vec,
             "desired_goal": goal,
         }
-        action_text = _format_pointmaze_action_for_mode(action, config)
+        action_texts = _format_pointmaze_action_texts(action, config)
         history_entries = []
         if config["history_num"] > 0:
             history_indices = []
@@ -222,10 +262,10 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
                 history_entries.append(
                     {
                         "observation": obs_arr[hist_t].astype(np.float32),
-                        "action_text": _format_pointmaze_action_for_mode(
+                        "action_text": _format_pointmaze_action_texts(
                             actions[hist_t].astype(np.float32),
                             config,
-                        ),
+                        )["display_text"],
                         "steps_ago": t - hist_t,
                     }
                 )
@@ -233,14 +273,20 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
         history_payload = formatting.format_history(history_entries, prompt_vars)
         for template in templates:
             prompt = render_template(template, prompt_vars, **obs_payload, **history_payload)
-            token_sample = _tokenize_pointmaze_sample(prompt, action_text, config)
+            token_sample = _tokenize_pointmaze_sample(
+                prompt,
+                action_texts["model_text"],
+                config,
+                expected_action_token_ids=action_texts["token_ids"],
+                expected_action_bin_indices=action_texts["bin_indices"],
+            )
             text_record = None
             if include_text_records:
                 text_record = {
                     "episode_idx": episode_idx,
                     "timestep": t,
                     "prompt": prompt,
-                    "action": action_text,
+                    "action": action_texts["display_text"],
                 }
             results.append((episode_idx, text_record, token_sample))
 
@@ -467,6 +513,8 @@ class PointMazeBuildConfig:
     action_num_bins: int
     action_bin_min: float
     action_bin_max: float
+    new_token: bool
+    action_token_schema_hash: str
     progress_interval_seconds: float
 
 
@@ -581,10 +629,21 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_num_bins": request.action_num_bins,
             "action_bin_min": request.action_bin_min,
             "action_bin_max": request.action_bin_max,
+            "new_token": request.new_token,
         }
         action_token_mode = get_action_token_mode(action_config)
+        new_token = bool(request.new_token) if action_token_mode != "text" else False
+        action_config["new_token"] = new_token
         action_num_bins = get_action_num_bins(action_config)
         action_bin_min, action_bin_max = get_action_bin_range(action_config)
+        if action_token_mode == "text":
+            action_token_schema_hash = "text"
+        else:
+            action_token_schema_hash = get_action_bin_codec(
+                request.tokenizer,
+                action_config,
+                ensure_registered=True,
+            ).mapping_hash
         return PointMazeBuildConfig(
             variant=request.variant,
             split=request.split,
@@ -606,6 +665,8 @@ class PointMazeDataset(BaseOfflineDataset):
             action_num_bins=action_num_bins,
             action_bin_min=action_bin_min,
             action_bin_max=action_bin_max,
+            new_token=new_token,
+            action_token_schema_hash=action_token_schema_hash,
             progress_interval_seconds=float(request.progress_interval_seconds),
         )
 
@@ -686,7 +747,8 @@ class PointMazeDataset(BaseOfflineDataset):
             f"prompts-{cls._prompt_cache_tag(config)}-"
             f"hist{config.history_num}-stride{config.history_stride}-"
             f"action-{config.action_token_mode}-bins{config.action_num_bins}-"
-            f"range{config.action_bin_min:g}to{config.action_bin_max:g}.pkl"
+            f"range{config.action_bin_min:g}to{config.action_bin_max:g}-"
+            f"newtok{int(config.new_token)}-map{config.action_token_schema_hash}.pkl"
         )
         return os.path.join(config.cache_dir, fname)
 
@@ -701,6 +763,22 @@ class PointMazeDataset(BaseOfflineDataset):
             return None
         with open(cache_path, "rb") as f:
             cache = pickle.load(f)
+        metadata = cache.get("metadata", {})
+        expected_metadata = {
+            "action_token_mode": config.action_token_mode,
+            "action_num_bins": config.action_num_bins,
+            "action_bin_min": config.action_bin_min,
+            "action_bin_max": config.action_bin_max,
+            "new_token": config.new_token,
+            "action_token_schema_hash": config.action_token_schema_hash,
+        }
+        for key, expected in expected_metadata.items():
+            if metadata.get(key) != expected:
+                raise ValueError(
+                    f"Dataset cache action-token schema mismatch at {cache_path}: "
+                    f"{key}={metadata.get(key)!r}, expected {expected!r}. "
+                    "Remove the stale cache file or rebuild with a matching action-token schema."
+                )
         episode_samples = {
             int(episode_idx): samples
             for episode_idx, samples in cache.get("episodes", {}).items()
@@ -763,6 +841,8 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_num_bins": config.action_num_bins,
             "action_bin_min": config.action_bin_min,
             "action_bin_max": config.action_bin_max,
+            "new_token": config.new_token,
+            "action_token_schema_hash": config.action_token_schema_hash,
         }
         shared_config = {
             "tokenizer_name_or_path": config.tokenizer_name_or_path,
@@ -770,6 +850,8 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_num_bins": config.action_num_bins,
             "action_bin_min": config.action_bin_min,
             "action_bin_max": config.action_bin_max,
+            "new_token": config.new_token,
+            "action_token_schema_hash": config.action_token_schema_hash,
         }
         return PointMazeTokenizationJob(
             job_id=job_id,
@@ -820,6 +902,8 @@ class PointMazeDataset(BaseOfflineDataset):
                 "action_num_bins",
                 "action_bin_min",
                 "action_bin_max",
+                "new_token",
+                "action_token_schema_hash",
             )
             for field in fields:
                 if getattr(config, field) != getattr(base, field):
@@ -1002,6 +1086,8 @@ class PointMazeDataset(BaseOfflineDataset):
                     "action_num_bins": job.config.action_num_bins,
                     "action_bin_min": job.config.action_bin_min,
                     "action_bin_max": job.config.action_bin_max,
+                    "new_token": job.config.new_token,
+                    "action_token_schema_hash": job.config.action_token_schema_hash,
                 },
                 "episodes": episode_samples,
             }

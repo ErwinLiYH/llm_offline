@@ -23,8 +23,7 @@ from model.policy import load_from_checkpoint
 from utils.action_bins import (
     bin_to_continuous,
     get_action_bin_range,
-    get_action_bin_token_ids,
-    get_action_bin_tokens,
+    get_action_bin_codec,
     get_action_num_bins,
     get_action_token_mode,
 )
@@ -71,6 +70,7 @@ ACTION_CONFIG_KEYS = (
     "action_num_bins",
     "action_bin_min",
     "action_bin_max",
+    "new_token",
     "action_soft_label_sigma",
     "action_loss_weight",
     "action_stop_loss_weight",
@@ -89,6 +89,7 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
         "action_num_bins": saved_config.get("action_num_bins", 10),
         "action_bin_min": saved_config.get("action_bin_min", -1.0),
         "action_bin_max": saved_config.get("action_bin_max", 1.0),
+        "new_token": saved_config.get("new_token", False),
     }
     for key in ("action_soft_label_sigma", "action_loss_weight", "action_stop_loss_weight"):
         if key in saved_config:
@@ -233,8 +234,9 @@ def generate_action(
     max_new_tokens: int = 20,
     skip_special_tokens: bool = True,
     collect_scores: bool = False,
-) -> tuple[str, tuple[torch.Tensor, ...] | None]:
-    """Run inference and return the generated text (action portion)."""
+    action_codec=None,
+) -> tuple[str, list[int], tuple[torch.Tensor, ...] | None]:
+    """Run inference and return display text plus generated action token IDs."""
     encoded = tokenizer(
         text=build_generation_prompt(tokenizer, prompt),
         return_tensors="pt",
@@ -263,21 +265,24 @@ def generate_action(
         )
     output_ids = outputs.sequences if collect_scores else outputs
     new_tokens = output_ids[0, input_ids.shape[1]:]
-    text = tokenizer.decode(new_tokens, skip_special_tokens=skip_special_tokens)
+    generated_token_ids = [int(token_id) for token_id in new_tokens.detach().cpu().tolist()]
+    if action_codec is None:
+        text = tokenizer.decode(new_tokens, skip_special_tokens=skip_special_tokens)
+    else:
+        text = action_codec.display_text_for_token_ids(tokenizer, generated_token_ids)
     if not collect_scores:
-        return text, None
-    return text, outputs.scores
+        return text, generated_token_ids, None
+    return text, generated_token_ids, outputs.scores
 
 
 def _collect_action_bin_probabilities(
     scores,
-    tokenizer,
-    config: dict,
+    action_codec,
     action_dim: int,
 ) -> list[list[float]]:
     if not scores:
         return []
-    bin_token_ids = torch.tensor(get_action_bin_token_ids(tokenizer, config), device=scores[0].device)
+    bin_token_ids = torch.tensor(action_codec.model_token_ids, device=scores[0].device)
     distributions = []
     for score in scores[:action_dim]:
         bin_logits = score[0].index_select(dim=-1, index=bin_token_ids).float()
@@ -286,18 +291,21 @@ def _collect_action_bin_probabilities(
     return distributions
 
 
-def _format_action_bin_probability_log(distributions: list[list[float]], config: dict) -> str:
+def _format_action_bin_probability_log(distributions: list[list[float]], config: dict, action_codec) -> str:
     if not distributions:
         return ""
     num_bins = get_action_num_bins(config)
     low, high = get_action_bin_range(config)
-    tokens = get_action_bin_tokens(num_bins)
     lines = []
     for dim_idx, probs in enumerate(distributions):
         lines.append(f"dim={dim_idx}")
         for bin_idx, prob in enumerate(probs):
             center = bin_to_continuous(bin_idx, num_bins, low, high)
-            lines.append(f"  {tokens[bin_idx]} center={center:.6f} prob={prob:.8f}")
+            lines.append(
+                f"  {action_codec.display_tokens[bin_idx]} "
+                f"token_id={action_codec.model_token_ids[bin_idx]} "
+                f"center={center:.6f} prob={prob:.8f}"
+            )
     return "\n".join(lines)
 
 
@@ -312,14 +320,29 @@ def _format_action_for_mode(formatter, action: np.ndarray, config: dict) -> str:
     )
 
 
-def _parse_action_for_mode(formatter, text: str, config: dict) -> tuple[np.ndarray, bool]:
+def _parse_action_for_mode(
+    formatter,
+    text: str,
+    token_ids: list[int],
+    config: dict,
+    *,
+    action_dim: int,
+    action_codec=None,
+) -> tuple[np.ndarray, bool]:
     if get_action_token_mode(config) == "text":
         return formatter.parse_action(text)
-    return formatter.parse_action_bin_tokens(
-        text,
-        num_bins=get_action_num_bins(config),
-        low=float(config.get("action_bin_min", -1.0)),
-        high=float(config.get("action_bin_max", 1.0)),
+    if action_codec is None:
+        raise RuntimeError("Action-bin eval requires an initialized action codec.")
+    indices = action_codec.bin_indices_from_token_ids(token_ids, action_dim)
+    if len(indices) < action_dim:
+        return np.zeros(action_dim, dtype=np.float32), False
+    low, high = get_action_bin_range(config)
+    return (
+        np.array(
+            [bin_to_continuous(index, action_codec.num_bins, low, high) for index in indices],
+            dtype=np.float32,
+        ),
+        True,
     )
 
 
@@ -398,6 +421,9 @@ def evaluate_variant(
     record_step_logs = bool(config.get("record_step_logs", True))
     action_token_mode = get_action_token_mode(config)
     collect_bin_probabilities = record_step_logs and action_token_mode == "gaussian_bin"
+    action_codec = None
+    if action_token_mode != "text":
+        action_codec = get_action_bin_codec(tokenizer, config, ensure_registered=True)
 
     if record_video:
         render_mode = env_kwargs.get("render_mode")
@@ -466,13 +492,14 @@ def evaluate_variant(
             for _attempt in range(parse_retry_limit + 1):
                 attempt_count += 1
                 t0 = time.perf_counter()
-                generated, generation_scores = generate_action(
+                generated, generated_token_ids, generation_scores = generate_action(
                     model,
                     tokenizer,
                     prompt,
                     device,
                     skip_special_tokens=action_token_mode == "text",
                     collect_scores=collect_bin_probabilities,
+                    action_codec=action_codec,
                 )
                 total_action_time += time.perf_counter() - t0
                 total_actions += 1
@@ -480,15 +507,21 @@ def evaluate_variant(
                 if collect_bin_probabilities:
                     distributions = _collect_action_bin_probabilities(
                         generation_scores,
-                        tokenizer,
-                        config,
+                        action_codec,
                         action_dim=env.action_space.shape[0],
                     )
-                    probability_log = _format_action_bin_probability_log(distributions, config)
+                    probability_log = _format_action_bin_probability_log(distributions, config, action_codec)
                     generated_probability_logs.append(
                         f"[Attempt {attempt_count}]\n{probability_log}" if probability_log else f"[Attempt {attempt_count}]"
                     )
-                parsed_action, success = _parse_action_for_mode(formatter, generated, config)
+                parsed_action, success = _parse_action_for_mode(
+                    formatter,
+                    generated,
+                    generated_token_ids,
+                    config,
+                    action_dim=env.action_space.shape[0],
+                    action_codec=action_codec,
+                )
                 if success and formatter.validate_action(parsed_action):
                     action = np.clip(parsed_action, -1.0, 1.0)
                     executed_action_text = _format_action_for_mode(formatter, action, config)

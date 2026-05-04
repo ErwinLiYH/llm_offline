@@ -171,7 +171,7 @@ def format_action_bin_tokens(
     low: float = -1.0,
     high: float = 1.0,
 ) -> str:
-    """Serialize an action vector as contiguous shared action-bin special tokens."""
+    """Serialize an action vector as contiguous display action-bin tokens."""
     return _format_action_bins(action, num_bins, low, high)
 
 
@@ -204,7 +204,7 @@ def parse_action_bin_tokens(
     low: float = -1.0,
     high: float = 1.0,
 ) -> tuple[np.ndarray, bool]:
-    """Parse two shared action-bin special tokens into a 2D action vector."""
+    """Parse two display action-bin tokens into a 2D action vector."""
     return _parse_action_bins(text, action_dim=2, num_bins=num_bins, low=low, high=high)
 
 

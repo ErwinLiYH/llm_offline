@@ -142,6 +142,7 @@ def build_dataset_request(config: dict, tokenizer, variant: str, split: str) -> 
         action_num_bins=config.get("action_num_bins", 10),
         action_bin_min=config.get("action_bin_min", -1.0),
         action_bin_max=config.get("action_bin_max", 1.0),
+        new_token=config.get("new_token", False),
         progress_interval_seconds=config.get("progress_interval_seconds", 5.0),
     )
 
@@ -271,6 +272,7 @@ def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, 
         "action_num_bins": config.get("action_num_bins", 10),
         "action_bin_min": config.get("action_bin_min", -1.0),
         "action_bin_max": config.get("action_bin_max", 1.0),
+        "new_token": config.get("new_token", False),
     }
 
     configure_mujoco_gl(eval_config)

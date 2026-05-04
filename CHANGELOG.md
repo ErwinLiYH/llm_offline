@@ -549,3 +549,55 @@ type: project
 - 去掉 `futures = list(executor.map(...))`，改为边接收 worker 结果边归档
 - 每接收一个 episode 结果后清掉对应 payload，降低原始轨迹数组保留时间
 - 每 finalize 一个 job 后清理 `results_by_job`、`job.episode_payloads` 和临时 `episode_samples`，并触发 `gc.collect()` 降低峰值内存
+
+---
+
+## local eval horizon / training optimizer updates（2026-05-04）
+
+**本地 PointMaze layout 新增有限 eval horizon：**
+- `local-layout-*` 的 `max_episode_steps` 不再使用临时的超大值 `1000000`
+- 本地 layout 现在按地图面积估算有限步数上限，避免失败 rollout 在 eval 时长时间不结束
+
+**训练循环支持 gradient accumulation：**
+- 新增 `gradient_accumulation_steps` 配置项，默认可退化为每 batch 一次 optimizer step
+- 训练时按 accumulation boundary 或 epoch 最后一个 batch 执行 `optimizer.step()`
+- 训练进度输出新增 `opt_step`、`accum` 和当前 learning rate，便于确认实际参数更新次数
+
+---
+
+## action-bin token strategy refactor（2026-05-04）
+
+**action-bin 新增 token 路径修正：**
+- `new_token: true` 时保留新增 `<act_XX>` special token 的路径，并自动把 `embed_tokens` / `lm_head` 加入 LoRA target modules
+- checkpoint 保存不再对 action-bin 模式传 `save_embedding_layers=False`，避免新增 action token 的输入/输出权重没有被保存
+- 移除旧的 `trainable_token_indices` 检查与相关绕路逻辑，统一通过当前 action-token 准备流程校验 tokenizer 与模型 vocab size
+
+**新增 OpenVLA 风格复用低频 token 路径：**
+- 新增 `new_token` 配置项；`bin` / `gaussian_bin` 下默认 `false`
+- `new_token: false` 时不新增 tokenizer token、不 resize embedding，也不自动训练 `embed_tokens` / `lm_head`
+- action bin 内部复用 tokenizer 词表末尾筛选出的稳定低频 token id；筛选时跳过 special ids，并校验 decode/tokenize roundtrip 稳定
+- 新增 action-bin codec，统一维护 `bin_idx -> model token id`、`model token id -> bin_idx` 和人类可读 `<act_XX>` display token 映射
+
+**dataset / eval 的显示层映射：**
+- PointMaze tokenization 使用真实 model token id 训练，但 `.jsonl`、history prompt 和 eval step log 仍显示 `<act_XX>`
+- dataset cache 文件名与 metadata 加入 `new_token` 和 action-token mapping hash，避免不同 action-token schema 误复用同一份 cache
+- eval 的 bin action 解析改为优先从 generated token ids 反查 action bin，不再依赖低频 token 的 decoded 文本
+- `gaussian_bin` 概率日志继续按 `<act_XX>` 展示，并附带实际 model token id 便于排查
+
+**gaussian-bin loss 改为 full-vocab 竞争：**
+- action token 位置的 Gaussian soft-label loss 改为基于 full vocabulary `log_softmax`
+- action bin 不再只在 action-token 子集内部竞争，而是同时和全词表 token 竞争
+- action/stop loss 中相关 logits 统一转为 float32 后计算，降低低精度训练下的数值误差
+
+---
+
+## OpenVLA reference notes and diagnostics scripts（2026-05-04）
+
+**OpenVLA action tokenization 参考文档：**
+- 新增 `docs/openvla_action_tokenization.md`
+- 记录 OpenVLA 如何归一化动作、分 bin、复用词表末尾 token、用标准 causal LM loss 训练，以及 inference 时如何从 token id 解码动作
+- 文档同时说明本项目 `new_token: false` 与 `new_token: true` 两条路径和 OpenVLA 原实现的差异
+
+**辅助诊断脚本：**
+- 新增 `scripts/added_token_lora_smoke.py`，用小模型和 PEFT 官方 notebook 数据集 smoke test 新增 special token 的 LoRA 训练、保存和加载流程
+- 新增 `scripts/set_oom_score_tree.py`，递归遍历给定主进程的子进程树并设置 `oom_score_adj`，便于降低长训练任务被 OOM killer 优先选中的概率

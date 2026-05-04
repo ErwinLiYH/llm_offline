@@ -8,9 +8,9 @@ with contextlib.redirect_stdout(io.StringIO()):
     from unsloth import FastLanguageModel
 
 from utils.action_bins import (
-    get_action_bin_token_ids,
+    action_bins_use_new_tokens,
+    get_action_bin_codec,
     get_tokenizer_backend,
-    register_action_tokens,
     uses_action_bins,
 )
 
@@ -64,14 +64,18 @@ def _prepare_action_tokens(model, tokenizer, config: dict, *, resize_embeddings:
     _ensure_pad_token(tokenizer)
     if not uses_action_bins(config):
         return []
-    register_action_tokens(tokenizer, config)
+    use_new_tokens = action_bins_use_new_tokens(config)
+    codec = get_action_bin_codec(tokenizer, config, ensure_registered=use_new_tokens)
     tok = get_tokenizer_backend(tokenizer)
     input_vocab_size = _embedding_vocab_size(model.get_input_embeddings())
     output_vocab_size = _embedding_vocab_size(model.get_output_embeddings())
     needs_resize = (
-        input_vocab_size is None
-        or input_vocab_size < len(tok)
-        or (output_vocab_size is not None and output_vocab_size < len(tok))
+        use_new_tokens
+        and (
+            input_vocab_size is None
+            or input_vocab_size < len(tok)
+            or (output_vocab_size is not None and output_vocab_size < len(tok))
+        )
     )
     if needs_resize:
         if not resize_embeddings:
@@ -82,7 +86,7 @@ def _prepare_action_tokens(model, tokenizer, config: dict, *, resize_embeddings:
             )
         model.resize_token_embeddings(len(tok))
     _validate_model_vocab_size(model, tokenizer)
-    return get_action_bin_token_ids(tokenizer, config)
+    return list(codec.model_token_ids)
 
 
 def _resolve_lora_target_modules(config: dict) -> list[str]:
@@ -92,7 +96,7 @@ def _resolve_lora_target_modules(config: dict) -> list[str]:
         modules = [raw_modules]
     else:
         modules = list(raw_modules)
-    if uses_action_bins(config):
+    if uses_action_bins(config) and action_bins_use_new_tokens(config):
         modules.extend(ACTION_BIN_LORA_MODULES)
 
     resolved = []

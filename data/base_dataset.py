@@ -79,6 +79,7 @@ class DatasetBuildRequest:
     action_num_bins: int = 10
     action_bin_min: float = -1.0
     action_bin_max: float = 1.0
+    new_token: bool = False
 
     # File progress update cadence for expensive dataset construction.
     progress_interval_seconds: float = 5.0
