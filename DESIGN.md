@@ -286,7 +286,7 @@ checkpoints/
 
 `model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。`selection_tag` 已经包含训练选择语义，因此路径里不再单独重复 `train_mode`。
 
-训练 batch 进度不再通过终端 carriage return 渲染，而是写入单行快照文件 `progress/<uuid>.txt`；`train.py` 启动后打印该路径，正常结束时删除文件，异常退出时保留最后一次进度。
+训练 batch 进度不再通过终端 carriage return 渲染，而是按 epoch 写入独立的单行快照文件 `progress/<uuid>.txt`；每个 epoch 开始时 `train.py` 打印该路径，epoch 正常结束时打印最终进度行并删除该文件，异常退出时保留最后一次进度。
 
 ---
 

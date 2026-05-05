@@ -317,7 +317,7 @@ def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, 
 
 
 def _run_training(config, model, train_loader, val_loader, device,
-                  selection_tag: str, progress: FileProgress, tokenizer=None, eval_variants=None):
+                  selection_tag: str, progress_interval_seconds: float, tokenizer=None, eval_variants=None):
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config["learning_rate"],
@@ -351,91 +351,20 @@ def _run_training(config, model, train_loader, val_loader, device,
         if action_soft_label_radius is not None:
             action_soft_label_radius = int(action_soft_label_radius)
     for epoch in range(1, num_epochs + 1):
-        model.train()
-        total_loss = 0.0
-        num_batches = 0
-        train_total = len(train_loader)
-        train_start = time.monotonic()
-        train_desc = f"Epoch {epoch}/{num_epochs} [train]"
-        optimizer.zero_grad(set_to_none=True)
-        for step, batch in enumerate(train_loader, start=1):
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
-
-            if action_token_mode == "gaussian_bin":
-                action_bin_labels = batch["action_bin_labels"].to(device)
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                )
-                loss, loss_parts = gaussian_action_loss(
-                    outputs.logits,
-                    labels,
-                    action_bin_labels,
-                    bin_token_ids,
-                    action_num_bins,
-                    action_sigma,
-                    action_loss_weight=action_loss_weight,
-                    stop_loss_weight=action_stop_loss_weight,
-                    soft_label_radius=action_soft_label_radius,
-                )
-            else:
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels,
-                )
-                loss = outputs.loss
-                loss_parts = None
-            (loss / gradient_accumulation_steps).backward()
-            should_step = step % gradient_accumulation_steps == 0 or step == train_total
-            if should_step:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                optimizer_step += 1
-
-            total_loss += loss.item()
-            num_batches += 1
-            accum_step = ((step - 1) % gradient_accumulation_steps) + 1
-            if loss_parts is None:
-                loss_extra = f"loss={loss.item():.4f}"
-            else:
-                loss_extra = (
-                    f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
-                    f"stop={loss_parts['stop_loss']:.4f}"
-                )
-            loss_extra += (
-                f" lr={config['learning_rate']:.2e} opt_step={optimizer_step}/{total_training_steps} "
-                f"accum={accum_step}/{gradient_accumulation_steps}"
-            )
-            progress.update(
-                train_desc,
-                step,
-                train_total,
-                train_start,
-                extra=loss_extra,
-            )
-
-        train_loss = total_loss / max(num_batches, 1)
-
-        model.eval()
-        val_total = len(val_loader)
-        if val_total == 0:
-            print(f"[epoch {epoch}/{num_epochs}] WARNING: val_loader is empty; val_loss will be reported as NaN.")
-            val_loss = math.nan
-            val_batches = 0
-        else:
-            val_loss = 0.0
-            val_batches = 0
-        val_start = time.monotonic()
-        val_desc = f"Epoch {epoch}/{num_epochs} [val]"
-        with torch.no_grad():
-            for step, batch in enumerate(val_loader, start=1):
+        with FileProgress(interval_seconds=progress_interval_seconds) as progress:
+            print(f"[train] Epoch {epoch}/{num_epochs} progress in file: {progress.path.resolve()}")
+            model.train()
+            total_loss = 0.0
+            num_batches = 0
+            train_total = len(train_loader)
+            train_start = time.monotonic()
+            train_desc = f"Epoch {epoch}/{num_epochs} [train]"
+            optimizer.zero_grad(set_to_none=True)
+            for step, batch in enumerate(train_loader, start=1):
                 input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
                 labels = batch["labels"].to(device)
+
                 if action_token_mode == "gaussian_bin":
                     action_bin_labels = batch["action_bin_labels"].to(device)
                     outputs = model(
@@ -461,25 +390,99 @@ def _run_training(config, model, train_loader, val_loader, device,
                     )
                     loss = outputs.loss
                     loss_parts = None
-                val_loss += loss.item()
-                val_batches += 1
+                (loss / gradient_accumulation_steps).backward()
+                should_step = step % gradient_accumulation_steps == 0 or step == train_total
+                if should_step:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+                    optimizer_step += 1
+
+                total_loss += loss.item()
+                num_batches += 1
+                accum_step = ((step - 1) % gradient_accumulation_steps) + 1
+                if loss_parts is None:
+                    loss_extra = f"loss={loss.item():.4f}"
+                else:
+                    loss_extra = (
+                        f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
+                        f"stop={loss_parts['stop_loss']:.4f}"
+                    )
+                loss_extra += (
+                    f" lr={config['learning_rate']:.2e} opt_step={optimizer_step}/{total_training_steps} "
+                    f"accum={accum_step}/{gradient_accumulation_steps}"
+                )
                 progress.update(
-                    val_desc,
+                    train_desc,
                     step,
-                    val_total,
-                    val_start,
-                    extra=(
-                        f"loss={loss.item():.4f}"
-                        if loss_parts is None
-                        else (
-                            f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
-                            f"stop={loss_parts['stop_loss']:.4f}"
-                        )
-                    ),
+                    train_total,
+                    train_start,
+                    extra=loss_extra,
                 )
 
-        if val_batches > 0:
-            val_loss = val_loss / val_batches
+            train_loss = total_loss / max(num_batches, 1)
+
+            model.eval()
+            val_total = len(val_loader)
+            if val_total == 0:
+                print(f"[epoch {epoch}/{num_epochs}] WARNING: val_loader is empty; val_loss will be reported as NaN.")
+                val_loss = math.nan
+                val_batches = 0
+            else:
+                val_loss = 0.0
+                val_batches = 0
+            val_start = time.monotonic()
+            val_desc = f"Epoch {epoch}/{num_epochs} [val]"
+            with torch.no_grad():
+                for step, batch in enumerate(val_loader, start=1):
+                    input_ids = batch["input_ids"].to(device)
+                    attention_mask = batch["attention_mask"].to(device)
+                    labels = batch["labels"].to(device)
+                    if action_token_mode == "gaussian_bin":
+                        action_bin_labels = batch["action_bin_labels"].to(device)
+                        outputs = model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                        )
+                        loss, loss_parts = gaussian_action_loss(
+                            outputs.logits,
+                            labels,
+                            action_bin_labels,
+                            bin_token_ids,
+                            action_num_bins,
+                            action_sigma,
+                            action_loss_weight=action_loss_weight,
+                            stop_loss_weight=action_stop_loss_weight,
+                            soft_label_radius=action_soft_label_radius,
+                        )
+                    else:
+                        outputs = model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            labels=labels,
+                        )
+                        loss = outputs.loss
+                        loss_parts = None
+                    val_loss += loss.item()
+                    val_batches += 1
+                    progress.update(
+                        val_desc,
+                        step,
+                        val_total,
+                        val_start,
+                        extra=(
+                            f"loss={loss.item():.4f}"
+                            if loss_parts is None
+                            else (
+                                f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
+                                f"stop={loss_parts['stop_loss']:.4f}"
+                            )
+                        ),
+                    )
+
+            if val_batches > 0:
+                val_loss = val_loss / val_batches
+
         print(f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
 
         epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
@@ -534,22 +537,20 @@ def train_with_selection(
 
     train_loader, val_loader = build_data_loaders(config, tokenizer, train_selection.selected_variants)
     progress_interval = float(config.get("progress_interval_seconds", 5.0))
-    with FileProgress(interval_seconds=progress_interval) as progress:
-        print(f"[train] Progress in file: {progress.path.resolve()}")
-        _run_training(
-            config,
-            model,
-            train_loader,
-            val_loader,
-            device,
-            selection_tag=train_selection.selection_tag,
-            progress=progress,
-            tokenizer=tokenizer,
-            eval_variants=eval_selection.selected_variants,
-        )
+    _run_training(
+        config,
+        model,
+        train_loader,
+        val_loader,
+        device,
+        selection_tag=train_selection.selection_tag,
+        progress_interval_seconds=progress_interval,
+        tokenizer=tokenizer,
+        eval_variants=eval_selection.selected_variants,
+    )
 
-        checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
-        _save_checkpoint(config, model, tokenizer, checkpoint_dir)
+    checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
+    _save_checkpoint(config, model, tokenizer, checkpoint_dir)
 
 
 
