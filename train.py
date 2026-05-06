@@ -88,11 +88,23 @@ def resolve_epoch_eval_selection(
 
 
 
-def get_checkpoint_dir(config: dict, selection_tag: str, epoch: int | None = None) -> str:
+def get_checkpoint_dir(
+    config: dict,
+    selection_tag: str,
+    epoch: int | None = None,
+    step: int | None = None,
+) -> str:
     slug = get_model_slug(config["model_name"])
     root = config.get("checkpoint_root", "checkpoints")
     experiment_id = config["experiment_id"]
-    tag = f"ep{epoch}" if epoch is not None else "final"
+    if epoch is not None and step is not None:
+        raise ValueError("checkpoint path can be keyed by epoch or step, not both")
+    if step is not None:
+        tag = f"step{step}"
+    elif epoch is not None:
+        tag = f"ep{epoch}"
+    else:
+        tag = "final"
     return os.path.join(root, config["env_family"], slug, selection_tag, experiment_id, tag)
 
 
@@ -111,9 +123,34 @@ def get_eval_epoch_results_dir(config: dict, train_selection_tag: str, epoch: in
     return os.path.join(get_train_results_base_dir(config, train_selection_tag), f"epoch_{epoch}")
 
 
-def get_eval_variant_results_dir(config: dict, train_selection_tag: str, variant: str, epoch: int) -> str:
+def get_eval_step_results_dir(config: dict, train_selection_tag: str, step: int) -> str:
+    return os.path.join(get_train_results_base_dir(config, train_selection_tag), f"step{step}")
+
+
+def get_eval_results_dir(
+    config: dict,
+    train_selection_tag: str,
+    epoch: int | None = None,
+    step: int | None = None,
+) -> str:
+    if epoch is not None and step is not None:
+        raise ValueError("eval results path can be keyed by epoch or step, not both")
+    if step is not None:
+        return get_eval_step_results_dir(config, train_selection_tag, step)
+    if epoch is not None:
+        return get_eval_epoch_results_dir(config, train_selection_tag, epoch)
+    raise ValueError("eval results path requires epoch or step")
+
+
+def get_eval_variant_results_dir(
+    config: dict,
+    train_selection_tag: str,
+    variant: str,
+    epoch: int | None = None,
+    step: int | None = None,
+) -> str:
     return os.path.join(
-        get_eval_epoch_results_dir(config, train_selection_tag, epoch),
+        get_eval_results_dir(config, train_selection_tag, epoch=epoch, step=step),
         f"eval={config['env_family']}-{variant}",
     )
 
@@ -249,12 +286,8 @@ def build_data_loaders(config: dict, tokenizer, selected_variants: list[str]):
 
 
 
-def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, variants, epoch, train_loss, val_loss):
-    import gymnasium_robotics  # noqa: F401
-    from evaluate import configure_mujoco_gl, evaluate_variant
-    from utils.prompt_loader import load_templates
-
-    eval_config = {
+def _build_training_eval_config(config: dict) -> dict:
+    return {
         "env_family": config["env_family"],
         "num_episodes": config["eval_num_episodes"],
         "parse_retry_limit": config.get("parse_retry_limit", 3),
@@ -275,44 +308,172 @@ def _run_epoch_eval(config, model, tokenizer, device, train_selection_tag: str, 
         "new_token": config.get("new_token", False),
     }
 
+
+def _format_loss_value(value) -> str:
+    if value is None:
+        return "nan"
+    try:
+        if not math.isfinite(value):
+            return "nan"
+    except TypeError:
+        return str(value)
+    return f"{value:.4f}"
+
+
+def _run_eval(
+    config,
+    model,
+    tokenizer,
+    device,
+    train_selection_tag: str,
+    variants,
+    eval_type: str,
+    train_loss,
+    val_loss,
+    checkpoint_dir: str,
+    epoch: int | None = None,
+    batch_step: int | None = None,
+    optimizer_step: int | None = None,
+    scheduled_step: int | None = None,
+):
+    import gymnasium_robotics  # noqa: F401
+    from evaluate import configure_mujoco_gl, evaluate_variant
+    from utils.prompt_loader import load_templates
+
+    eval_config = _build_training_eval_config(config)
     configure_mujoco_gl(eval_config)
+    templates = load_templates(config["env_family"])
+    eval_tag = f"step{batch_step}" if eval_type == "step" else f"epoch_{epoch}"
+    label = f"Step {batch_step}" if eval_type == "step" else f"Epoch {epoch}"
+    if eval_type == "step" and scheduled_step is not None and scheduled_step != batch_step:
+        label = f"{label} (scheduled at batch step {scheduled_step})"
+
     model.eval()
     FastLanguageModel.for_inference(model)
 
-    for variant in variants:
-        print(f"[eval] Epoch {epoch} | variant: {variant}")
-        templates = load_templates(config["env_family"])
-        results_dir = get_eval_variant_results_dir(config, train_selection_tag, variant, epoch)
-        os.makedirs(results_dir, exist_ok=True)
-        result_path = os.path.join(results_dir, "result.json")
+    try:
+        for variant in variants:
+            print(f"[eval] {label} | variant: {variant}")
+            results_dir = get_eval_variant_results_dir(
+                config,
+                train_selection_tag,
+                variant,
+                epoch=epoch if eval_type == "epoch" else None,
+                step=batch_step if eval_type == "step" else None,
+            )
+            os.makedirs(results_dir, exist_ok=True)
+            result_path = os.path.join(results_dir, "result.json")
 
-        result = evaluate_variant(
-            eval_config,
-            variant,
-            model,
-            tokenizer,
-            device,
-            templates[0],
-            variant_results_dir=results_dir,
+            result = evaluate_variant(
+                eval_config,
+                variant,
+                model,
+                tokenizer,
+                device,
+                templates[0],
+                variant_results_dir=results_dir,
+            )
+            result["train_loss"] = train_loss
+            result["val_loss"] = val_loss
+            result["experiment_id"] = config["experiment_id"]
+            result["result_path"] = result_path
+            result["eval_type"] = eval_type
+            result["eval_tag"] = eval_tag
+            result["epoch"] = epoch
+            result["batch_step"] = batch_step
+            result["optimizer_step"] = optimizer_step
+            result["scheduled_step"] = scheduled_step
+            result["checkpoint_path"] = checkpoint_dir
+
+            print(
+                f"[eval] {variant}: mean_return={result['mean_return']:.4f}, "
+                f"success_rate={result['success_rate']:.2%}, "
+                f"mean_steps={result['mean_episode_steps']:.1f}, "
+                f"train_loss={_format_loss_value(train_loss)}, "
+                f"val_loss={_format_loss_value(val_loss)}"
+            )
+
+            with open(result_path, "w") as f:
+                json.dump(result, f, indent=2)
+            print(f"[eval] Saved: {result_path}")
+    finally:
+        model.train()
+        FastLanguageModel.for_training(model)
+
+
+def _compute_batch_loss(model, batch, device, loss_context: dict):
+    input_ids = batch["input_ids"].to(device)
+    attention_mask = batch["attention_mask"].to(device)
+    labels = batch["labels"].to(device)
+
+    if loss_context["action_token_mode"] == "gaussian_bin":
+        action_bin_labels = batch["action_bin_labels"].to(device)
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
         )
-        result["train_loss"] = train_loss
-        result["val_loss"] = val_loss
-        result["experiment_id"] = config["experiment_id"]
-        result["result_path"] = result_path
-
-        print(
-            f"[eval] {variant}: mean_return={result['mean_return']:.4f}, "
-            f"success_rate={result['success_rate']:.2%}, "
-            f"mean_steps={result['mean_episode_steps']:.1f}, "
-            f"train_loss={train_loss:.4f}, val_loss={val_loss:.4f}"
+        return gaussian_action_loss(
+            outputs.logits,
+            labels,
+            action_bin_labels,
+            loss_context["bin_token_ids"],
+            loss_context["action_num_bins"],
+            loss_context["action_sigma"],
+            action_loss_weight=loss_context["action_loss_weight"],
+            stop_loss_weight=loss_context["action_stop_loss_weight"],
+            soft_label_radius=loss_context["action_soft_label_radius"],
         )
 
-        with open(result_path, "w") as f:
-            json.dump(result, f, indent=2)
-        print(f"[eval] Saved: {result_path}")
+    outputs = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        labels=labels,
+    )
+    return outputs.loss, None
 
-    model.train()
-    FastLanguageModel.for_training(model)
+
+def _format_loss_extra(loss, loss_parts) -> str:
+    if loss_parts is None:
+        return f"loss={loss.item():.4f}"
+    return (
+        f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
+        f"stop={loss_parts['stop_loss']:.4f}"
+    )
+
+
+def _run_validation(
+    model,
+    val_loader,
+    device,
+    loss_context: dict,
+    progress: FileProgress | None,
+    desc: str,
+    warning_label: str,
+):
+    model.eval()
+    val_total = len(val_loader)
+    if val_total == 0:
+        print(f"[{warning_label}] WARNING: val_loader is empty; val_loss will be reported as NaN.")
+        return math.nan
+
+    val_loss = 0.0
+    val_batches = 0
+    val_start = time.monotonic()
+    with torch.no_grad():
+        for step, batch in enumerate(val_loader, start=1):
+            loss, loss_parts = _compute_batch_loss(model, batch, device, loss_context)
+            val_loss += loss.item()
+            val_batches += 1
+            if progress is not None:
+                progress.update(
+                    desc,
+                    step,
+                    val_total,
+                    val_start,
+                    extra=_format_loss_extra(loss, loss_parts),
+                )
+
+    return val_loss / max(val_batches, 1)
 
 
 
@@ -333,14 +494,25 @@ def _run_training(config, model, train_loader, val_loader, device,
     updates_per_epoch = math.ceil(len(train_loader) / gradient_accumulation_steps)
     total_training_steps = max(updates_per_epoch * num_epochs, 1)
     optimizer_step = 0
+    global_batch_step = 0
+    eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
+    if eval_step_interval < 0:
+        raise ValueError(f"eval_step_interval must be >= 0, got {eval_step_interval}")
+    next_step_eval_at = eval_step_interval if eval_step_interval > 0 else None
     print(
         "[train] Optimizer setup: "
         f"gradient_accumulation_steps={gradient_accumulation_steps}, "
         f"updates_per_epoch={updates_per_epoch}, total_updates={total_training_steps}, "
-        f"learning_rate={config['learning_rate']}"
+        f"learning_rate={config['learning_rate']}, "
+        f"eval_step_interval={eval_step_interval}"
     )
     action_token_mode = get_action_token_mode(config)
     bin_token_ids = None
+    action_num_bins = None
+    action_sigma = None
+    action_loss_weight = None
+    action_stop_loss_weight = None
+    action_soft_label_radius = None
     if action_token_mode == "gaussian_bin":
         bin_token_ids = get_action_bin_token_ids(tokenizer, config)
         action_num_bins = get_action_num_bins(config)
@@ -350,6 +522,16 @@ def _run_training(config, model, train_loader, val_loader, device,
         action_soft_label_radius = config.get("action_soft_label_radius")
         if action_soft_label_radius is not None:
             action_soft_label_radius = int(action_soft_label_radius)
+    loss_context = {
+        "action_token_mode": action_token_mode,
+        "bin_token_ids": bin_token_ids,
+        "action_num_bins": action_num_bins,
+        "action_sigma": action_sigma,
+        "action_loss_weight": action_loss_weight,
+        "action_stop_loss_weight": action_stop_loss_weight,
+        "action_soft_label_radius": action_soft_label_radius,
+    }
+    should_run_eval = bool(config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants)
     for epoch in range(1, num_epochs + 1):
         with FileProgress(interval_seconds=progress_interval_seconds) as progress:
             print(f"[train] Epoch {epoch}/{num_epochs} progress in file: {progress.path.resolve()}")
@@ -361,35 +543,8 @@ def _run_training(config, model, train_loader, val_loader, device,
             train_desc = f"Epoch {epoch}/{num_epochs} [train]"
             optimizer.zero_grad(set_to_none=True)
             for step, batch in enumerate(train_loader, start=1):
-                input_ids = batch["input_ids"].to(device)
-                attention_mask = batch["attention_mask"].to(device)
-                labels = batch["labels"].to(device)
-
-                if action_token_mode == "gaussian_bin":
-                    action_bin_labels = batch["action_bin_labels"].to(device)
-                    outputs = model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                    )
-                    loss, loss_parts = gaussian_action_loss(
-                        outputs.logits,
-                        labels,
-                        action_bin_labels,
-                        bin_token_ids,
-                        action_num_bins,
-                        action_sigma,
-                        action_loss_weight=action_loss_weight,
-                        stop_loss_weight=action_stop_loss_weight,
-                        soft_label_radius=action_soft_label_radius,
-                    )
-                else:
-                    outputs = model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels,
-                    )
-                    loss = outputs.loss
-                    loss_parts = None
+                global_batch_step += 1
+                loss, loss_parts = _compute_batch_loss(model, batch, device, loss_context)
                 (loss / gradient_accumulation_steps).backward()
                 should_step = step % gradient_accumulation_steps == 0 or step == train_total
                 if should_step:
@@ -401,16 +556,10 @@ def _run_training(config, model, train_loader, val_loader, device,
                 total_loss += loss.item()
                 num_batches += 1
                 accum_step = ((step - 1) % gradient_accumulation_steps) + 1
-                if loss_parts is None:
-                    loss_extra = f"loss={loss.item():.4f}"
-                else:
-                    loss_extra = (
-                        f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
-                        f"stop={loss_parts['stop_loss']:.4f}"
-                    )
+                loss_extra = _format_loss_extra(loss, loss_parts)
                 loss_extra += (
                     f" lr={config['learning_rate']:.2e} opt_step={optimizer_step}/{total_training_steps} "
-                    f"accum={accum_step}/{gradient_accumulation_steps}"
+                    f"batch_step={global_batch_step} accum={accum_step}/{gradient_accumulation_steps}"
                 )
                 progress.update(
                     train_desc,
@@ -420,86 +569,94 @@ def _run_training(config, model, train_loader, val_loader, device,
                     extra=loss_extra,
                 )
 
-            train_loss = total_loss / max(num_batches, 1)
-
-            model.eval()
-            val_total = len(val_loader)
-            if val_total == 0:
-                print(f"[epoch {epoch}/{num_epochs}] WARNING: val_loader is empty; val_loss will be reported as NaN.")
-                val_loss = math.nan
-                val_batches = 0
-            else:
-                val_loss = 0.0
-                val_batches = 0
-            val_start = time.monotonic()
-            val_desc = f"Epoch {epoch}/{num_epochs} [val]"
-            with torch.no_grad():
-                for step, batch in enumerate(val_loader, start=1):
-                    input_ids = batch["input_ids"].to(device)
-                    attention_mask = batch["attention_mask"].to(device)
-                    labels = batch["labels"].to(device)
-                    if action_token_mode == "gaussian_bin":
-                        action_bin_labels = batch["action_bin_labels"].to(device)
-                        outputs = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
+                if (
+                    should_step
+                    and next_step_eval_at is not None
+                    and global_batch_step >= next_step_eval_at
+                ):
+                    scheduled_step = next_step_eval_at
+                    while next_step_eval_at <= global_batch_step:
+                        next_step_eval_at += eval_step_interval
+                    if step == train_total:
+                        print(
+                            f"[step {global_batch_step}] step eval skipped because it coincides "
+                            f"with epoch {epoch} end; epoch eval will run instead."
                         )
-                        loss, loss_parts = gaussian_action_loss(
-                            outputs.logits,
-                            labels,
-                            action_bin_labels,
-                            bin_token_ids,
-                            action_num_bins,
-                            action_sigma,
-                            action_loss_weight=action_loss_weight,
-                            stop_loss_weight=action_stop_loss_weight,
-                            soft_label_radius=action_soft_label_radius,
+                        continue
+
+                    step_train_loss = total_loss / max(num_batches, 1)
+                    step_val_loss = _run_validation(
+                        model,
+                        val_loader,
+                        device,
+                        loss_context,
+                        progress,
+                        desc=f"Step {global_batch_step} [val]",
+                        warning_label=f"step {global_batch_step}",
+                    )
+                    print(
+                        f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
+                        f"val_loss={_format_loss_value(step_val_loss)}  "
+                        f"optimizer_step={optimizer_step}"
+                    )
+                    step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
+                    _save_checkpoint(config, model, tokenizer, step_ckpt_dir)
+                    if should_run_eval:
+                        _run_eval(
+                            config,
+                            model,
+                            tokenizer,
+                            device,
+                            selection_tag,
+                            eval_variants,
+                            eval_type="step",
+                            train_loss=step_train_loss,
+                            val_loss=step_val_loss,
+                            checkpoint_dir=step_ckpt_dir,
+                            epoch=epoch,
+                            batch_step=global_batch_step,
+                            optimizer_step=optimizer_step,
+                            scheduled_step=scheduled_step,
                         )
                     else:
-                        outputs = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=labels,
-                        )
-                        loss = outputs.loss
-                        loss_parts = None
-                    val_loss += loss.item()
-                    val_batches += 1
-                    progress.update(
-                        val_desc,
-                        step,
-                        val_total,
-                        val_start,
-                        extra=(
-                            f"loss={loss.item():.4f}"
-                            if loss_parts is None
-                            else (
-                                f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
-                                f"stop={loss_parts['stop_loss']:.4f}"
-                            )
-                        ),
-                    )
+                        model.train()
 
-            if val_batches > 0:
-                val_loss = val_loss / val_batches
+            train_loss = total_loss / max(num_batches, 1)
 
-        print(f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  val_loss={val_loss:.4f}")
+            val_loss = _run_validation(
+                model,
+                val_loader,
+                device,
+                loss_context,
+                progress,
+                desc=f"Epoch {epoch}/{num_epochs} [val]",
+                warning_label=f"epoch {epoch}/{num_epochs}",
+            )
+
+        print(
+            f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  "
+            f"val_loss={_format_loss_value(val_loss)}"
+        )
 
         epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
         _save_checkpoint(config, model, tokenizer, epoch_ckpt_dir)
-
-        if config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants:
-            _run_epoch_eval(
+        if should_run_eval:
+            _run_eval(
                 config,
                 model,
                 tokenizer,
                 device,
                 selection_tag,
                 eval_variants,
-                epoch=epoch,
+                eval_type="epoch",
                 train_loss=train_loss,
                 val_loss=val_loss,
+                checkpoint_dir=epoch_ckpt_dir,
+                epoch=epoch,
+                optimizer_step=optimizer_step,
             )
+        else:
+            model.train()
 
 
 

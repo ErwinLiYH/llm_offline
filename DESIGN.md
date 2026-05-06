@@ -266,6 +266,7 @@ checkpoints/
                 ├── ep1/           # epoch 1 结束时保存的中间 checkpoint
                 ├── ep2/
                 ├── ep3/
+                ├── step10002/     # 可选：训练 batch step 触发的中间 checkpoint
                 └── final/         # 训练全部结束后保存（与最后一个 epN 内容相同）
                     ├── adapter_config.json
                     ├── adapter_model.safetensors
@@ -279,6 +280,7 @@ checkpoints/
 | 训练场景 | 路径 |
 |----------|------|
 | Qwen3-0.6B 单独训练 open 变种（epoch 2 中间） | `checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/ep2/` |
+| Qwen3-0.6B 单独训练 open 变种（batch step 10002 中间） | `checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/step10002/` |
 | Qwen3-0.6B 单独训练 open 变种（训练完成） | `checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/final/` |
 | Qwen3-0.6B 联合训练所有变种 | `checkpoints/pointmaze/Qwen3-0.6B/all/<experiment_id>/final/` |
 | Qwen3-0.6B 使用 except 模式排除 `large` 和 `large-dense` | `checkpoints/pointmaze/Qwen3-0.6B/except-large+large-dense/<experiment_id>/final/` |
@@ -331,6 +333,13 @@ dataset_cache/
             │           ├── rollout.gif|mp4
             │           └── steps/
             │               └── step_<n>.txt
+            ├── step<n>/
+            │   └── eval=<env_family>-<variant>/
+            │       ├── result.json
+            │       └── episode_<n>/
+            │           ├── rollout.gif|mp4
+            │           └── steps/
+            │               └── step_<n>.txt
             └── standalone_<eval_uuid>/
                 └── eval=<env_family>-<variant>/
                     ├── result.json
@@ -348,18 +357,19 @@ dataset_cache/
 | `selection_tag` | 训练选择标签 | `open`、`all`、`except-large+large-dense` |
 | `result_root` | 结果根目录配置项 | `results`、`resultsV2` |
 | `variant` | 当前评估变种名 | `open`、`umaze`、`medium` |
-| `epoch_<n>` / `standalone_<eval_uuid>` | 区分训练期中间评估与独立评估运行 | `epoch_2`、`standalone_ab12cd34` |
+| `epoch_<n>` / `step<n>` / `standalone_<eval_uuid>` | 区分训练期中间评估与独立评估运行 | `epoch_2`、`step10002`、`standalone_ab12cd34` |
 
 **示例路径：**
 
 | 场景 | 路径 |
 |------|------|
 | 训练 open 变种 epoch 2 中间评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/epoch_2/eval=pointmaze-open/result.json` |
+| 训练 open 变种 batch step 10002 中间评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/step10002/eval=pointmaze-open/result.json` |
 | except 模式排除 `large` 和 `large-dense` 后训练，并在 epoch 1 评估 medium | `results/Qwen3-0.6B/train=pointmaze-except-large+large-dense/exp=<experiment_id>/epoch_1/eval=pointmaze-medium/result.json` |
 | standalone 评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 | 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 区分不同轮次，standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率与对应 token id。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step，如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存与评估。如果 step eval 与 epoch eval 落在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率与对应 token id。
 
 **结果文件字段：**
 
@@ -373,8 +383,11 @@ dataset_cache/
   "total_parse_failures": 2,
   "total_fallbacks": 0,
   "mean_action_time_ms": 241.3,
-  "train_loss": 0.4637,   // 仅 result_epN.json 有
-  "val_loss": 0.4702      // 仅 result_epN.json 有
+  "train_loss": 0.4637,   // 训练期评估有
+  "val_loss": 0.4702,     // 训练期评估有
+  "eval_type": "step",    // "epoch" 或 "step"
+  "eval_tag": "step10002",
+  "checkpoint_path": "checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/step10002"
 }
 ```
 

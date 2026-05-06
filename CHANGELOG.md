@@ -613,3 +613,23 @@ type: project
 - `evaluate.py` 中 text 模式继续调用环境 formatter 解析 decoded 文本；bin 模式改为通过 codec 从 generated token ids 解码动作，并仅复用环境 formatter 做最终 action 校验
 - eval 执行动作与 fallback 动作的日志显示也改为通过 codec 生成 `<act_XX>` display text，避免 display/parse 逻辑散落到环境 formatter 中
 
+---
+
+## training step eval（2026-05-06）
+
+**训练期新增按 step 触发的环境评估：**
+- 新增 `eval_step_interval` 配置项，默认 `0` 表示关闭；开启后按全局 train batch step 触发 step eval
+- 如果 step eval 触发点落在 gradient accumulation 窗口内，会等到当前窗口 `optimizer.step()` 完成后再保存 checkpoint 和运行 eval
+- 如果 step eval 和 epoch eval 撞在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval
+- step eval 会先完整跑一次 `val_loader` 得到当前 `val_loss`，再保存 checkpoint，并复用现有 `eval_num_episodes`、`eval_variants`、日志和视频配置运行 rollout eval
+
+**checkpoint / result 路径新增 `step<N>`：**
+- epoch checkpoint/result 继续使用 `ep<N>` 和 `epoch_<N>`
+- step checkpoint 写入 `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/step<N>/`
+- step eval result 写入 `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/step<N>/eval=<env_family>-<variant>/result.json`
+- `N` 使用实际完成梯度更新后的全局 batch step，例如计划在 10000 触发但 10002 才完成更新时，目录为 `step10002`
+
+**训练代码结构整理：**
+- 训练期 rollout eval 抽为纯 `_run_eval(...)`
+- `_run_training` 中 step/epoch 分支显式先 `_save_checkpoint(...)`，再按条件调用 `_run_eval(...)`，避免保存和评估混在一个组合函数里
+- `DESIGN.md` 和 `AGENTS.md` 同步更新 step eval 的路径与训练期 eval 语义

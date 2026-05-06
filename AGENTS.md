@@ -77,23 +77,26 @@ To add a new environment family:
 - PointMaze `format_obs` also emits dynamic `map_sensing_en` / `map_sensing_zh`, which describe the current cell, goal cell, and four-neighbor `wall/free` status using 1-based row/column indexing from the top-left corner.
 - PointMaze history entries contain the past step's start position plus executed action. Positions are shown as both grid coordinates and continuous `x/y`.
 - If `history_num > 0`, training samples history from the same episode using indices `t-1`, `t-1-history_stride`, ... and renders entries in chronological order. The first step in each episode has no history block.
-- Standalone eval and training-time epoch eval maintain an online history buffer of actually executed actions, including fallback zero actions on parse failure.
+- Standalone eval and training-time eval maintain an online history buffer of actually executed actions, including fallback zero actions on parse failure.
 - Training uses the templates named by `prompt_templete_index` from shared family prompt files. Prompt names are file stems under `prompts/<env_family>/`, so `prompts/pointmaze/0.txt` is selected as `"0"`. Evaluation uses the first template in filename order unless evaluation code is explicitly changed.
 - Training config uses `train_mode: single | all | except` plus list-valued `train_varients`.
   - `single`: `train_varients` must contain exactly one variant
   - `all`: if `train_varients` is non-empty, train exactly those variants; if empty/omitted, use every available variant
   - `except`: `train_varients` is the exclusion list
-- Epoch eval selection is independent from training selection via optional `eval_mode` and `eval_variants`.
-  - If `eval_mode` is omitted, epoch eval follows the resolved training selection.
+- Training-time eval selection is independent from training selection via optional `eval_mode` and `eval_variants`.
+  - If `eval_mode` is omitted, training-time eval follows the resolved training selection.
   - `eval_variants` also uses list semantics; under `except` it is an exclusion list.
 - Multi-variant training, including `all` and `except`, uses weighted sampling by variant sample count. Optional `balance_variant_episode_count: true` first equalizes the sampled episode pool size across selected variants to the smallest per-variant target.
-- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, which prompt templates are used for dataset construction via `prompt_templete_index`, action encoding via `action_token_mode` / `action_num_bins` / `new_token` / `action_bin_min` / `action_bin_max` / `action_soft_label_sigma` / `action_soft_label_radius`, offline episode sampling via `episode_keep_num` / `balance_variant_episode_count` / `sampling_seed`, history prompt settings via `history_num` / `history_stride`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
+- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, which prompt templates are used for dataset construction via `prompt_templete_index`, action encoding via `action_token_mode` / `action_num_bins` / `new_token` / `action_bin_min` / `action_bin_max` / `action_soft_label_sigma` / `action_soft_label_radius`, offline episode sampling via `episode_keep_num` / `balance_variant_episode_count` / `sampling_seed`, history prompt settings via `history_num` / `history_stride`, training-time eval cadence via `eval_step_interval`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/`.
   - `selection_tag` is the single variant name, `all`, `all-<selected variants joined by +>`, or `except-<excluded variants joined by +>`.
-- Training-time eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/epoch_<n>/eval=<env_family>-<variant>/result.json`.
+- Epoch checkpoints use `ep<N>`, step checkpoints use `step<N>`, and final checkpoints use `final`.
+- `eval_step_interval` enables optional training-time step eval by global train batch step; if a trigger falls inside a gradient accumulation window, saving/eval waits until that window's `optimizer.step()` completes and uses the actual completed batch step in `step<N>`.
+- If step eval and epoch eval land on the same epoch-end weight state, skip the duplicate step eval and keep the epoch checkpoint/eval.
+- Training-time eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/epoch_<n>/eval=<env_family>-<variant>/result.json` or `.../step<N>/eval=<env_family>-<variant>/result.json`.
 - Standalone eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/standalone_<eval_uuid>/eval=<env_family>-<variant>/result.json`.
 - `eval.yaml` uses the same list-based variant selection semantics as training via `eval_mode` + `variants`; legacy `variant: <name|all>` is still accepted for compatibility.
-- `eval.yaml` has its own `history_num` / `history_stride` for standalone eval; training-time epoch eval reuses the training config's history settings.
+- `eval.yaml` has its own `history_num` / `history_stride` for standalone eval; training-time eval reuses the training config's history settings.
 - Eval step logs are written by default under each `eval=<...>/episode_<n>/steps/`, using the same `Prompt:` / `Action:` text layout as `inspect_jsonl_record.py` plus executed-action metadata. In bin modes they display action bins as `<act_XX>` even when the model internally generated reused tokenizer IDs; in `gaussian_bin` mode they also include per-dimension action-bin probability distributions when `record_step_logs: true`.
 - Eval videos are stored next to the step-log directory inside each `episode_<n>/`; `video_episode_index` accepts an int or list, and `record_all: true` records every episode. Default output format is `gif`, while `mp4` requires an ffmpeg backend. Headless MuJoCo recording should use `mujoco_gl: egl`.
 
