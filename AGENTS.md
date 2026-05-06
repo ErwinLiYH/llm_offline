@@ -92,6 +92,7 @@ To add a new environment family:
   - `selection_tag` is the single variant name, `all`, `all-<selected variants joined by +>`, or `except-<excluded variants joined by +>`.
 - Epoch checkpoints use `ep<N>`, step checkpoints use `step<N>`, and final checkpoints use `final`.
 - `eval_step_interval` enables optional training-time step eval by global train batch step; if a trigger falls inside a gradient accumulation window, saving/eval waits until that window's `optimizer.step()` completes and uses the actual completed batch step in `step<N>`.
+- If `eval_step_interval: 0` in an interactive run, `train.py` prints train batches per epoch and total train batches after dataloader construction, then prompts for an optional interval; non-interactive runs keep it disabled.
 - If step eval and epoch eval land on the same epoch-end weight state, skip the duplicate step eval and keep the epoch checkpoint/eval.
 - Training-time eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/epoch_<n>/eval=<env_family>-<variant>/result.json` or `.../step<N>/eval=<env_family>-<variant>/result.json`.
 - Standalone eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/standalone_<eval_uuid>/eval=<env_family>-<variant>/result.json`.

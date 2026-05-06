@@ -619,6 +619,7 @@ type: project
 
 **训练期新增按 step 触发的环境评估：**
 - 新增 `eval_step_interval` 配置项，默认 `0` 表示关闭；开启后按全局 train batch step 触发 step eval
+- `eval_step_interval: 0` 且交互式运行时，dataloader 构建完成后会打印每个 epoch 的 batch 数和全训练 batch 数，并允许临时输入 step eval interval；非交互运行保持关闭
 - 如果 step eval 触发点落在 gradient accumulation 窗口内，会等到当前窗口 `optimizer.step()` 完成后再保存 checkpoint 和运行 eval
 - 如果 step eval 和 epoch eval 撞在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval
 - step eval 会先完整跑一次 `val_loader` 得到当前 `val_loss`，再保存 checkpoint，并复用现有 `eval_num_episodes`、`eval_variants`、日志和视频配置运行 rollout eval
@@ -632,4 +633,5 @@ type: project
 **训练代码结构整理：**
 - 训练期 rollout eval 抽为纯 `_run_eval(...)`
 - `_run_training` 中 step/epoch 分支显式先 `_save_checkpoint(...)`，再按条件调用 `_run_eval(...)`，避免保存和评估混在一个组合函数里
+- 训练进度中的 `opt_step` 改为当前 epoch 内的 optimizer step 计数，避免显示跨 epoch 累计值
 - `DESIGN.md` 和 `AGENTS.md` 同步更新 step eval 的路径与训练期 eval 语义

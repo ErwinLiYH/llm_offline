@@ -12,6 +12,7 @@ import os
 import json
 import time
 import math
+import sys
 
 import yaml
 import torch
@@ -476,6 +477,45 @@ def _run_validation(
     return val_loss / max(val_batches, 1)
 
 
+def _maybe_prompt_eval_step_interval(config: dict, train_loader) -> None:
+    eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
+    if eval_step_interval != 0:
+        return
+
+    batches_per_epoch = len(train_loader)
+    num_epochs = int(config["num_epochs"])
+    total_batches = batches_per_epoch * num_epochs
+    print(
+        "[train] eval_step_interval=0. "
+        f"train batches per epoch={batches_per_epoch}, total train batches={total_batches}."
+    )
+    if not sys.stdin.isatty():
+        print("[train] Non-interactive stdin detected; keeping eval_step_interval disabled.")
+        return
+
+    answer = input(
+        "[train] Enter eval_step_interval to enable step eval, "
+        "or press Enter/0 to keep disabled: "
+    ).strip()
+    if not answer or answer == "0":
+        print("[train] Keeping eval_step_interval disabled.")
+        return
+    try:
+        selected_interval = int(answer)
+    except ValueError:
+        print(f"[train] Invalid eval_step_interval {answer!r}; keeping disabled.")
+        return
+    if selected_interval == 0:
+        print("[train] Keeping eval_step_interval disabled.")
+        return
+    if selected_interval < 0:
+        print(f"[train] eval_step_interval must be >= 0, got {selected_interval}; keeping disabled.")
+        return
+
+    config["eval_step_interval"] = selected_interval
+    print(f"[train] Using eval_step_interval={selected_interval}.")
+
+
 
 def _run_training(config, model, train_loader, val_loader, device,
                   selection_tag: str, progress_interval_seconds: float, tokenizer=None, eval_variants=None):
@@ -538,6 +578,7 @@ def _run_training(config, model, train_loader, val_loader, device,
             model.train()
             total_loss = 0.0
             num_batches = 0
+            epoch_optimizer_step = 0
             train_total = len(train_loader)
             train_start = time.monotonic()
             train_desc = f"Epoch {epoch}/{num_epochs} [train]"
@@ -552,13 +593,14 @@ def _run_training(config, model, train_loader, val_loader, device,
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     optimizer_step += 1
+                    epoch_optimizer_step += 1
 
                 total_loss += loss.item()
                 num_batches += 1
                 accum_step = ((step - 1) % gradient_accumulation_steps) + 1
                 loss_extra = _format_loss_extra(loss, loss_parts)
                 loss_extra += (
-                    f" lr={config['learning_rate']:.2e} opt_step={optimizer_step}/{total_training_steps} "
+                    f" lr={config['learning_rate']:.2e} opt_step={epoch_optimizer_step}/{updates_per_epoch} "
                     f"batch_step={global_batch_step} accum={accum_step}/{gradient_accumulation_steps}"
                 )
                 progress.update(
@@ -693,6 +735,7 @@ def train_with_selection(
     print(f"[train] Resolved eval variants: {eval_selection.selected_variants}")
 
     train_loader, val_loader = build_data_loaders(config, tokenizer, train_selection.selected_variants)
+    _maybe_prompt_eval_step_interval(config, train_loader)
     progress_interval = float(config.get("progress_interval_seconds", 5.0))
     _run_training(
         config,

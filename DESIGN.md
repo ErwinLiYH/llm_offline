@@ -214,6 +214,7 @@ prompt_templete_index: ["0"]  # 使用的 prompt 文件名（不含 .txt）
 learning_rate: 1e-4
 num_epochs: 3
 batch_size: 32
+gradient_accumulation_steps: 1
 max_length: 512
 
 # LoRA 参数
@@ -224,6 +225,7 @@ lora_target_modules: ["q_proj", "v_proj"]
 
 # 评估辅助
 parse_retry_limit: 3     # action 解析失败时的最大重试次数
+eval_step_interval: 0    # 0 = dataloader 构建后交互式提示；非交互运行保持关闭
 action_token_mode: text  # text | bin | gaussian_bin
 action_num_bins: 10      # bin 模式下的共享动作 token 数
 new_token: false         # false = 内部复用低频 token ID；true = 新增 <act_XX> special tokens
@@ -369,7 +371,7 @@ dataset_cache/
 | standalone 评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 | 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step，如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存与评估。如果 step eval 与 epoch eval 落在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率与对应 token id。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step，如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存与评估。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。如果 step eval 与 epoch eval 落在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率与对应 token id。
 
 **结果文件字段：**
 
