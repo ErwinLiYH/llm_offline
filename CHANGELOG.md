@@ -635,3 +635,31 @@ type: project
 - `_run_training` 中 step/epoch 分支显式先 `_save_checkpoint(...)`，再按条件调用 `_run_eval(...)`，避免保存和评估混在一个组合函数里
 - 训练进度中的 `opt_step` 改为当前 epoch 内的 optimizer step 计数，避免显示跨 epoch 累计值
 - `DESIGN.md` 和 `AGENTS.md` 同步更新 step eval 的路径与训练期 eval 语义
+
+---
+
+## eval sampling and prompt alignment（2026-05-15）
+
+**动作生成支持可控采样：**
+- 新增 `action_sampling`、`action_temperature`、`action_top_p`、`action_top_k` 评估配置项；默认关闭时保持原 greedy decoding
+- text 模式开启采样后使用 HuggingFace `generate()` 的普通采样路径，并继续复用现有 parse retry / fallback 逻辑
+- bin / gaussian_bin 模式开启采样后只允许 action-bin token 参与生成，并固定生成 `action_dim` 个 token，避免 EOS 或普通 token 导致动作维度缺失
+- 训练期 eval 透传同一套采样配置，使 `config.yaml` 和 standalone `eval.yaml` 的 rollout 行为一致
+
+**bin 概率日志扩展：**
+- `record_step_logs: true` 时，`bin` 和 `gaussian_bin` 都会记录每个动作维度上所有 action bin 的概率、display token、model token id 和连续动作中心值
+- 采样开启时，日志概率反映 temperature / top-p / top-k 以及 action-token mask 后的采样分布；未采样时记录 action-bin 子集上的 softmax 分布
+
+**修复 eval prompt 默认使用 `0.txt` 的问题：**
+- 训练开始时会将 prompt 配置标准化为 `prompt_templete_index` 列表，并随 checkpoint `config.yaml` 保存，确保训练所用 prompt 可复现
+- 训练期 eval 改为使用训练 prompt 列表的第一个模板，不再按文件名排序取 `0.txt`
+- standalone eval 默认读取 checkpoint 中保存的训练 prompt 列表，并使用其中第一个模板
+- `eval.yaml` 可用单个 `prompt_templete_index` 覆盖 standalone eval prompt；若覆盖值不在 checkpoint 训练 prompt 列表中，会打印强警告并要求输入大写 `Y`
+- `evaluate.py` 新增 `-y/--yes`，用于自动确认这类强警告
+
+**standalone eval 配置归档：**
+- standalone eval 会把合并后的实际评估配置写入本次结果目录的 `eval_config.yaml`
+- 归档配置包含原始 eval config 路径、`standalone_eval_id`、结果目录、resolved eval variants、checkpoint action config 和实际使用的 prompt 名
+
+**prompt loader 清理：**
+- 删除不再使用的 `load_templates()`；训练、训练期 eval、standalone eval 和 dataset 构建都改为通过 prompt 名称加载模板

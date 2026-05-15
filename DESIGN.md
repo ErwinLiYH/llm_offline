@@ -151,7 +151,7 @@ POINTMAZE_VARIANTS = {
 - 共享风格模板按环境族存放在 `prompts/<env_family>/<prompt_name>.txt`，文件名 stem 就是 prompt 名
 - 每个 variant 只在 `data/<env_family>/variants.py` 中维护自己的 `prompt_vars`，提供环境名、迷宫拓扑、迷宫可视化、结构说明等差异化信息
 - 训练时使用 `prompt_templete_index` 指定的共享模板名，因此每个 timestep 产生“所选模板数”条训练样本
-- 评估时固定使用模板 `0`，保证可复现
+- 训练期评估默认使用训练 prompt 列表中的第一个模板；standalone eval 默认使用 checkpoint config 中记录的第一个训练 prompt。`eval.yaml` 可用单个 `prompt_templete_index` 覆盖 standalone eval prompt；若覆盖值不在 checkpoint 训练 prompt 列表中，`evaluate.py` 会强警告并要求输入 `Y`，或通过 `-y/--yes` 自动确认
 - 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的动态字段；PointMaze 当前动态字段至少包括 `obs_text`、`map_sensing_en/zh`、`history_block_en/zh`
 - 共享模板当前按“静态 Env Description 在前、动态 Current Status 在后”的结构组织，以提高前缀 cache 命中率
 - 渲染出的共享模板文本只负责环境/任务语义；最终输入序列会再通过 tokenizer 自带的 `chat_template` 包装成 `user` / `assistant` 对话格式
@@ -226,6 +226,10 @@ lora_target_modules: ["q_proj", "v_proj"]
 # 评估辅助
 parse_retry_limit: 3     # action 解析失败时的最大重试次数
 eval_step_interval: 0    # 0 = dataloader 构建后交互式提示；非交互运行保持关闭
+action_sampling: false   # true = rollout 时采样动作；false = greedy decoding
+action_temperature: 1.0
+action_top_p: 1.0
+action_top_k: 0          # 0 = 不启用 top-k 截断
 action_token_mode: text  # text | bin | gaussian_bin
 action_num_bins: 10      # bin 模式下的共享动作 token 数
 new_token: false         # false = 内部复用低频 token ID；true = 新增 <act_XX> special tokens
@@ -371,7 +375,7 @@ dataset_cache/
 | standalone 评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 | 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step，如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存与评估。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。如果 step eval 与 epoch eval 落在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率与对应 token id。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step，如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存与评估。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。如果 step eval 与 epoch eval 落在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin` 和 `gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率与对应 token id。
 
 **结果文件字段：**
 
@@ -410,12 +414,13 @@ eval_mode: single       # single | all | except
 variants: [open]         # single: 恰好一个；all: 指定子集或留空表示全部；except: 排除列表
 num_episodes: 20
 parse_retry_limit: 3
+# prompt_templete_index: bin  # 可选；standalone eval 只允许一个 prompt 覆盖值
 env_kwargs:
   continuing_task: false # false = 每 episode 一个目标，到达即结束
   # max_episode_steps: 300  # 可选，覆盖环境默认值
 ```
 
-`model_path` 可填 checkpoint 路径或 HuggingFace model ID（如 `Qwen/Qwen3-0.6B`），后者用于评估未微调的基座模型。评估时固定使用模板 0（第一个英文模板）。
+`model_path` 可填 checkpoint 路径或 HuggingFace model ID（如 `Qwen/Qwen3-0.6B`），后者用于评估未微调的基座模型。checkpoint 评估默认使用 checkpoint `config.yaml` 中记录的第一个训练 prompt；`eval.yaml` 可用单个 `prompt_templete_index` 覆盖，覆盖值若不在训练 prompt 列表中需要强确认。
 
 ---
 
@@ -468,7 +473,7 @@ def validate_action(action) -> bool:
 
 1. **Loss masking**：labels 中 `user` turn 与 assistant 前缀部分设为 `-100`，只训练 assistant 动作文本及其结束标记。bin 模式另有 `action_bin_labels` mask：action token 位置记录 bin index，其余位置为 `-1`；`gaussian_bin` 用它选择 action 位置做 soft-label CE，`bin` 模式保留该 mask 但仍走普通 causal LM loss
 2. **每 timestep 按所选 prompt 展开**：`dataset.py` 构造数据时对每个 timestep 遍历 `prompt_templete_index` 指定的共享模板名，生成对应数量的独立样本
-3. **Action parsing**：text 模式通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 解析 decoded 文本；bin 模式不进入环境族 formatter，而是通过共享 `ActionBinCodec` 从 generated token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。两种模式都会调用环境族 `validate_action` 做合法性校验。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
+3. **Action generation / parsing**：默认 rollout 使用 greedy decoding。若 `action_sampling: true`，text 模式使用普通采样并继续依赖 parse retry / fallback 兜底；bin / gaussian_bin 模式只允许 action-bin token 参与生成，并固定生成 `action_dim` 个 token，避免 EOS 或普通 token 导致动作维度缺失。text 模式通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 解析 decoded 文本；bin 模式不进入环境族 formatter，而是通过共享 `ActionBinCodec` 从 generated token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。两种模式都会调用环境族 `validate_action` 做合法性校验。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
    - *PointMaze text 模式实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回；bin 模式由共享 action-bin codec 从 generated token ids 解析
    - 其他环境族在各自 `formatting.py` 中实现 text action 解析和校验；bin action 的 token-id 解析保持共享
 4. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text
