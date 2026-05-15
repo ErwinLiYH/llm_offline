@@ -1,6 +1,5 @@
 import os
 from string import Formatter
-from typing import List
 
 
 def _get_prompt_dir(env_family: str) -> str:
@@ -47,12 +46,6 @@ def load_named_templates(env_family: str, prompt_names: list[str]) -> list[str]:
             f"Unknown prompt template names for {env_family}: {missing}. Available: {available}"
         )
     return [templates_by_name[name] for name in prompt_names]
-
-
-def load_templates(env_family: str) -> List[str]:
-    """Load all shared prompt templates for an environment family by filename order."""
-    templates_by_name = load_template_map(env_family)
-    return [templates_by_name[name] for name in sorted(templates_by_name)]
 
 
 def render_template(template: str, prompt_vars: dict, **extra_vars) -> str:
