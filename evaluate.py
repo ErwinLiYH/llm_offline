@@ -30,7 +30,7 @@ from utils.action_bins import (
     get_action_token_mode,
 )
 from utils.chat_template import build_generation_prompt
-from utils.prompt_loader import load_templates, render_template
+from utils.prompt_loader import load_named_templates, load_template_names, render_template
 from utils.record_format import format_eval_step_text
 from utils.variant_selection import get_available_variants, resolve_selection
 
@@ -38,6 +38,7 @@ from utils.variant_selection import get_available_variants, resolve_selection
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="eval.yaml")
+    parser.add_argument("-y", "--yes", action="store_true", help="Automatically confirm strong warnings.")
     return parser.parse_args()
 
 
@@ -79,6 +80,14 @@ ACTION_CONFIG_KEYS = (
 )
 
 
+def _load_checkpoint_config(model_path: str) -> dict:
+    config_path = os.path.join(model_path, "config.yaml")
+    if not os.path.exists(config_path):
+        return {}
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f) or {}
+
+
 class _AllowedTokenIdsLogitsProcessor(LogitsProcessor):
     """Mask generation logits so only the provided token IDs remain valid."""
 
@@ -117,11 +126,7 @@ def _resolve_action_generation_config(config: dict) -> dict:
 
 
 def _load_checkpoint_action_config(model_path: str) -> dict:
-    config_path = os.path.join(model_path, "config.yaml")
-    saved_config = {}
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            saved_config = yaml.safe_load(f) or {}
+    saved_config = _load_checkpoint_config(model_path)
 
     action_config = {
         "action_token_mode": saved_config.get("action_token_mode", "text"),
@@ -149,6 +154,104 @@ def apply_checkpoint_action_config(config: dict) -> dict:
     get_action_token_mode(merged)
     get_action_num_bins(merged)
     get_action_bin_range(merged)
+    return merged
+
+
+def _normalize_prompt_name_list(value, *, field_name: str, allow_single_string: bool) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        if not allow_single_string:
+            raise ValueError(f"{field_name} must be a list of prompt names, got str")
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of prompt names, got {type(value).__name__}")
+
+    names = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{field_name} must contain non-empty strings, got {item!r}")
+        names.append(item.strip())
+    if not names:
+        raise ValueError(f"{field_name} must not be empty")
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"{field_name} contains duplicate prompt names: {duplicates}")
+    return names
+
+
+def _resolve_prompt_config_values(config: dict, *, allow_single_string: bool) -> list[str] | None:
+    primary_key = "prompt_templete_index"
+    legacy_key = "prompt_template_index"
+    primary_present = primary_key in config
+    legacy_present = legacy_key in config
+    primary_value = config.get(primary_key)
+    legacy_value = config.get(legacy_key)
+    if primary_present and legacy_present and primary_value != legacy_value:
+        raise ValueError(
+            f"{primary_key} and {legacy_key} both exist but differ; keep only {primary_key}."
+        )
+    if not primary_present and not legacy_present:
+        return None
+    field_name = primary_key if primary_present else legacy_key
+    raw_value = primary_value if primary_present else legacy_value
+    return _normalize_prompt_name_list(
+        raw_value,
+        field_name=field_name,
+        allow_single_string=allow_single_string,
+    )
+
+
+def _confirm_strong_warning(message: str, *, assume_yes: bool):
+    print(f"\n[eval] STRONG WARNING: {message}")
+    if assume_yes:
+        print("[eval] -y/--yes supplied; continuing despite the warning.")
+        return
+    try:
+        response = input("[eval] Type uppercase Y to continue: ")
+    except EOFError as exc:
+        raise SystemExit("[eval] Aborted: confirmation required but stdin is unavailable.") from exc
+    if response != "Y":
+        raise SystemExit("[eval] Aborted by user.")
+
+
+def apply_checkpoint_prompt_config(config: dict, *, assume_yes: bool) -> dict:
+    saved_config = _load_checkpoint_config(config["model_path"])
+    train_prompt_names = _resolve_prompt_config_values(saved_config, allow_single_string=False)
+    eval_prompt_names = _resolve_prompt_config_values(config, allow_single_string=True)
+
+    if eval_prompt_names is not None:
+        if len(eval_prompt_names) != 1:
+            raise ValueError(
+                "Standalone eval accepts exactly one prompt in prompt_templete_index; "
+                f"got {eval_prompt_names}."
+            )
+        eval_prompt_name = eval_prompt_names[0]
+        if train_prompt_names and eval_prompt_name not in train_prompt_names:
+            _confirm_strong_warning(
+                "eval prompt is outside the checkpoint training prompt list. "
+                f"train_prompts={train_prompt_names}, eval_prompt={eval_prompt_name!r}. "
+                "This changes the prompt distribution used for rollout.",
+                assume_yes=assume_yes,
+            )
+    elif train_prompt_names:
+        eval_prompt_name = train_prompt_names[0]
+    else:
+        warnings.warn(
+            "Checkpoint config.yaml does not contain prompt_templete_index; "
+            "standalone eval will use the first prompt template in filename order.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        eval_prompt_name = None
+
+    merged = dict(config)
+    if train_prompt_names:
+        merged["checkpoint_prompt_templete_index"] = train_prompt_names
+    if eval_prompt_name is not None:
+        merged["prompt_templete_index"] = [eval_prompt_name]
+    merged.pop("prompt_template_index", None)
+    merged["resolved_eval_prompt_name"] = eval_prompt_name
     return merged
 
 
@@ -679,6 +782,7 @@ def main():
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
     config = apply_checkpoint_action_config(config)
+    config = apply_checkpoint_prompt_config(config, assume_yes=args.yes)
 
     eval_selection = resolve_standalone_eval_selection(config)
     configure_mujoco_gl(config)
@@ -702,11 +806,22 @@ def main():
     base_results_dir = get_results_base_dir(config)
     run_results_dir = get_standalone_results_dir(base_results_dir, standalone_eval_id)
     os.makedirs(run_results_dir, exist_ok=True)
+    prompt_name = config.get("resolved_eval_prompt_name")
+    if prompt_name is None:
+        prompt_name = load_template_names(env_family)[0]
+        config["resolved_eval_prompt_name"] = prompt_name
+    template = load_named_templates(env_family, [prompt_name])[0]
+    config["eval_config_source"] = args.config
+    config["standalone_eval_id"] = standalone_eval_id
+    config["standalone_results_dir"] = run_results_dir
+    config["resolved_eval_variants"] = eval_selection.selected_variants
+    eval_config_path = os.path.join(run_results_dir, "eval_config.yaml")
+    with open(eval_config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
+    print(f"[eval] Eval config saved to: {eval_config_path}")
 
     for variant in eval_selection.selected_variants:
         print(f"\n[eval] Evaluating variant: {variant}")
-        templates = load_templates(env_family)
-        template = templates[0]
         results_dir = get_variant_results_dir(run_results_dir, env_family, variant)
         os.makedirs(results_dir, exist_ok=True)
         result_path = os.path.join(results_dir, "result.json")
@@ -721,6 +836,7 @@ def main():
             variant_results_dir=results_dir,
         )
         result["result_path"] = result_path
+        result["prompt_template_name"] = prompt_name
         print(
             f"[eval] {variant}: mean_return={result['mean_return']:.4f}, "
             f"success_rate={result['success_rate']:.2%}, "

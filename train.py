@@ -31,6 +31,7 @@ from utils.action_bins import (
     get_action_token_mode,
 )
 from utils.file_progress import FileProgress
+from utils.prompt_loader import load_template_names
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 
 
@@ -49,6 +50,60 @@ def ensure_experiment_id(config: dict) -> str:
     experiment_id = uuid.uuid4().hex[:8]
     config["experiment_id"] = experiment_id
     return experiment_id
+
+
+def _normalize_prompt_names(value, *, field_name: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list of prompt names, got {type(value).__name__}")
+    names = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(f"{field_name} must contain non-empty strings, got {item!r}")
+        names.append(item.strip())
+    if not names:
+        raise ValueError(f"{field_name} must not be empty")
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"{field_name} contains duplicate prompt names: {duplicates}")
+    return names
+
+
+def normalize_prompt_config(config: dict):
+    """Persist the exact training prompt names in checkpoint config.yaml."""
+    primary_key = "prompt_templete_index"
+    legacy_key = "prompt_template_index"
+    primary_value = config.get(primary_key)
+    legacy_value = config.get(legacy_key)
+    if primary_value is not None and legacy_value is not None and primary_value != legacy_value:
+        raise ValueError(
+            f"{primary_key} and {legacy_key} both exist but differ; keep only {primary_key}."
+        )
+
+    raw_names = primary_value if primary_value is not None else legacy_value
+    available_names = load_template_names(config["env_family"])
+    if raw_names is None:
+        prompt_template_count = int(config.get("prompt_template_count", 1))
+        if prompt_template_count < 1:
+            raise ValueError(f"prompt_template_count must be >= 1, got {prompt_template_count}")
+        if prompt_template_count > len(available_names):
+            raise ValueError(
+                "prompt_template_count exceeds available templates: "
+                f"requested {prompt_template_count}, available {len(available_names)}"
+            )
+        names = available_names[:prompt_template_count]
+    else:
+        names = _normalize_prompt_names(
+            raw_names,
+            field_name=primary_key if primary_value is not None else legacy_key,
+        )
+
+    missing = [name for name in names if name not in available_names]
+    if missing:
+        available = ", ".join(available_names)
+        raise ValueError(f"Unknown prompt template names for {config['env_family']}: {missing}. Available: {available}")
+
+    config[primary_key] = names
+    config.pop(legacy_key, None)
 
 
 def resolve_train_selection(config: dict, available_variants: list[str]) -> VariantSelection:
@@ -168,7 +223,7 @@ def build_dataset_request(config: dict, tokenizer, variant: str, split: str) -> 
         cache_dir=config.get("dataset_cache_dir"),
         max_data_num=config.get("max_data_num"),
         prompt_template_count=config.get("prompt_template_count", 1),
-        prompt_templete_index=config.get("prompt_templete_index", config.get("prompt_template_index")),
+        prompt_templete_index=config.get("prompt_templete_index"),
         train_data_ratio=config.get("train_data_ratio", 0.9),
         episode_keep_num=config.get("episode_keep_num"),
         balance_variant_episode_count=config.get("balance_variant_episode_count", False),
@@ -343,11 +398,12 @@ def _run_eval(
 ):
     import gymnasium_robotics  # noqa: F401
     from evaluate import configure_mujoco_gl, evaluate_variant
-    from utils.prompt_loader import load_templates
+    from utils.prompt_loader import load_named_templates
 
     eval_config = _build_training_eval_config(config)
     configure_mujoco_gl(eval_config)
-    templates = load_templates(config["env_family"])
+    prompt_name = config["prompt_templete_index"][0]
+    template = load_named_templates(config["env_family"], [prompt_name])[0]
     eval_tag = f"step{batch_step}" if eval_type == "step" else f"epoch_{epoch}"
     label = f"Step {batch_step}" if eval_type == "step" else f"Epoch {epoch}"
     if eval_type == "step" and scheduled_step is not None and scheduled_step != batch_step:
@@ -375,9 +431,10 @@ def _run_eval(
                 model,
                 tokenizer,
                 device,
-                templates[0],
+                template,
                 variant_results_dir=results_dir,
             )
+            result["prompt_template_name"] = prompt_name
             result["train_loss"] = train_loss
             result["val_loss"] = val_loss
             result["experiment_id"] = config["experiment_id"]
@@ -766,6 +823,7 @@ def main():
         raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
 
     experiment_id = ensure_experiment_id(config)
+    normalize_prompt_config(config)
     available_variants = get_available_variants(config["env_family"])
     train_selection = resolve_train_selection(config, available_variants)
     eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)

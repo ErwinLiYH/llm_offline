@@ -188,6 +188,22 @@ class ActionBinCodec:
             pieces.append(self.display_tokens[bin_idx])
         return "".join(pieces)
 
+    def bin_indices_for_action(
+        self,
+        action: np.ndarray,
+        low: float = -1.0,
+        high: float = 1.0,
+    ) -> list[int]:
+        return action_to_bin_indices(action, self.num_bins, low, high)
+
+    def display_text_for_action(
+        self,
+        action: np.ndarray,
+        low: float = -1.0,
+        high: float = 1.0,
+    ) -> str:
+        return self.display_text_for_bins(self.bin_indices_for_action(action, low, high))
+
     def model_text_for_bins(self, tokenizer, bin_indices: list[int] | tuple[int, ...]) -> str:
         if self.new_token:
             return self.display_text_for_bins(bin_indices)
@@ -216,6 +232,24 @@ class ActionBinCodec:
                 if len(indices) == action_dim:
                     break
         return indices
+
+    def action_from_token_ids(
+        self,
+        token_ids: list[int] | tuple[int, ...],
+        action_dim: int,
+        low: float = -1.0,
+        high: float = 1.0,
+    ) -> tuple[np.ndarray, bool]:
+        indices = self.bin_indices_from_token_ids(token_ids, action_dim)
+        if len(indices) < action_dim:
+            return np.zeros(action_dim, dtype=np.float32), False
+        return (
+            np.array(
+                [bin_to_continuous(index, self.num_bins, low, high) for index in indices],
+                dtype=np.float32,
+            ),
+            True,
+        )
 
     def display_text_for_token_ids(self, tokenizer, token_ids: list[int] | tuple[int, ...]) -> str:
         tok = get_tokenizer_backend(tokenizer)
