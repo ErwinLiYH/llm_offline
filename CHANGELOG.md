@@ -663,3 +663,23 @@ type: project
 
 **prompt loader 清理：**
 - 删除不再使用的 `load_templates()`；训练、训练期 eval、standalone eval 和 dataset 构建都改为通过 prompt 名称加载模板
+
+---
+
+## torchrun / DDP training support（2026-05-15）
+
+**保留单卡默认路径并新增 DDP backend：**
+- `train.py` 新增 `--parallel_backend single|ddp`，默认 `single`，现有 `python train.py --config config.yaml` 行为不变
+- `config.yaml` 新增 `parallel_backend`、`ddp_find_unused_parameters`、`distributed_timeout_seconds`，DDP 通过 `torchrun` 启动并使用 NCCL process group
+- 新增 `utils/distributed.py` 封装 rank/world/local_rank、barrier、rank0 打印、object broadcast、loss all-reduce 和 DDP wrapper unwrap
+
+**DDP 数据加载与训练语义：**
+- 单变种训练使用 `DistributedSampler`，多变种训练新增 `DistributedWeightedSampler`，保留原有按变种样本数加权采样语义
+- DDP 下 `batch_size` 表示每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`
+- gradient accumulation 期间使用 DDP `no_sync()`，只在 accumulation boundary 同步梯度
+- 有 `dataset_cache_dir` 时 rank0 先构建 tokenized cache，其他 rank 在 barrier 后读取，避免多进程同时写同一 cache
+
+**rank0-only 保存与评估：**
+- checkpoint、validation、训练期 rollout eval、step logs 和视频只由 rank0 执行，其他 rank 在 barrier 等待
+- DDP 保存时 unwrap 底层 Unsloth/PEFT 模型，保持 checkpoint 目录仍可被现有 `evaluate.py` 读取
+- 项目内文档同步记录单节点 4 GPU GH200/H100 的 `torchrun --standalone --nproc_per_node=4` 用法，以及保持或放大全局 batch 的配置建议

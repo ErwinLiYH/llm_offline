@@ -17,6 +17,8 @@ import sys
 import yaml
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler, ConcatDataset
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel
 
 with contextlib.redirect_stdout(io.StringIO()):
     from unsloth import FastLanguageModel
@@ -30,6 +32,18 @@ from utils.action_bins import (
     get_action_num_bins,
     get_action_token_mode,
 )
+from utils.distributed import (
+    DistributedContext,
+    barrier,
+    broadcast_object,
+    cleanup_distributed,
+    init_distributed_context,
+    rank_zero_print,
+    reduce_mean,
+    resolve_parallel_backend,
+    unwrap_model,
+)
+from utils.distributed_sampler import DistributedWeightedSampler
 from utils.file_progress import FileProgress
 from utils.prompt_loader import load_template_names
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
@@ -38,7 +52,19 @@ from utils.variant_selection import resolve_selection, VariantSelection, get_ava
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml")
+    parser.add_argument("--parallel_backend", type=str, choices=["single", "ddp"], default=None)
     return parser.parse_args()
+
+
+def _as_bool(value) -> bool:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError(f"Expected a boolean value, got {value!r}")
+    return bool(value)
 
 
 
@@ -240,11 +266,19 @@ def build_dataset_request(config: dict, tokenizer, variant: str, split: str) -> 
     )
 
 
-def _resolve_balanced_train_episode_count(config: dict, dataset_cls, selected_variants: list[str]) -> int | None:
+def _resolve_balanced_train_episode_count(
+    config: dict,
+    dataset_cls,
+    selected_variants: list[str],
+    dist_context: DistributedContext,
+) -> int | None:
     balance_enabled = config.get("balance_variant_episode_count", False)
     if len(selected_variants) <= 1:
         if balance_enabled:
-            print("[train] balance_variant_episode_count=true but only one variant is selected; skipping balancing.")
+            rank_zero_print(
+                dist_context,
+                "[train] balance_variant_episode_count=true but only one variant is selected; skipping balancing.",
+            )
         return None
 
     if not balance_enabled:
@@ -261,25 +295,30 @@ def _resolve_balanced_train_episode_count(config: dict, dataset_cls, selected_va
         f"sampled_episode_target={stat['sampled_episode_target']}"
         for stat in variant_stats
     )
-    print(f"[train] Multi-variant episode balance stats -> {stats_text}")
-    print(f"[train] Balanced sampled episode target across variants: {balanced_target}")
+    rank_zero_print(dist_context, f"[train] Multi-variant episode balance stats -> {stats_text}")
+    rank_zero_print(dist_context, f"[train] Balanced sampled episode target across variants: {balanced_target}")
     return balanced_target
 
 
-def build_data_loaders(config: dict, tokenizer, selected_variants: list[str]):
+def _build_data_loaders_once(
+    config: dict,
+    tokenizer,
+    selected_variants: list[str],
+    dist_context: DistributedContext,
+):
     train_datasets = []
     val_datasets = []
     dataset_cls = get_dataset(config["env_family"])
     dataset_config = dict(config)
     dataset_config["balanced_train_episode_count"] = _resolve_balanced_train_episode_count(
-        config, dataset_cls, selected_variants
+        config, dataset_cls, selected_variants, dist_context
     )
 
     dataset_jobs = []
     dataset_requests = []
 
     for variant in selected_variants:
-        print(f"[train] Loading data for variant: {variant}")
+        rank_zero_print(dist_context, f"[train] Loading data for variant: {variant}")
         for split in ("train", "val"):
             dataset_jobs.append((variant, split))
             dataset_requests.append(build_dataset_request(dataset_config, tokenizer, variant, split))
@@ -296,11 +335,27 @@ def build_data_loaders(config: dict, tokenizer, selected_variants: list[str]):
     if len(selected_variants) == 1:
         train_dataset = train_datasets[0]
         val_dataset = val_datasets[0]
-        print(f"[train] Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
+        rank_zero_print(
+            dist_context,
+            f"[train] Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}",
+        )
+        train_sampler = None
+        train_shuffle = True
+        if dist_context.is_distributed:
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=dist_context.world_size,
+                rank=dist_context.rank,
+                shuffle=True,
+                seed=int(config.get("sampling_seed", 0)),
+                drop_last=False,
+            )
+            train_shuffle = False
         train_loader = DataLoader(
             train_dataset,
             batch_size=config["batch_size"],
-            shuffle=True,
+            shuffle=train_shuffle,
+            sampler=train_sampler,
             collate_fn=collate_fn,
         )
         val_loader = DataLoader(
@@ -320,11 +375,21 @@ def build_data_loaders(config: dict, tokenizer, selected_variants: list[str]):
     combined_train = ConcatDataset(train_datasets)
     combined_val = ConcatDataset(val_datasets)
 
-    sampler = WeightedRandomSampler(
-        weights=weights,
-        num_samples=len(combined_train),
-        replacement=True,
-    )
+    if dist_context.is_distributed:
+        sampler = DistributedWeightedSampler(
+            weights=weights,
+            num_replicas=dist_context.world_size,
+            rank=dist_context.rank,
+            num_samples=len(combined_train),
+            replacement=True,
+            seed=int(config.get("sampling_seed", 0)),
+        )
+    else:
+        sampler = WeightedRandomSampler(
+            weights=weights,
+            num_samples=len(combined_train),
+            replacement=True,
+        )
     train_loader = DataLoader(
         combined_train,
         batch_size=config["batch_size"],
@@ -337,8 +402,37 @@ def build_data_loaders(config: dict, tokenizer, selected_variants: list[str]):
         shuffle=False,
         collate_fn=collate_fn,
     )
-    print(f"[train] Joint train samples: {len(combined_train)}, Val samples: {len(combined_val)}")
+    rank_zero_print(
+        dist_context,
+        f"[train] Joint train samples: {len(combined_train)}, Val samples: {len(combined_val)}",
+    )
     return train_loader, val_loader
+
+
+def build_data_loaders(
+    config: dict,
+    tokenizer,
+    selected_variants: list[str],
+    dist_context: DistributedContext,
+):
+    if dist_context.is_distributed and config.get("dataset_cache_dir"):
+        loaders = None
+        if dist_context.is_main_process:
+            loaders = _build_data_loaders_once(config, tokenizer, selected_variants, dist_context)
+        barrier(dist_context)
+        if not dist_context.is_main_process:
+            loaders = _build_data_loaders_once(config, tokenizer, selected_variants, dist_context)
+        barrier(dist_context)
+        if loaders is None:
+            raise RuntimeError("Failed to build distributed data loaders.")
+        return loaders
+
+    if dist_context.is_distributed:
+        rank_zero_print(
+            dist_context,
+            "[train] WARNING: dataset_cache_dir is not configured; each DDP rank will build datasets independently.",
+        )
+    return _build_data_loaders_once(config, tokenizer, selected_variants, dist_context)
 
 
 
@@ -494,11 +588,12 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
     return outputs.loss, None
 
 
-def _format_loss_extra(loss, loss_parts) -> str:
+def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -> str:
+    loss_value = loss.item() if display_loss is None else float(display_loss)
     if loss_parts is None:
-        return f"loss={loss.item():.4f}"
+        return f"loss={loss_value:.4f}"
     return (
-        f"loss={loss.item():.4f} action={loss_parts['action_loss']:.6f} "
+        f"loss={loss_value:.4f} action={loss_parts['action_loss']:.6f} "
         f"stop={loss_parts['stop_loss']:.4f}"
     )
 
@@ -538,9 +633,18 @@ def _run_validation(
     return val_loss / max(val_batches, 1)
 
 
-def _maybe_prompt_eval_step_interval(config: dict, train_loader) -> None:
+def _maybe_prompt_eval_step_interval(
+    config: dict,
+    train_loader,
+    dist_context: DistributedContext,
+) -> None:
+    if not dist_context.is_main_process:
+        config["eval_step_interval"] = broadcast_object(None, dist_context)
+        return
+
     eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
     if eval_step_interval != 0:
+        config["eval_step_interval"] = broadcast_object(eval_step_interval, dist_context)
         return
 
     batches_per_epoch = len(train_loader)
@@ -552,6 +656,7 @@ def _maybe_prompt_eval_step_interval(config: dict, train_loader) -> None:
     )
     if not sys.stdin.isatty():
         print("[train] Non-interactive stdin detected; keeping eval_step_interval disabled.")
+        config["eval_step_interval"] = broadcast_object(0, dist_context)
         return
 
     answer = input(
@@ -560,26 +665,42 @@ def _maybe_prompt_eval_step_interval(config: dict, train_loader) -> None:
     ).strip()
     if not answer or answer == "0":
         print("[train] Keeping eval_step_interval disabled.")
+        config["eval_step_interval"] = broadcast_object(0, dist_context)
         return
     try:
         selected_interval = int(answer)
     except ValueError:
         print(f"[train] Invalid eval_step_interval {answer!r}; keeping disabled.")
+        config["eval_step_interval"] = broadcast_object(0, dist_context)
         return
     if selected_interval == 0:
         print("[train] Keeping eval_step_interval disabled.")
+        config["eval_step_interval"] = broadcast_object(0, dist_context)
         return
     if selected_interval < 0:
         print(f"[train] eval_step_interval must be >= 0, got {selected_interval}; keeping disabled.")
+        config["eval_step_interval"] = broadcast_object(0, dist_context)
         return
 
     config["eval_step_interval"] = selected_interval
     print(f"[train] Using eval_step_interval={selected_interval}.")
+    config["eval_step_interval"] = broadcast_object(selected_interval, dist_context)
 
 
 
-def _run_training(config, model, train_loader, val_loader, device,
-                  selection_tag: str, progress_interval_seconds: float, tokenizer=None, eval_variants=None):
+def _run_training(
+    config,
+    model,
+    train_loader,
+    val_loader,
+    device,
+    selection_tag: str,
+    progress_interval_seconds: float,
+    dist_context: DistributedContext,
+    tokenizer=None,
+    eval_variants=None,
+):
+    raw_model = unwrap_model(model)
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=config["learning_rate"],
@@ -600,12 +721,18 @@ def _run_training(config, model, train_loader, val_loader, device,
     if eval_step_interval < 0:
         raise ValueError(f"eval_step_interval must be >= 0, got {eval_step_interval}")
     next_step_eval_at = eval_step_interval if eval_step_interval > 0 else None
-    print(
+    global_effective_batch_size = (
+        int(config["batch_size"]) * gradient_accumulation_steps * dist_context.world_size
+    )
+    rank_zero_print(
+        dist_context,
         "[train] Optimizer setup: "
         f"gradient_accumulation_steps={gradient_accumulation_steps}, "
         f"updates_per_epoch={updates_per_epoch}, total_updates={total_training_steps}, "
         f"learning_rate={config['learning_rate']}, "
-        f"eval_step_interval={eval_step_interval}"
+        f"eval_step_interval={eval_step_interval}, "
+        f"parallel_backend={dist_context.backend}, world_size={dist_context.world_size}, "
+        f"global_effective_batch_size={global_effective_batch_size}"
     )
     action_token_mode = get_action_token_mode(config)
     bin_token_ids = None
@@ -634,9 +761,20 @@ def _run_training(config, model, train_loader, val_loader, device,
     }
     should_run_eval = bool(config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants)
     for epoch in range(1, num_epochs + 1):
-        with FileProgress(interval_seconds=progress_interval_seconds) as progress:
-            print(f"[train] Epoch {epoch}/{num_epochs} progress in file: {progress.path.resolve()}")
+        sampler = getattr(train_loader, "sampler", None)
+        if hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch)
+
+        progress_context = (
+            FileProgress(interval_seconds=progress_interval_seconds)
+            if dist_context.is_main_process
+            else contextlib.nullcontext(None)
+        )
+        with progress_context as progress:
+            if progress is not None:
+                print(f"[train] Epoch {epoch}/{num_epochs} progress in file: {progress.path.resolve()}")
             model.train()
+            FastLanguageModel.for_training(raw_model)
             total_loss = 0.0
             num_batches = 0
             epoch_optimizer_step = 0
@@ -647,8 +785,14 @@ def _run_training(config, model, train_loader, val_loader, device,
             for step, batch in enumerate(train_loader, start=1):
                 global_batch_step += 1
                 loss, loss_parts = _compute_batch_loss(model, batch, device, loss_context)
-                (loss / gradient_accumulation_steps).backward()
                 should_step = step % gradient_accumulation_steps == 0 or step == train_total
+                sync_context = (
+                    model.no_sync()
+                    if dist_context.is_distributed and hasattr(model, "no_sync") and not should_step
+                    else contextlib.nullcontext()
+                )
+                with sync_context:
+                    (loss / gradient_accumulation_steps).backward()
                 if should_step:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
@@ -656,21 +800,23 @@ def _run_training(config, model, train_loader, val_loader, device,
                     optimizer_step += 1
                     epoch_optimizer_step += 1
 
-                total_loss += loss.item()
+                loss_value = reduce_mean(float(loss.detach().item()), dist_context, device)
+                total_loss += loss_value
                 num_batches += 1
                 accum_step = ((step - 1) % gradient_accumulation_steps) + 1
-                loss_extra = _format_loss_extra(loss, loss_parts)
+                loss_extra = _format_loss_extra(loss, loss_parts, display_loss=loss_value)
                 loss_extra += (
                     f" lr={config['learning_rate']:.2e} opt_step={epoch_optimizer_step}/{updates_per_epoch} "
                     f"batch_step={global_batch_step} accum={accum_step}/{gradient_accumulation_steps}"
                 )
-                progress.update(
-                    train_desc,
-                    step,
-                    train_total,
-                    train_start,
-                    extra=loss_extra,
-                )
+                if progress is not None:
+                    progress.update(
+                        train_desc,
+                        step,
+                        train_total,
+                        train_start,
+                        extra=loss_extra,
+                    )
 
                 if (
                     should_step
@@ -681,89 +827,98 @@ def _run_training(config, model, train_loader, val_loader, device,
                     while next_step_eval_at <= global_batch_step:
                         next_step_eval_at += eval_step_interval
                     if step == train_total:
-                        print(
+                        rank_zero_print(
+                            dist_context,
                             f"[step {global_batch_step}] step eval skipped because it coincides "
                             f"with epoch {epoch} end; epoch eval will run instead."
                         )
                         continue
 
                     step_train_loss = total_loss / max(num_batches, 1)
-                    step_val_loss = _run_validation(
-                        model,
-                        val_loader,
-                        device,
-                        loss_context,
-                        progress,
-                        desc=f"Step {global_batch_step} [val]",
-                        warning_label=f"step {global_batch_step}",
-                    )
-                    print(
-                        f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
-                        f"val_loss={_format_loss_value(step_val_loss)}  "
-                        f"optimizer_step={optimizer_step}"
-                    )
                     step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
-                    _save_checkpoint(config, model, tokenizer, step_ckpt_dir)
-                    if should_run_eval:
-                        _run_eval(
-                            config,
-                            model,
-                            tokenizer,
+                    if dist_context.is_main_process:
+                        step_val_loss = _run_validation(
+                            raw_model,
+                            val_loader,
                             device,
-                            selection_tag,
-                            eval_variants,
-                            eval_type="step",
-                            train_loss=step_train_loss,
-                            val_loss=step_val_loss,
-                            checkpoint_dir=step_ckpt_dir,
-                            epoch=epoch,
-                            batch_step=global_batch_step,
-                            optimizer_step=optimizer_step,
-                            scheduled_step=scheduled_step,
+                            loss_context,
+                            progress,
+                            desc=f"Step {global_batch_step} [val]",
+                            warning_label=f"step {global_batch_step}",
                         )
-                    else:
-                        model.train()
+                        print(
+                            f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
+                            f"val_loss={_format_loss_value(step_val_loss)}  "
+                            f"optimizer_step={optimizer_step}"
+                        )
+                        _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
+                        if should_run_eval:
+                            _run_eval(
+                                config,
+                                raw_model,
+                                tokenizer,
+                                device,
+                                selection_tag,
+                                eval_variants,
+                                eval_type="step",
+                                train_loss=step_train_loss,
+                                val_loss=step_val_loss,
+                                checkpoint_dir=step_ckpt_dir,
+                                epoch=epoch,
+                                batch_step=global_batch_step,
+                                optimizer_step=optimizer_step,
+                                scheduled_step=scheduled_step,
+                            )
+                    barrier(dist_context)
+                    model.train()
+                    FastLanguageModel.for_training(raw_model)
 
             train_loss = total_loss / max(num_batches, 1)
 
-            val_loss = _run_validation(
-                model,
-                val_loader,
-                device,
-                loss_context,
-                progress,
-                desc=f"Epoch {epoch}/{num_epochs} [val]",
-                warning_label=f"epoch {epoch}/{num_epochs}",
-            )
+            val_loss = math.nan
+            if dist_context.is_main_process:
+                val_loss = _run_validation(
+                    raw_model,
+                    val_loader,
+                    device,
+                    loss_context,
+                    progress,
+                    desc=f"Epoch {epoch}/{num_epochs} [val]",
+                    warning_label=f"epoch {epoch}/{num_epochs}",
+                )
 
-        print(
-            f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  "
-            f"val_loss={_format_loss_value(val_loss)}"
-        )
+        if dist_context.is_main_process:
+            print(
+                f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  "
+                f"val_loss={_format_loss_value(val_loss)}"
+            )
 
         epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
-        _save_checkpoint(config, model, tokenizer, epoch_ckpt_dir)
-        if should_run_eval:
-            _run_eval(
-                config,
-                model,
-                tokenizer,
-                device,
-                selection_tag,
-                eval_variants,
-                eval_type="epoch",
-                train_loss=train_loss,
-                val_loss=val_loss,
-                checkpoint_dir=epoch_ckpt_dir,
-                epoch=epoch,
-                optimizer_step=optimizer_step,
-            )
-        else:
-            model.train()
+        if dist_context.is_main_process:
+            _save_checkpoint(config, raw_model, tokenizer, epoch_ckpt_dir)
+            if should_run_eval:
+                _run_eval(
+                    config,
+                    raw_model,
+                    tokenizer,
+                    device,
+                    selection_tag,
+                    eval_variants,
+                    eval_type="epoch",
+                    train_loss=train_loss,
+                    val_loss=val_loss,
+                    checkpoint_dir=epoch_ckpt_dir,
+                    epoch=epoch,
+                    optimizer_step=optimizer_step,
+                )
+        barrier(dist_context)
+        model.train()
+        FastLanguageModel.for_training(raw_model)
 
 
 
 def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
+    model = unwrap_model(model)
     os.makedirs(checkpoint_dir, exist_ok=True)
     model.save_pretrained(checkpoint_dir)
     tokenizer.save_pretrained(checkpoint_dir)
@@ -790,13 +945,19 @@ def train_with_selection(
     model,
     tokenizer,
     device: torch.device,
+    dist_context: DistributedContext,
 ):
-    print(f"[train] Resolved train variants: {train_selection.selected_variants}")
-    print(f"[train] Resolved train tag: {train_selection.selection_tag}")
-    print(f"[train] Resolved eval variants: {eval_selection.selected_variants}")
+    rank_zero_print(dist_context, f"[train] Resolved train variants: {train_selection.selected_variants}")
+    rank_zero_print(dist_context, f"[train] Resolved train tag: {train_selection.selection_tag}")
+    rank_zero_print(dist_context, f"[train] Resolved eval variants: {eval_selection.selected_variants}")
 
-    train_loader, val_loader = build_data_loaders(config, tokenizer, train_selection.selected_variants)
-    _maybe_prompt_eval_step_interval(config, train_loader)
+    train_loader, val_loader = build_data_loaders(
+        config,
+        tokenizer,
+        train_selection.selected_variants,
+        dist_context,
+    )
+    _maybe_prompt_eval_step_interval(config, train_loader, dist_context)
     progress_interval = float(config.get("progress_interval_seconds", 5.0))
     _run_training(
         config,
@@ -806,12 +967,15 @@ def train_with_selection(
         device,
         selection_tag=train_selection.selection_tag,
         progress_interval_seconds=progress_interval,
+        dist_context=dist_context,
         tokenizer=tokenizer,
         eval_variants=eval_selection.selected_variants,
     )
 
     checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
-    _save_checkpoint(config, model, tokenizer, checkpoint_dir)
+    if dist_context.is_main_process:
+        _save_checkpoint(config, unwrap_model(model), tokenizer, checkpoint_dir)
+    barrier(dist_context)
 
 
 
@@ -819,30 +983,69 @@ def main():
     args = parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
-    if "episode_keep_ratio" in config:
-        raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
+    parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
+    dist_context = init_distributed_context(config, parallel_backend)
+    try:
+        if "episode_keep_ratio" in config:
+            raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
 
-    experiment_id = ensure_experiment_id(config)
-    normalize_prompt_config(config)
-    available_variants = get_available_variants(config["env_family"])
-    train_selection = resolve_train_selection(config, available_variants)
-    eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)
+        if dist_context.is_main_process:
+            experiment_id = ensure_experiment_id(config)
+        else:
+            experiment_id = config.get("experiment_id")
+        experiment_id = broadcast_object(experiment_id, dist_context)
+        config["experiment_id"] = experiment_id
 
-    config["train_varients"] = train_selection.configured_variants
-    config.pop("variants", None)
-    config["resolved_train_variants"] = train_selection.selected_variants
-    config["train_selection_tag"] = train_selection.selection_tag
-    config["resolved_eval_mode"] = eval_selection.mode
-    config["resolved_eval_variants"] = eval_selection.selected_variants
+        normalize_prompt_config(config)
+        available_variants = get_available_variants(config["env_family"])
+        train_selection = resolve_train_selection(config, available_variants)
+        eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[train] Using device: {device}")
-    print(f"[train] Experiment ID: {experiment_id}")
+        config["train_varients"] = train_selection.configured_variants
+        config.pop("variants", None)
+        config["resolved_train_variants"] = train_selection.selected_variants
+        config["train_selection_tag"] = train_selection.selection_tag
+        config["resolved_eval_mode"] = eval_selection.mode
+        config["resolved_eval_variants"] = eval_selection.selected_variants
+        config["world_size"] = dist_context.world_size
+        config["global_effective_batch_size"] = (
+            int(config["batch_size"])
+            * int(config.get("gradient_accumulation_steps", 1))
+            * dist_context.world_size
+        )
 
-    model, tokenizer = load_model_and_tokenizer(config)
-    model.to(device)
+        device = dist_context.device
+        rank_zero_print(dist_context, f"[train] Using device: {device}")
+        rank_zero_print(dist_context, f"[train] Experiment ID: {experiment_id}")
+        rank_zero_print(
+            dist_context,
+            "[train] Parallel setup: "
+            f"backend={dist_context.backend}, world_size={dist_context.world_size}, "
+            f"rank={dist_context.rank}, local_rank={dist_context.local_rank}",
+        )
 
-    train_with_selection(config, train_selection, eval_selection, model, tokenizer, device)
+        model, tokenizer = load_model_and_tokenizer(config)
+        model.to(device)
+
+        if dist_context.is_distributed:
+            model = DistributedDataParallel(
+                model,
+                device_ids=[dist_context.local_rank],
+                output_device=dist_context.local_rank,
+                find_unused_parameters=_as_bool(config.get("ddp_find_unused_parameters", False)),
+            )
+
+        train_with_selection(
+            config,
+            train_selection,
+            eval_selection,
+            model,
+            tokenizer,
+            device,
+            dist_context,
+        )
+    finally:
+        cleanup_distributed(dist_context)
 
 
 if __name__ == "__main__":

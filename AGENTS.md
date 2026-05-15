@@ -20,6 +20,7 @@ Stack:
 
 Training:
 - `micromamba run -n llm_offline python train.py --config config.yaml`
+- DDP single-node multi-GPU: `micromamba run -n llm_offline torchrun --standalone --nproc_per_node=<num_gpus> train.py --config config.yaml --parallel_backend ddp`
 - Training progress is written to per-epoch `progress/<uuid>.txt` files; `train.py` prints each epoch's path, prints the final progress line and deletes that epoch file on successful epoch completion, and leaves it behind on failure.
 
 Evaluation:
@@ -39,6 +40,8 @@ Key files:
 - `data/<env_family>/formatting.py`: `format_obs`, `format_action`, `parse_action`, `validate_action`
 - `model/policy.py`: load base model and LoRA adapters
 - `utils/action_bins.py`: action-bin display/model token codec, token selection, parsing helpers, and Gaussian bin loss
+- `utils/distributed.py`: single/DDP process context, rank0 helpers, barriers, loss reduction, DDP unwrap
+- `utils/distributed_sampler.py`: DDP-compatible weighted sampler for multi-variant training
 - `utils/prompt_loader.py`: load shared prompt templates for an environment family
 - `utils/variant_selection.py`: resolve `single | all | except` plus variant lists into concrete training/eval sets
 - `prompts/<env_family>/<prompt_name>.txt`: shared prompt templates for that family; the filename stem is the prompt name
@@ -87,7 +90,9 @@ To add a new environment family:
   - If `eval_mode` is omitted, training-time eval follows the resolved training selection.
   - `eval_variants` also uses list semantics; under `except` it is an exclusion list.
 - Multi-variant training, including `all` and `except`, uses weighted sampling by variant sample count. Optional `balance_variant_episode_count: true` first equalizes the sampled episode pool size across selected variants to the smallest per-variant target.
-- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, which prompt templates are used for dataset construction via `prompt_templete_index`, action encoding via `action_token_mode` / `action_num_bins` / `new_token` / `action_bin_min` / `action_bin_max` / `action_soft_label_sigma` / `action_soft_label_radius`, rollout action sampling via `action_sampling` / `action_temperature` / `action_top_p` / `action_top_k`, offline episode sampling via `episode_keep_num` / `balance_variant_episode_count` / `sampling_seed`, history prompt settings via `history_num` / `history_stride`, training-time eval cadence via `eval_step_interval`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
+- `config.yaml` controls the base model via `model_name`, whether Unsloth uses 4-bit loading via `load_in_4bit`, parallel training via `parallel_backend` / `ddp_find_unused_parameters` / `distributed_timeout_seconds`, which prompt templates are used for dataset construction via `prompt_templete_index`, action encoding via `action_token_mode` / `action_num_bins` / `new_token` / `action_bin_min` / `action_bin_max` / `action_soft_label_sigma` / `action_soft_label_radius`, rollout action sampling via `action_sampling` / `action_temperature` / `action_top_p` / `action_top_k`, offline episode sampling via `episode_keep_num` / `balance_variant_episode_count` / `sampling_seed`, history prompt settings via `history_num` / `history_stride`, training-time eval cadence via `eval_step_interval`, eval step logging via `record_step_logs`, eval video recording via `record_video` / `record_all` / `video_episode_index` / `video_fps` / `video_format` / `mujoco_gl`, and the eval result root via `result_root`.
+- `parallel_backend: single` preserves the original single-GPU Unsloth path. `parallel_backend: ddp` must be launched with `torchrun`; `batch_size` is per-GPU micro-batch and global effective batch is `batch_size * gradient_accumulation_steps * world_size`.
+- In DDP, checkpoint saving, validation, training-time rollout eval, step logs, and videos are rank0-only. With `dataset_cache_dir`, rank0 builds tokenized caches before other ranks read them after a barrier.
 - Checkpoints are stored under `checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/`.
   - `selection_tag` is the single variant name, `all`, `all-<selected variants joined by +>`, or `except-<excluded variants joined by +>`.
 - Epoch checkpoints use `ep<N>`, step checkpoints use `step<N>`, and final checkpoints use `final`.
@@ -106,7 +111,7 @@ To add a new environment family:
 Do not implement:
 - Return-conditioning
 - Online RL components
-- Multi-GPU distributed training
+- Multi-node distributed training beyond the current single-node `torchrun`/DDP path
 
 ## Migrated Project Memory
 
