@@ -21,6 +21,7 @@ import yaml
 from data.registry import get_formatter
 from data.pointmaze.variants import POINTMAZE_VARIANTS, get_pointmaze_variant_type
 from model.policy import load_from_checkpoint
+from transformers import LogitsProcessor, LogitsProcessorList
 from utils.action_bins import (
     bin_to_continuous,
     get_action_bin_range,
@@ -76,6 +77,43 @@ ACTION_CONFIG_KEYS = (
     "action_loss_weight",
     "action_stop_loss_weight",
 )
+
+
+class _AllowedTokenIdsLogitsProcessor(LogitsProcessor):
+    """Mask generation logits so only the provided token IDs remain valid."""
+
+    def __init__(self, allowed_token_ids):
+        token_ids = sorted({int(token_id) for token_id in allowed_token_ids})
+        if not token_ids:
+            raise ValueError("allowed_token_ids must contain at least one token ID")
+        self.allowed_token_ids = tuple(token_ids)
+
+    def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
+        allowed = torch.tensor(self.allowed_token_ids, device=scores.device, dtype=torch.long)
+        masked_scores = scores.new_full(scores.shape, -float("inf"))
+        masked_scores[:, allowed] = scores[:, allowed]
+        return masked_scores
+
+
+def _resolve_action_generation_config(config: dict) -> dict:
+    action_sampling = bool(config.get("action_sampling", False))
+    action_temperature = float(config.get("action_temperature", 1.0))
+    action_top_p = float(config.get("action_top_p", 1.0))
+    action_top_k = int(config.get("action_top_k", 0))
+
+    if action_temperature <= 0:
+        raise ValueError(f"action_temperature must be > 0, got {action_temperature}")
+    if action_top_p <= 0 or action_top_p > 1:
+        raise ValueError(f"action_top_p must satisfy 0 < action_top_p <= 1, got {action_top_p}")
+    if action_top_k < 0:
+        raise ValueError(f"action_top_k must be >= 0, got {action_top_k}")
+
+    return {
+        "action_sampling": action_sampling,
+        "action_temperature": action_temperature,
+        "action_top_p": action_top_p,
+        "action_top_k": action_top_k,
+    }
 
 
 def _load_checkpoint_action_config(model_path: str) -> dict:
@@ -236,6 +274,11 @@ def generate_action(
     skip_special_tokens: bool = True,
     collect_scores: bool = False,
     action_codec=None,
+    action_sampling: bool = False,
+    action_temperature: float = 1.0,
+    action_top_p: float = 1.0,
+    action_top_k: int = 0,
+    allowed_token_ids=None,
 ) -> tuple[str, list[int], tuple[torch.Tensor, ...] | None]:
     """Run inference and return display text plus generated action token IDs."""
     encoded = tokenizer(
@@ -251,8 +294,20 @@ def generate_action(
     generate_kwargs = {
         "attention_mask": attention_mask,
         "max_new_tokens": max_new_tokens,
-        "do_sample": False,
+        "do_sample": action_sampling,
     }
+    if action_sampling:
+        generate_kwargs.update(
+            {
+                "temperature": action_temperature,
+                "top_p": action_top_p,
+                "top_k": action_top_k,
+            }
+        )
+    if allowed_token_ids is not None:
+        generate_kwargs["logits_processor"] = LogitsProcessorList(
+            [_AllowedTokenIdsLogitsProcessor(allowed_token_ids)]
+        )
     if eos_token_id is None:
         warnings.warn(
             "Tokenizer/model does not define eos_token_id; generation will stop only at max_new_tokens.",
@@ -421,7 +476,8 @@ def evaluate_variant(
     video_fps = int(config.get("video_fps", 20))
     record_step_logs = bool(config.get("record_step_logs", True))
     action_token_mode = get_action_token_mode(config)
-    collect_bin_probabilities = record_step_logs and action_token_mode == "gaussian_bin"
+    action_generation_config = _resolve_action_generation_config(config)
+    collect_bin_probabilities = record_step_logs and action_token_mode != "text"
     action_codec = None
     if action_token_mode != "text":
         action_codec = get_action_bin_codec(tokenizer, config, ensure_registered=True)
@@ -436,6 +492,10 @@ def evaluate_variant(
             env_kwargs["render_mode"] = "rgb_array"
 
     env = gym.make(env_id, **env_kwargs)
+    action_dim = int(env.action_space.shape[0])
+    constrain_action_tokens = action_generation_config["action_sampling"] and action_token_mode != "text"
+    generation_max_new_tokens = action_dim if constrain_action_tokens else 20
+    allowed_token_ids = action_codec.model_token_ids if constrain_action_tokens else None
 
     episode_returns = []
     episode_successes = []
@@ -501,6 +561,9 @@ def evaluate_variant(
                     skip_special_tokens=action_token_mode == "text",
                     collect_scores=collect_bin_probabilities,
                     action_codec=action_codec,
+                    max_new_tokens=generation_max_new_tokens,
+                    allowed_token_ids=allowed_token_ids,
+                    **action_generation_config,
                 )
                 total_action_time += time.perf_counter() - t0
                 total_actions += 1
@@ -509,7 +572,7 @@ def evaluate_variant(
                     distributions = _collect_action_bin_probabilities(
                         generation_scores,
                         action_codec,
-                        action_dim=env.action_space.shape[0],
+                        action_dim=action_dim,
                     )
                     probability_log = _format_action_bin_probability_log(distributions, config, action_codec)
                     generated_probability_logs.append(
@@ -520,7 +583,7 @@ def evaluate_variant(
                     generated,
                     generated_token_ids,
                     config,
-                    action_dim=env.action_space.shape[0],
+                    action_dim=action_dim,
                     action_codec=action_codec,
                 )
                 if success and formatter.validate_action(parsed_action):
