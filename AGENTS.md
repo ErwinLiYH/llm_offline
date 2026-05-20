@@ -26,6 +26,10 @@ Training:
 Evaluation:
 - `micromamba run -n llm_offline python evaluate.py --config eval.yaml`
 
+Official normalized scoring:
+- `micromamba run -n llm_offline python score.py --config score.yaml`
+- `score.py` reads all run settings from `score.yaml`; the only supported CLI override is `--config`.
+
 Prefer `micromamba run -n llm_offline` for Python commands in this repo.
 
 ## Architecture
@@ -33,6 +37,7 @@ Prefer `micromamba run -n llm_offline` for Python commands in this repo.
 Key files:
 - `train.py`: entry point; reads `config.yaml`
 - `evaluate.py`: entry point; reads `eval.yaml`
+- `score.py`: official-style PointMaze normalized score entry point; reads `score.yaml`
 - `data/registry.py`: routes `env_family` to dataset + formatter
 - `data/base_dataset.py`: abstract dataset interface
 - `data/<env_family>/variants.py`: variant metadata
@@ -42,6 +47,8 @@ Key files:
 - `utils/action_bins.py`: action-bin display/model token codec, token selection, parsing helpers, and Gaussian bin loss
 - `utils/distributed.py`: single/DDP process context, rank0 helpers, barriers, loss reduction, DDP unwrap
 - `utils/distributed_sampler.py`: DDP-compatible weighted sampler for multi-variant training
+- `utils/eval_rollout.py`: shared prompt rendering, history sampling, model action generation, parse retry, fallback, and action-bin eval logging helpers
+- `utils/pointmaze_score.py`: PointMaze score env specs, official remote reference scores, local reference validation, env fingerprints, and normalized score helpers
 - `utils/prompt_loader.py`: load shared prompt templates for an environment family
 - `utils/variant_selection.py`: resolve `single | all | except` plus variant lists into concrete training/eval sets
 - `prompts/<env_family>/<prompt_name>.txt`: shared prompt templates for that family; the filename stem is the prompt name
@@ -70,6 +77,14 @@ To add a new environment family:
 - Shared prompt templates render the environment/task text only; final training/eval token sequences are built through the model tokenizer's native `chat_template`, not by plain-text concatenation.
 - Qwen3.5 models loaded through Unsloth may return a `Qwen3VLProcessor` instead of a plain tokenizer. The outer processor does not expose tokenizer mutation methods such as `add_special_tokens`; unwrap `processor.tokenizer` first. In this repo, use `utils.action_bins.get_tokenizer_backend(...)` before adding action tokens, resizing embeddings, selecting reused action token ids, or looking up action token ids.
 - `evaluate.py` uses `registry.get_formatter(env_family)` for text-mode `parse_action` and all-mode `validate_action`; bin-mode parsing is centralized in `utils.action_bins.ActionBinCodec` and uses generated token ids.
+- `evaluate.py` and training-time eval remain fast rollout/success-rate style evaluation. Do not retrofit official normalized score into their result schema; use `score.py` instead.
+- `score.py` is currently PointMaze-only and supports `mode: score | reference` in `score.yaml`. It intentionally takes run settings from YAML only; apart from `--config`, do not add CLI overrides unless the project policy changes.
+- `score.py mode: score` writes one `result.json` per variant plus run-level `summary.json`; the merged runtime score config is saved as `score_config.yaml` in the run directory.
+- `score.py mode: reference` is for local/custom PointMaze variants. It generates `local_references/pointmaze/<variant>.json` by default, using a seeded random policy for `ref_min_score` and Farama `WaypointController(..., maze_solver="QIteration")` without action noise for `ref_max_score`.
+- Remote PointMaze scoring uses static Minari/D4RL reference scores from `utils.pointmaze_score.REMOTE_POINTMAZE_REFERENCE_SCORES`; scoring must not download Minari datasets just to read reference scores.
+- Remote PointMaze score envs use Farama single-goal eval maps, force `continuing_task: true` and `reset_target: false`, and keep official horizons: open/umaze 300, medium 600, large 800. Dense variants reuse the matching map shape with dense env IDs.
+- Local PointMaze score envs require explicit `local_eval_maps.<variant>.goal_cell` in `score.yaml`; the 0-based row/col cell must be free. The env fingerprint includes env ID, maze map, reward type, continuing/reset flags, horizon, and goal cell.
+- Local `score` mode refuses to score if the reference JSON is missing or its `env_fingerprint` does not match the current score env spec.
 - On parse failure or invalid output, evaluation retries up to `parse_retry_limit`, then falls back to a zero vector and logs fallback metrics.
 - `format_obs(obs, meta)` returns a dict of prompt render variables. It must contain `obs_text`, and may add family-specific fields.
 - PointMaze also implements `format_history(history_entries, meta)`, which renders optional history prompt blocks from sampled past transitions.
@@ -103,6 +118,7 @@ To add a new environment family:
 - Standalone eval results live under `<result_root>/<model_slug>/train=<env_family>-<selection_tag>/exp=<experiment_id>/standalone_<eval_uuid>/eval=<env_family>-<variant>/result.json`; the merged runtime eval config is also saved at `.../standalone_<eval_uuid>/eval_config.yaml`.
 - `eval.yaml` uses the same list-based variant selection semantics as training via `eval_mode` + `variants`; legacy `variant: <name|all>` is still accepted for compatibility.
 - `eval.yaml` has its own `history_num` / `history_stride` for standalone eval; training-time eval reuses the training config's history settings.
+- `score.yaml` uses the same list-based variant selection semantics via `eval_mode` + `variants`, plus `mode`, `model_path`, `num_episodes`, `num_reference_episodes`, `assume_yes`, and local reference settings. `assume_yes: true` is the score-mode equivalent of standalone eval's `-y/--yes` prompt-warning confirmation.
 - Eval step logs are written by default under each `eval=<...>/episode_<n>/steps/`, using the same `Prompt:` / `Action:` text layout as `inspect_jsonl_record.py` plus executed-action metadata. In bin modes they display action bins as `<act_XX>` even when the model internally generated reused tokenizer IDs; `bin` and `gaussian_bin` also include per-dimension action-bin probability distributions when `record_step_logs: true`.
 - Eval videos are stored next to the step-log directory inside each `episode_<n>/`; `video_episode_index` accepts an int or list, and `record_all: true` records every episode. Default output format is `gif`, while `mp4` requires an ffmpeg backend. Headless MuJoCo recording should use `mujoco_gl: egl`.
 

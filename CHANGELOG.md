@@ -683,3 +683,37 @@ type: project
 - checkpoint、validation、训练期 rollout eval、step logs 和视频只由 rank0 执行，其他 rank 在 barrier 等待
 - DDP 保存时 unwrap 底层 Unsloth/PEFT 模型，保持 checkpoint 目录仍可被现有 `evaluate.py` 读取
 - 项目内文档同步记录单节点 4 GPU GH200/H100 的 `torchrun --standalone --nproc_per_node=4` 用法，以及保持或放大全局 batch 的配置建议
+
+---
+
+## official normalized score entry（2026-05-20）
+
+**新增独立 `score.py`：**
+- `evaluate.py` 和训练期 eval 继续保持原有快速 success-rate 风格评估语义，不把 official normalized score 混入现有结果 schema
+- 新增 `score.py` / `score.yaml`，专门用于 PointMaze official-style normalized score
+- `mode: score` 运行训练 checkpoint，在每个 variant 下写 `result.json`，并在 run 根目录写 `summary.json`
+- `mode: reference` 只用于 local/custom PointMaze，生成本地归一化参考分数 JSON，供后续 `score` 模式校验和使用
+
+**配置入口统一到 YAML：**
+- `score.py` 命令行只保留 `--config`，不再接受 `--mode`、`--variants`、`--num-episodes`、`--model-path` 等运行参数覆盖
+- 自动确认强 prompt 警告从 `-y/--yes` 改为配置项 `assume_yes: true|false`
+- 每次运行会把实际使用的 score 配置保存到结果目录的 `score_config.yaml`
+
+**PointMaze official-style env 与 reference：**
+- remote D4RL/Minari variants 使用 Farama PointMaze single-goal eval maps，强制 `continuing_task: true`、`reset_target: false`
+- remote variants 使用静态 Minari metadata reference score 表，不在 scoring 时下载数据集读取 reference
+- open/umaze 保持 official horizon 300，medium 600，large 800；dense variants 复用对应 map shape 与 dense env id
+- local variants 要在 `local_eval_maps.<variant>.goal_cell` 显式指定 0-based goal cell；该 cell 必须是 free cell
+- local reference 文件包含 `ref_min_score`、`ref_max_score`、seed、episode count、horizon、goal cell、reward type、env fingerprint 和 method metadata
+- local `score` 模式会拒绝缺失 reference 或 env fingerprint 不匹配的 variant，避免用错参考分数
+
+**共享 rollout 工具：**
+- 新增 `utils/eval_rollout.py`，集中模型动作生成、prompt 渲染、history 采样、parse retry、fallback、action-bin token 解码与概率日志格式化
+- `evaluate.py` 改为复用共享 rollout helper，但输出字段和评估语义保持不变
+- 新增 `utils/pointmaze_score.py`，集中 normalized score 公式、remote reference lookup、official score env spec、本地 reference 校验和 env fingerprint 逻辑
+
+**验证：**
+- 新增 `tests/test_score_utils.py`，覆盖 normalized score 公式、remote reference lookup、official env horizon/kwargs、本地 goal-cell 校验、reference 缺失和 fingerprint mismatch
+- 已通过 `python -m py_compile score.py evaluate.py utils/eval_rollout.py utils/pointmaze_score.py tests/test_score_utils.py`
+- 已通过 `python -m unittest discover -s tests -p 'test_score_utils.py'`
+- 已用 `/tmp` 输出路径完成 local reference 1 episode smoke 和 remote `open` 1 episode score smoke

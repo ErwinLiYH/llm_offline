@@ -1,19 +1,29 @@
-model_path: checkpoints/pointmaze/Qwen3-0.6B/single/large/c2916c56/final
-# if model_path is set to checkpoints/<env_family>/<model_slug>/<train_mode>/<variant>/<experiment_id>/<epoch id>, result paths will be more meaningful
+model_path: checkpoints/pointmaze/Qwen3.5-0.8B/except-large-dense+local-layout-07+medium-dense+open-dense+umaze-dense/d405704e/ep3
+# if model_path is set to checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/<epoch id>, result paths will be more meaningful
 # model_path: Qwen/Qwen3-0.6B
-load_in_4bit: true      # optional override; when omitted, checkpoint eval uses saved training config
+load_in_4bit: false      # optional override; when omitted, checkpoint eval uses saved training config
+result_root: resultsV2     # root directory for standalone eval result outputs
 env_family: pointmaze
+history_num: 0           # number of sampled executed transitions to include in each eval prompt; 0 disables history
+history_stride: 2        # sample every n past executed transitions when building history
 eval_mode: single       # single | all | except
-variants: [large]       # single: exactly one; except: excluded variants; all: leave empty
-num_episodes: 1
+variants: local-layout-07       # single: exactly one; all: selected variants or omit for all; except: excluded variants
+num_episodes: 20
 parse_retry_limit: 3
+record_step_logs: true   # whether to save one txt per eval step under the eval result artifacts directory
+# prompt_templete_index: bin  # optional standalone eval prompt override; default = checkpoint's first training prompt
+action_sampling: false    # true = sample actions during rollout eval; false = greedy decoding
+action_temperature: 0.7  # lower = closer to argmax; higher = more random
+action_top_p: 0.9        # nucleus sampling threshold when action_sampling=true
+action_top_k: 0          # 0 disables top-k filtering
 
 # Optional video recording settings
-# record_video: true      # uncomment to save one rollout file per evaluated variant
-# video_episode_index: 0   # which eval episode to record (0-based)
-# video_fps: 30
-# video_format: mp4        # gif works out of the box; mp4 requires ffmpeg backend support
-# mujoco_gl: egl           # headless MuJoCo recording backend on this machine
+record_video: true      # uncomment to save one rollout file per evaluated variant
+record_all: true        # whether to record all episodes (this wil override num_episodes)
+video_episode_index: 0   # which eval episode to record (0-based)
+video_fps: 30
+video_format: mp4        # gif works out of the box; mp4 requires ffmpeg backend support
+mujoco_gl: egl           # headless MuJoCo recording backend on this machine
 
 env_kwargs:
   continuing_task: false  # false = one goal per episode, terminated on success

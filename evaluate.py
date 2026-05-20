@@ -30,6 +30,12 @@ from utils.action_bins import (
     get_action_token_mode,
 )
 from utils.chat_template import build_generation_prompt
+from utils.eval_rollout import (
+    build_action_rollout_context,
+    generate_valid_action as rollout_generate_valid_action,
+    render_policy_prompt,
+    validate_history_config,
+)
 from utils.prompt_loader import load_named_templates, load_template_names, render_template
 from utils.record_format import format_eval_step_text
 from utils.variant_selection import get_available_variants, resolve_selection
@@ -565,12 +571,7 @@ def evaluate_variant(
         env_kwargs = {}
     num_episodes = config["num_episodes"]
     parse_retry_limit = config["parse_retry_limit"]
-    history_num = int(config.get("history_num", 0))
-    history_stride = int(config.get("history_stride", 1))
-    if history_num < 0:
-        raise ValueError(f"history_num must be >= 0, got {history_num}")
-    if history_stride < 1:
-        raise ValueError(f"history_stride must be >= 1, got {history_stride}")
+    history_num, history_stride = validate_history_config(config)
 
     env_kwargs.update(dict(config.get("env_kwargs") or {}))
     record_video = bool(config.get("record_video", False))
@@ -579,11 +580,7 @@ def evaluate_variant(
     video_fps = int(config.get("video_fps", 20))
     record_step_logs = bool(config.get("record_step_logs", True))
     action_token_mode = get_action_token_mode(config)
-    action_generation_config = _resolve_action_generation_config(config)
     collect_bin_probabilities = record_step_logs and action_token_mode != "text"
-    action_codec = None
-    if action_token_mode != "text":
-        action_codec = get_action_bin_codec(tokenizer, config, ensure_registered=True)
 
     if record_video:
         render_mode = env_kwargs.get("render_mode")
@@ -596,9 +593,12 @@ def evaluate_variant(
 
     env = gym.make(env_id, **env_kwargs)
     action_dim = int(env.action_space.shape[0])
-    constrain_action_tokens = action_generation_config["action_sampling"] and action_token_mode != "text"
-    generation_max_new_tokens = action_dim if constrain_action_tokens else 20
-    allowed_token_ids = action_codec.model_token_ids if constrain_action_tokens else None
+    action_context = build_action_rollout_context(
+        config=config,
+        tokenizer=tokenizer,
+        action_dim=action_dim,
+        collect_bin_probabilities=collect_bin_probabilities,
+    )
 
     episode_returns = []
     episode_successes = []
@@ -632,79 +632,39 @@ def evaluate_variant(
         truncated = False
 
         while not (terminated or truncated):
-            if history_num > 0:
-                sampled_history = []
-                hist_idx = len(history_buffer) - 1
-                while hist_idx >= 0 and len(sampled_history) < history_num:
-                    sampled_entry = dict(history_buffer[hist_idx])
-                    sampled_entry["steps_ago"] = len(history_buffer) - hist_idx
-                    sampled_history.append(sampled_entry)
-                    hist_idx -= history_stride
-                sampled_history.reverse()
-            else:
-                sampled_history = []
-            history_payload = formatter.format_history(sampled_history, meta["prompt_vars"])
-            obs_payload = formatter.format_obs(obs, meta["prompt_vars"])
-            prompt = render_template(template, meta["prompt_vars"], **obs_payload, **history_payload)
-
-            action = None
-            executed_action_text = None
-            generated_attempts = []
-            generated_probability_logs = []
-            attempt_count = 0
+            prompt = render_policy_prompt(
+                formatter=formatter,
+                template=template,
+                prompt_vars=meta["prompt_vars"],
+                obs=obs,
+                history_buffer=history_buffer,
+                history_num=history_num,
+                history_stride=history_stride,
+            )
             current_obs_vec = obs["observation"].astype(np.float32)
-            for _attempt in range(parse_retry_limit + 1):
-                attempt_count += 1
-                t0 = time.perf_counter()
-                generated, generated_token_ids, generation_scores = generate_action(
-                    model,
-                    tokenizer,
-                    prompt,
-                    device,
-                    skip_special_tokens=action_token_mode == "text",
-                    collect_scores=collect_bin_probabilities,
-                    action_codec=action_codec,
-                    max_new_tokens=generation_max_new_tokens,
-                    allowed_token_ids=allowed_token_ids,
-                    **action_generation_config,
-                )
-                total_action_time += time.perf_counter() - t0
-                total_actions += 1
-                generated_attempts.append(generated)
-                if collect_bin_probabilities:
-                    distributions = _collect_action_bin_probabilities(
-                        generation_scores,
-                        action_codec,
-                        action_dim=action_dim,
-                    )
-                    probability_log = _format_action_bin_probability_log(distributions, config, action_codec)
-                    generated_probability_logs.append(
-                        f"[Attempt {attempt_count}]\n{probability_log}" if probability_log else f"[Attempt {attempt_count}]"
-                    )
-                parsed_action, success = _parse_action_for_mode(
-                    formatter,
-                    generated,
-                    generated_token_ids,
-                    config,
-                    action_dim=action_dim,
-                    action_codec=action_codec,
-                )
-                if success and formatter.validate_action(parsed_action):
-                    action = np.clip(parsed_action, -1.0, 1.0)
-                    executed_action_text = _format_action_for_mode(formatter, action, config, action_codec)
-                    break
-                total_parse_failures += 1
-
-            if action is None:
-                action = np.zeros(env.action_space.shape, dtype=np.float32)
-                executed_action_text = _format_action_for_mode(formatter, action, config, action_codec)
-                total_fallbacks += 1
-                parse_status = "fallback"
-            else:
-                parse_status = "success"
+            action_result = rollout_generate_valid_action(
+                model=model,
+                tokenizer=tokenizer,
+                device=device,
+                formatter=formatter,
+                prompt=prompt,
+                config=config,
+                action_context=action_context,
+                action_shape=env.action_space.shape,
+                action_dim=action_dim,
+                parse_retry_limit=parse_retry_limit,
+            )
+            action = action_result.action
+            executed_action_text = action_result.executed_action_text
+            total_action_time += action_result.action_time_seconds
+            total_actions += action_result.generation_count
+            total_parse_failures += action_result.parse_failures
+            total_fallbacks += action_result.fallback_count
+            parse_status = action_result.parse_status
+            attempt_count = action_result.attempt_count
 
             generated_text = "\n\n".join(
-                f"[Attempt {idx + 1}]\n{text}" for idx, text in enumerate(generated_attempts)
+                f"[Attempt {idx + 1}]\n{text}" for idx, text in enumerate(action_result.generated_attempts)
             )
 
             if record_step_logs and episode_dir is not None:
@@ -717,7 +677,9 @@ def evaluate_variant(
                     parse_status=parse_status,
                     attempt_count=attempt_count,
                     action_bin_probabilities=(
-                        "\n\n".join(generated_probability_logs) if generated_probability_logs else None
+                        "\n\n".join(action_result.generated_probability_logs)
+                        if action_result.generated_probability_logs
+                        else None
                     ),
                 )
 

@@ -374,8 +374,12 @@ dataset_cache/
 | except 模式排除 `large` 和 `large-dense` 后训练，并在 epoch 1 评估 medium | `results/Qwen3-0.6B/train=pointmaze-except-large+large-dense/exp=<experiment_id>/epoch_1/eval=pointmaze-medium/result.json` |
 | standalone 评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 | 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
+| official normalized score open | `score_results/score_<score_id>/score=pointmaze-open/result.json` |
+| local reference 分数生成 | `score_results/reference_<score_id>/score=pointmaze-local-layout-07/result.json`，并写入 `local_references/pointmaze/local-layout-07.json` |
 
 `evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step，如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存与评估。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。如果 step eval 与 epoch eval 落在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin` 和 `gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率与对应 token id。
+
+`score.py` 使用独立路径语义，不嵌入训练期/standalone eval 的 `eval=<...>` 目录。每次运行写入 `<result_root>/<mode>_<score_id>/`，其中每个变种写 `score=<env_family>-<variant>/result.json`，run 根目录写 `summary.json` 和实际使用的 `score_config.yaml`。
 
 **结果文件字段：**
 
@@ -424,11 +428,74 @@ env_kwargs:
 
 ---
 
+### Official normalized score
+
+`evaluate.py` 和训练期 eval 保持快速 rollout / success-rate 风格评估，不承担 official normalized score。PointMaze official-style 分数通过独立入口 `score.py` 计算：
+
+```bash
+python score.py --config score.yaml
+```
+
+`score.py` 的运行参数统一来自 `score.yaml`；命令行只保留 `--config` 用来选择配置文件，不使用 `--mode`、`--variants`、`--num-episodes` 等覆盖项。强 prompt 警告的自动确认由 `assume_yes: true` 控制。
+
+```yaml
+model_path: checkpoints/pointmaze/Qwen3-0.6B/<selection>/<experiment_id>/ep1
+result_root: score_results
+env_family: pointmaze
+mode: score              # score | reference
+eval_mode: single        # single | all | except
+variants: [open]
+num_episodes: 100
+num_reference_episodes: 100
+seed: 123
+parse_retry_limit: 3
+assume_yes: false
+prompt_templete_index: null
+history_num: 0
+history_stride: 1
+action_sampling: false
+action_temperature: 1.0
+action_top_p: 1.0
+action_top_k: 0
+local_reference_root: local_references/pointmaze
+local_eval_maps:
+  local-layout-07:
+    goal_cell: [7, 6]
+```
+
+`mode: score` 会加载 checkpoint 并对选中的 PointMaze variant 做 official-style rollout，输出字段包括 `mean_return`、`std_return`、`episode_returns`、`normalized_score`、`std_normalized_score`、`ref_min_score`、`ref_max_score`、`reference_source`、`score_env_spec`、`prompt_template_name`、parse failure 和 fallback 统计。
+
+normalized score 使用 D4RL 0-100 量纲：
+
+```text
+normalized_score = 100 * (mean_return - ref_min_score) / (ref_max_score - ref_min_score)
+std_normalized_score = 100 * std_return / abs(ref_max_score - ref_min_score)
+```
+
+remote D4RL/Minari PointMaze 变种使用 Farama single-goal eval map，强制 `continuing_task: true`、`reset_target: false`，并保留 official horizon：open/umaze 为 300，medium 为 600，large 为 800；dense 变种复用对应 map 形状与 dense env ID。remote reference score 是 `utils/pointmaze_score.py` 中的静态 Minari metadata 表，scoring 不下载数据集读取 reference。
+
+local/custom PointMaze 必须先运行 `mode: reference` 生成本地 reference：
+
+```yaml
+mode: reference
+eval_mode: single
+variants: [local-layout-07]
+num_reference_episodes: 100
+local_eval_maps:
+  local-layout-07:
+    goal_cell: [7, 6]   # 0-based row/col，必须是 free cell
+```
+
+reference 生成会用 seeded random policy 估计 `ref_min_score`，用 Farama `WaypointController(..., maze_solver="QIteration")` 且无动作噪声估计 `ref_max_score`。默认写入 `local_references/pointmaze/<variant>.json`，文件包含 reference 分数、seed、episode count、horizon、goal cell、reward type、env fingerprint 和 method metadata。后续 local `mode: score` 会校验 reference 文件存在且 env fingerprint 与当前 `score.yaml` 一致，不匹配时拒绝打分。
+
+---
+
 ### 代码结构
 
 ```
 project/
 ├── config.yaml
+├── score.yaml
 ├── prompts/
 │   └── <env_family>/            # 每个环境族一个子目录
 │       └── <prompt_name>.txt    # 共享 prompt 模板，文件名 stem 是 prompt 名
@@ -443,9 +510,15 @@ project/
 │   └── policy.py                # 模型加载（从 config 读取 model_name）、LoRA 设置
 ├── train.py                     # 训练入口，读取 config 决定训练模式
 ├── evaluate.py                  # Rollout 评估
+├── score.py                     # PointMaze official-style normalized score / local reference 入口
 ├── checkpoints/
 ├── results/
+├── score_results/
+├── local_references/
 └── utils/
+    ├── action_bins.py           # action-bin display/model token codec 与 gaussian-bin loss
+    ├── eval_rollout.py          # eval/score 共享 prompt、history、动作生成、parse retry、fallback 逻辑
+    ├── pointmaze_score.py       # PointMaze score env、reference、fingerprint 和 normalized score 逻辑
     └── prompt_loader.py         # 加载指定环境族的共享模板，返回列表
 ```
 
@@ -482,7 +555,8 @@ def validate_action(action) -> bool:
 5. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 6. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 7. **DDP 并行训练**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint、validation、训练期 rollout eval、step logs 和视频只由 rank0 写入
-8. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
+8. **Official normalized score**：`score.py` 复用 `utils/eval_rollout.py` 中的 prompt 渲染、history、模型动作生成、parse retry 和 fallback 逻辑，但结果 schema 与路径独立于 `evaluate.py`。remote PointMaze reference 使用静态 Minari metadata；local reference 使用显式 goal cell、固定 score env fingerprint 和本地 JSON 校验，避免在 goal/horizon/reward type 变动后误复用旧 reference
+9. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
 
 ---
 

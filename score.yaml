@@ -1,0 +1,27 @@
+model_path: checkpoints/...
+load_in_4bit: false
+result_root: score_results
+env_family: pointmaze
+mode: score              # score | reference
+eval_mode: all           # single | all | except
+variants: []             # same list semantics as eval.yaml
+num_episodes: 100
+num_reference_episodes: 100
+seed: 123
+parse_retry_limit: 3
+assume_yes: false        # true = continue through strong prompt warnings without interactive confirmation
+prompt_templete_index: null
+history_num: 0
+history_stride: 1
+action_sampling: false
+action_temperature: 1.0
+action_top_p: 1.0
+action_top_k: 0
+local_reference_root: local_references/pointmaze
+
+# Local/custom PointMaze score envs require an explicit fixed goal cell.
+# Cells are 0-based [row, col] in the variant maze_map and must be free.
+# Optional per-variant max_episode_steps overrides the local variant default.
+local_eval_maps:
+  local-layout-07:
+    goal_cell: [7, 6]
