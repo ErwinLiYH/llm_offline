@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Offline Migration Packager"
+  short_description: "Package llm_offline for server migration"
+  default_prompt: "Use $llm-offline-migration-packager to build lightweight llm_offline migration artifacts and a concise Chinese migration guide."
