@@ -59,6 +59,8 @@ For PointMaze today that includes at least:
 - `structure_desc_en`
 - `structure_desc_zh`
 
+Coordinate-to-cell sensing should keep raw PointMaze floor/map-center semantics when the raw cell is free, and snap to the nearest free cell center when the raw cell is a wall.
+
 3. Do not add a new prompt file for the variant unless the user explicitly wants a prompt-system change.
 The current design is that variants provide metadata and all variants in the family reuse `prompts/<env_family>/<prompt_name>.txt`.
 
@@ -101,8 +103,8 @@ The dataset must:
 - for bin modes, use `ActionBinCodec` to compute bin indices, model action text, display action text, and model token ids
 - write display action text such as `<act_24><act_37>` to human-readable JSONL/history, while tokenized PKL samples contain the real model token ids
 - fill `action_bin_labels` only at action-token positions with the true bin index; all non-action and padding positions must be `-1`
-- use cache filenames that include the selected prompt-name tag, action mode/range/bin count, `newtok<0|1>`, and the action-token schema hash
-- store cache metadata for `new_token` and `action_token_schema_hash`, and fail loudly on schema mismatch rather than silently reusing stale tokenized samples
+- use compact hash-only cache filenames derived from the full tokenization signature, including selected prompt names/templates, prompt vars, data signature, history settings, action mode/range/bin count, `newtok<0|1>`, and the action-token schema hash
+- store cache metadata for the full tokenization signature payload/hash, `new_token`, and `action_token_schema_hash`, and fail loudly on schema mismatch rather than silently reusing stale tokenized samples
 
 4. Create `prompts/<env_family>/<prompt_name>.txt` templates.
 Requirements:
@@ -233,7 +235,7 @@ PointMaze implements more than the minimum. New families may copy this pattern w
 - **Joint file progress**: `MultiWorkerFileProgress` writes one total progress file plus per-worker sub-progress rows. `train.py` prints only the joint progress path.
 - **Episode-level cache**: cache stores `episode_idx -> tokenized samples`, not split-level flattened samples.
 - **Cache hit resampling**: `episode_keep_num`, `train_data_ratio`, `sampling_seed`, and variant balancing are reapplied after cache load. If the cache lacks any current sampled episode, rebuild and overwrite that variant cache.
-- **Cache signature discipline**: include only tokenization-changing settings in cache filenames, such as data signature, tokenizer/model tag, `max_length`, selected prompt names, history settings, action encoding, `newtok<0|1>`, and the action-token schema hash. Do not include runtime sampling settings or `max_data_num`.
+- **Cache signature discipline**: cache filenames should be compact hash-only names derived from tokenization-changing settings, such as data signature, tokenizer/model tag, `max_length`, selected prompt names/templates, prompt vars, relevant source-file hashes, history settings, action encoding, `newtok<0|1>`, and the action-token schema hash. Do not include runtime sampling settings or `max_data_num`.
 - **Debug truncation**: apply `max_data_num` only after final train/val samples are assembled; never truncate what is written to cache.
 
 Important implementation notes for advanced mode:
@@ -272,11 +274,11 @@ After adding a variant or family, validate at minimum:
 - `prompt_templete_index: ["0"]` works for the current PointMaze prompts
 - unknown prompt names fail clearly
 - training and evaluation still import the family without special-case edits unless intentionally required
-- dataset cache naming still includes the selected prompt-name tag
+- dataset cache naming uses a compact hash over the selected prompt names/templates and other tokenization-changing inputs
 - text-mode eval uses the family formatter's `parse_action(...)`
 - bin-mode eval uses generated token ids and `ActionBinCodec`, not formatter text parsing
 - bin-mode dataset tokenization writes the correct number of non-negative `action_bin_labels` for the environment action dimension
-- dataset cache naming includes `newtok<0|1>` and the action-token schema hash
+- dataset cache naming includes `newtok<0|1>` and the action-token schema hash inside the hashed signature payload
 - human-readable dataset JSONL and eval step logs display `<act_XX>` bins even when `new_token: false`
 - `new_token: false` does not add special tokens, resize embeddings, or force `embed_tokens` / `lm_head` into LoRA target modules
 - `new_token: true` still registers action special tokens and keeps the embedding/LoRA handling path valid

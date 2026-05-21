@@ -61,7 +61,7 @@ Data flow:
 - wrap the rendered prompt using the tokenizer's native `chat_template` as a user turn; training also appends the action as the assistant turn
 - tokenize with prompt-turn tokens masked out (`labels = -100`)
 - when `action_token_mode: gaussian_bin`, action token positions use a Gaussian soft-label CE over action-bin tokens while non-action assistant tokens such as the chat-template end token use ordinary CE
-- dataset cache filenames include `newtok<0|1>` and the action-token mapping hash so tokenized samples from different internal action-token schemas are not reused
+- dataset cache filenames are compact sha256-prefix hashes over the full tokenization signature, including variant/data signature, tokenizer/max length, selected prompt names and template contents, prompt vars, relevant source-file hashes, history settings, `newtok<0|1>`, and the action-token mapping hash so tokenized samples from different prompt schemas or internal action-token schemas are not reused
 - one sample per selected prompt template per timestep
 
 To add a new environment family:
@@ -92,7 +92,7 @@ To add a new environment family:
 - `action_token_mode` supports `text`, `bin`, and `gaussian_bin`. In bin modes, `new_token: false` (default) reuses stable low-frequency tokenizer IDs from the end of the base vocabulary for model training/generation while logs and jsonl display `<act_00>` ... according to `action_num_bins`; `new_token: true` preserves the older path that registers `<act_XX>` as additional special tokens.
 - With `new_token: false`, do not resize embeddings for action bins and do not automatically add `embed_tokens` / `lm_head` to LoRA target modules. With `new_token: true`, the tokenizer must register the special action tokens, resize model embeddings if needed, and train the new input/output rows.
 - `gaussian_bin` stores per-token `action_bin_labels` in the dataset and trains action token positions with Gaussian soft labels controlled by `action_soft_label_sigma`; optional `action_soft_label_radius` restricts this CE to center +/- n bins so out-of-window action tokens receive no gradient. Chat-template stop tokens still train with ordinary CE.
-- PointMaze `format_obs` also emits dynamic `map_sensing_en` / `map_sensing_zh`, which describe the current cell, goal cell, and four-neighbor `wall/free` status using 1-based row/column indexing from the top-left corner.
+- PointMaze `format_obs` also emits dynamic `map_sensing_en` / `map_sensing_zh`, which describe the current cell, goal cell, and four-neighbor `wall/free` status using 1-based row/column indexing from the top-left corner. Coordinate-to-cell conversion first applies the PointMaze floor/map-center formula; if that raw cell is a wall, it snaps to the nearest free cell center so prompts do not report wall cells as positions.
 - PointMaze history entries contain the past step's start position plus executed action. Positions are shown as both grid coordinates and continuous `x/y`.
 - If `history_num > 0`, training samples history from the same episode using indices `t-1`, `t-1-history_stride`, ... and renders entries in chronological order. The first step in each episode has no history block.
 - Standalone eval and training-time eval maintain an online history buffer of actually executed actions, including fallback zero actions on parse failure.

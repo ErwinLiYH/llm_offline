@@ -112,11 +112,9 @@ POINTMAZE_VARIANTS = {
             [1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1],
             [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
             [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1],
-            [1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1],
-            [1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1],
+            [1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1],
             [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
-            [1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1],
-            [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1],
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         ],
         "reward_type": "sparse",
@@ -130,11 +128,9 @@ POINTMAZE_VARIANTS = {
             [1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1],
             [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
             [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1],
-            [1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1],
-            [1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1],
+            [1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1],
             [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
-            [1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1],
-            [1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1],
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         ],
         "reward_type": "dense",
@@ -304,11 +300,11 @@ Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置
 
 ```
 dataset_cache/
-├── <env_family>-<variant>-tok-<model>-len<L>-prompts-<prompt_names>-hist<H>-stride<S>-action-<mode>-bins<B>-range<min>to<max>-newtok<0|1>-map<schema_hash>.pkl
-└── <env_family>-<variant>-tok-<model>-len<L>-prompts-<prompt_names>-hist<H>-stride<S>-action-<mode>-bins<B>-range<min>to<max>-newtok<0|1>-map<schema_hash>.jsonl
+├── <cache_signature_hash>.pkl
+└── <cache_signature_hash>.jsonl
 ```
 
-**示例：** `dataset_cache/pointmaze-open-tok-Qwen+Qwen3-0.6B-len512-prompts-bin-hist0-stride1-action-gaussian_bin-bins50-range-1to1-newtok0-map3e7d118b04c36f84.pkl`
+**示例：** `dataset_cache/9f1a2b3c4d5e6f708192a0b1c2d3e4f5.pkl`
 
 - `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
 - `.pkl` 按 `episode_idx -> tokenized samples` 保存，不再按 train/val split 分文件
@@ -317,8 +313,8 @@ dataset_cache/
 - `episode_keep_num`、`train_data_ratio`、`sampling_seed` 和 `balance_variant_episode_count` 不写入 cache 文件名；cache 命中后会重新按当前配置选择 episode 并切分 train/val
 - 如果现有 cache 不覆盖当前 sampled episodes，则忽略旧 cache，重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
 - `max_data_num` 截断发生在最终 dataset 组装之后，只影响本次训练返回的数据，不影响 cache 内容和 cache 命中判断
-- 不同 tokenizer/max length、`prompt_templete_index`、`history_num/history_stride` 和 action 编码配置会写入不同 cache 文件名，避免不同 tokenization 配置误复用同一份 tokenized 数据
-- bin 模式下，cache 文件名和 metadata 额外记录 `new_token` 与 `action_token_schema_hash`。该 hash 由 `new_token`、真实 model token ids 和 display tokens 计算得到；若 cache metadata 与当前 schema 不一致，加载阶段直接报错，避免把旧 action-token 映射下的 tokenized samples 用到新训练里
+- cache 文件名是 32 位 sha256 前缀；hash payload 包含 variant/data signature、tokenizer/max length、`prompt_templete_index` 解析后的 prompt 名称、prompt 模板内容、variant prompt vars、dataset/formatter/chat-template/action-bin/prompt-loader 源文件 hash、`history_num/history_stride` 和 action 编码配置，避免不同 tokenization 或 prompt 配置误复用同一份 tokenized 数据
+- bin 模式下，cache signature payload 和 metadata 额外记录 `new_token` 与 `action_token_schema_hash`。该 hash 由 `new_token`、真实 model token ids 和 display tokens 计算得到；若 cache metadata 与当前 signature 不一致，加载阶段直接报错，避免把旧 action-token 映射下的 tokenized samples 用到新训练里
 - `.jsonl` 中的 `action` 永远使用 display text，例如 `<act_24><act_37>`；`.pkl` 中保存的 `input_ids` 则是模型实际训练使用的 token ids。`new_token: false` 时二者不是同一组文本 token
 
 ---
@@ -551,7 +547,7 @@ def validate_action(action) -> bool:
    - 其他环境族在各自 `formatting.py` 中实现 text action 解析和校验；bin action 的 token-id 解析保持共享
 4. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text` 以及动态 `map_sensing_en` / `map_sensing_zh`
-   - `map_sensing` 会直接给出当前位置格子、目标格子，以及上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数
+   - `map_sensing` 会直接给出当前位置格子、目标格子，以及上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数。坐标先按 PointMaze 的 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。
 5. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 6. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 7. **DDP 并行训练**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint、validation、训练期 rollout eval、step logs 和视频只由 rank0 写入

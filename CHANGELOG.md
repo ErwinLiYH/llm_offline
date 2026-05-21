@@ -717,3 +717,20 @@ type: project
 - 已通过 `python -m py_compile score.py evaluate.py utils/eval_rollout.py utils/pointmaze_score.py tests/test_score_utils.py`
 - 已通过 `python -m unittest discover -s tests -p 'test_score_utils.py'`
 - 已用 `/tmp` 输出路径完成 local reference 1 episode smoke 和 remote `open` 1 episode score smoke
+
+---
+
+## PointMaze map_sensing / dataset cache（2026-05-21）
+
+**Large 地图元数据修正：**
+- `data/pointmaze/variants.py` 中的 `_LARGE` 从旧的 `11x12` layout 修正为当前 Gymnasium-Robotics `PointMaze_Large-v3` / `PointMaze_LargeDense-v3` 实际使用的 `9x12` layout
+- 已核对 `open`、`umaze`、`medium`、`large` 及 dense 对应变种的 prompt map、注册环境 map、score official base map 三者一致
+
+**`map_sensing` 坐标转格子更稳健：**
+- `data/pointmaze/formatting.py` 的坐标转换仍优先使用 PointMaze 原始 `floor + map_center + maze_size_scaling` 公式
+- 如果原始 cell 落在墙格，则吸附到最近的 free cell center，避免贴墙或边界数值误差导致 prompt 报告墙内位置
+
+**dataset cache 文件名改为纯 hash：**
+- `data/pointmaze/dataset.py` 不再生成包含 variant/tokenizer/prompt/action 配置的长文件名，cache 文件统一为 `<cache_signature_hash>.pkl` 和 `<cache_signature_hash>.jsonl`
+- `cache_signature_hash` 由完整 tokenization signature payload 计算，payload 包含 variant/data signature、tokenizer/max length、prompt names/templates、prompt vars、history 配置、action 编码配置、action-token schema hash，以及 dataset/formatter/action-bin/chat-template/prompt-loader 源文件 hash
+- cache metadata 只保留 `cache_format`、`cache_signature_hash`、`cache_signature_payload`、`total_episodes`、`episode_indices`；不保留旧长文件名或旧 metadata 兼容路径
