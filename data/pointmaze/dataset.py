@@ -26,6 +26,9 @@ from data.pointmaze.variants import (
     get_pointmaze_variant_type,
     resolve_local_dataset_path,
 )
+from utils import action_bins as action_bins_module
+from utils import chat_template as chat_template_module
+from utils import prompt_loader as prompt_loader_module
 from utils.action_bins import (
     get_action_bin_range,
     get_action_bin_codec,
@@ -711,44 +714,74 @@ class PointMazeDataset(BaseOfflineDataset):
             )
         return available_names[: config.prompt_template_count]
 
+    @staticmethod
+    def _source_path_hash(path) -> str:
+        if not path or not os.path.exists(path):
+            return "missing"
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
     @classmethod
-    def _prompt_cache_tag(cls, config: PointMazeBuildConfig) -> str:
+    def _source_file_hash(cls, module) -> str:
+        return cls._source_path_hash(getattr(module, "__file__", None))
+
+    @classmethod
+    def _cache_signature_payload(cls, config: PointMazeBuildConfig) -> dict:
+        meta = POINTMAZE_VARIANTS[config.variant]
+        variant_type = get_pointmaze_variant_type(meta)
         prompt_names = cls._resolve_prompt_names(config)
-        joined = "+".join(prompt_names)
-        if len(joined) <= 80 and all(ch.isalnum() or ch in "._+-" for ch in joined):
-            return joined
-        digest = hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
-        return f"hash-{digest}"
+        templates = load_named_templates("pointmaze", prompt_names)
+        local_data_signature = None
+        if variant_type == "local":
+            local_data_signature = _local_dataset_step_signature(meta)
+        return {
+            "env_family": "pointmaze",
+            "cache_kind": "episode_tokenized_samples",
+            "variant": config.variant,
+            "variant_type": variant_type,
+            "variant_metadata": {
+                "dataset_id": meta.get("dataset_id"),
+                "dataset_path": meta.get("dataset_path"),
+                "env_id": meta.get("env_id"),
+                "env_paras": meta.get("env_paras"),
+                "prompt_vars": meta["prompt_vars"],
+            },
+            "local_data_signature": local_data_signature,
+            "tokenizer_name_or_path": config.tokenizer_name_or_path,
+            "max_length": config.max_length,
+            "prompt_names": prompt_names,
+            "templates": templates,
+            "history_num": config.history_num,
+            "history_stride": config.history_stride,
+            "action_token_mode": config.action_token_mode,
+            "action_num_bins": config.action_num_bins,
+            "action_bin_min": config.action_bin_min,
+            "action_bin_max": config.action_bin_max,
+            "new_token": config.new_token,
+            "action_token_schema_hash": config.action_token_schema_hash,
+            "source_hashes": {
+                "data.pointmaze.dataset": cls._source_path_hash(__file__),
+                "data.pointmaze.formatting": cls._source_file_hash(formatting),
+                "utils.action_bins": cls._source_file_hash(action_bins_module),
+                "utils.chat_template": cls._source_file_hash(chat_template_module),
+                "utils.prompt_loader": cls._source_file_hash(prompt_loader_module),
+            },
+        }
 
     @staticmethod
-    def _cache_safe_tag(value: str, *, limit: int = 80) -> str:
-        if len(value) <= limit and all(ch.isalnum() or ch in "._+-" for ch in value):
-            return value
-        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
-        return f"hash-{digest}"
+    def _hash_json_payload(payload: dict, *, length: int = 32) -> str:
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:length]
 
     @classmethod
-    def _tokenizer_cache_tag(cls, config: PointMazeBuildConfig) -> str:
-        return cls._cache_safe_tag(config.tokenizer_name_or_path.replace("/", "+"), limit=80)
+    def _cache_signature_hash(cls, config: PointMazeBuildConfig) -> str:
+        return cls._hash_json_payload(cls._cache_signature_payload(config))
 
     @classmethod
     def _cache_path(cls, config: PointMazeBuildConfig) -> str | None:
         if config.cache_dir is None:
             return None
-        meta = POINTMAZE_VARIANTS[config.variant]
-        data_signature = ""
-        if get_pointmaze_variant_type(meta) == "local":
-            data_signature = f"-{_local_dataset_step_signature(meta)}"
-        fname = (
-            f"pointmaze-{config.variant}{data_signature}-"
-            f"tok-{cls._tokenizer_cache_tag(config)}-len{config.max_length}-"
-            f"prompts-{cls._prompt_cache_tag(config)}-"
-            f"hist{config.history_num}-stride{config.history_stride}-"
-            f"action-{config.action_token_mode}-bins{config.action_num_bins}-"
-            f"range{config.action_bin_min:g}to{config.action_bin_max:g}-"
-            f"newtok{int(config.new_token)}-map{config.action_token_schema_hash}.pkl"
-        )
-        return os.path.join(config.cache_dir, fname)
+        return os.path.join(config.cache_dir, f"{cls._cache_signature_hash(config)}.pkl")
 
     @classmethod
     def _load_cached_episodes(
@@ -762,21 +795,14 @@ class PointMazeDataset(BaseOfflineDataset):
         with open(cache_path, "rb") as f:
             cache = pickle.load(f)
         metadata = cache.get("metadata", {})
-        expected_metadata = {
-            "action_token_mode": config.action_token_mode,
-            "action_num_bins": config.action_num_bins,
-            "action_bin_min": config.action_bin_min,
-            "action_bin_max": config.action_bin_max,
-            "new_token": config.new_token,
-            "action_token_schema_hash": config.action_token_schema_hash,
-        }
-        for key, expected in expected_metadata.items():
-            if metadata.get(key) != expected:
-                raise ValueError(
-                    f"Dataset cache action-token schema mismatch at {cache_path}: "
-                    f"{key}={metadata.get(key)!r}, expected {expected!r}. "
-                    "Remove the stale cache file or rebuild with a matching action-token schema."
-                )
+        expected_signature_hash = cls._cache_signature_hash(config)
+        if metadata.get("cache_signature_hash") != expected_signature_hash:
+            raise ValueError(
+                f"Dataset cache schema mismatch at {cache_path}: "
+                f"cache_signature_hash={metadata.get('cache_signature_hash')!r}, "
+                f"expected {expected_signature_hash!r}. "
+                "Remove the stale cache file or rebuild with matching tokenization settings."
+            )
         episode_samples = {
             int(episode_idx): samples
             for episode_idx, samples in cache.get("episodes", {}).items()
@@ -1070,22 +1096,15 @@ class PointMazeDataset(BaseOfflineDataset):
 
         if job.cache_path:
             os.makedirs(job.config.cache_dir, exist_ok=True)
+            cache_signature_payload = cls._cache_signature_payload(job.config)
+            cache_signature_hash = cls._hash_json_payload(cache_signature_payload)
             cache = {
                 "metadata": {
-                    "variant": job.config.variant,
+                    "cache_format": "pointmaze_hash_signature_v1",
+                    "cache_signature_hash": cache_signature_hash,
+                    "cache_signature_payload": cache_signature_payload,
                     "total_episodes": job.total_episodes,
                     "episode_indices": job.episode_indices,
-                    "tokenizer_name_or_path": job.config.tokenizer_name_or_path,
-                    "max_length": job.config.max_length,
-                    "prompt_names": cls._resolve_prompt_names(job.config),
-                    "history_num": job.config.history_num,
-                    "history_stride": job.config.history_stride,
-                    "action_token_mode": job.config.action_token_mode,
-                    "action_num_bins": job.config.action_num_bins,
-                    "action_bin_min": job.config.action_bin_min,
-                    "action_bin_max": job.config.action_bin_max,
-                    "new_token": job.config.new_token,
-                    "action_token_schema_hash": job.config.action_token_schema_hash,
                 },
                 "episodes": episode_samples,
             }
