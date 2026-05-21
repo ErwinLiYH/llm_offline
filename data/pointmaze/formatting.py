@@ -4,6 +4,9 @@ import re
 import numpy as np
 
 
+DEFAULT_BOUNDARY_RISK_FRACTION = 0.10
+
+
 def _obs_xy_to_row_col(
     x: float,
     y: float,
@@ -58,6 +61,22 @@ def _cell_center_xy(
     return x, y
 
 
+def _cell_bounds(
+    row: int,
+    col: int,
+    rows: int,
+    cols: int,
+    maze_size_scaling: float,
+) -> tuple[float, float, float, float]:
+    x_map_center = cols / 2 * maze_size_scaling
+    y_map_center = rows / 2 * maze_size_scaling
+    left_x = col * maze_size_scaling - x_map_center
+    right_x = (col + 1) * maze_size_scaling - x_map_center
+    top_y = y_map_center - row * maze_size_scaling
+    bottom_y = y_map_center - (row + 1) * maze_size_scaling
+    return left_x, right_x, bottom_y, top_y
+
+
 def _nearest_free_row_col(
     x: float,
     y: float,
@@ -86,14 +105,73 @@ def _nearest_free_row_col(
     return best_cell
 
 
-def _neighbor_status(maze_map: list[list[int]], row: int, col: int, d_row: int, d_col: int) -> str:
-    n_row = row + d_row
-    n_col = col + d_col
+def _cell_status(maze_map: list[list[int]], row: int, col: int) -> str:
     rows = len(maze_map)
     cols = len(maze_map[0]) if maze_map else 0
-    if n_row < 0 or n_row >= rows or n_col < 0 or n_col >= cols:
+    if row < 0 or row >= rows or col < 0 or col >= cols:
         return "wall"
-    return "free" if _is_free_cell(maze_map, n_row, n_col) else "wall"
+    return "free" if _is_free_cell(maze_map, row, col) else "wall"
+
+
+def _neighbor_status(
+    maze_map: list[list[int]],
+    row: int,
+    col: int,
+    d_row: int,
+    d_col: int,
+    *,
+    x: float | None = None,
+    y: float | None = None,
+    maze_size_scaling: float = 1.0,
+    boundary_risk_threshold: float | None = None,
+) -> str:
+    n_row = row + d_row
+    n_col = col + d_col
+    if _cell_status(maze_map, n_row, n_col) == "wall":
+        return "wall"
+    if x is None or y is None:
+        return "free"
+
+    rows = len(maze_map)
+    cols = len(maze_map[0]) if maze_map else 0
+    threshold = (
+        float(boundary_risk_threshold)
+        if boundary_risk_threshold is not None
+        else DEFAULT_BOUNDARY_RISK_FRACTION * maze_size_scaling
+    )
+    left_x, right_x, bottom_y, top_y = _cell_bounds(
+        row,
+        col,
+        rows,
+        cols,
+        maze_size_scaling,
+    )
+    near_left = x - left_x <= threshold
+    near_right = right_x - x <= threshold
+    near_bottom = y - bottom_y <= threshold
+    near_top = top_y - y <= threshold
+
+    if d_col < 0:
+        if near_top and _cell_status(maze_map, row - 1, col - 1) == "wall":
+            return "wall"
+        if near_bottom and _cell_status(maze_map, row + 1, col - 1) == "wall":
+            return "wall"
+    elif d_col > 0:
+        if near_top and _cell_status(maze_map, row - 1, col + 1) == "wall":
+            return "wall"
+        if near_bottom and _cell_status(maze_map, row + 1, col + 1) == "wall":
+            return "wall"
+    elif d_row < 0:
+        if near_left and _cell_status(maze_map, row - 1, col - 1) == "wall":
+            return "wall"
+        if near_right and _cell_status(maze_map, row - 1, col + 1) == "wall":
+            return "wall"
+    elif d_row > 0:
+        if near_left and _cell_status(maze_map, row + 1, col - 1) == "wall":
+            return "wall"
+        if near_right and _cell_status(maze_map, row + 1, col + 1) == "wall":
+            return "wall"
+    return "free"
 
 
 def _build_map_sensing(obs: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
@@ -102,12 +180,21 @@ def _build_map_sensing(obs: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
     gx, gy = float(goal[0]), float(goal[1])
     maze_map = meta["maze_map"]
     maze_size_scaling = float(meta.get("maze_size_scaling", 1.0))
+    boundary_risk_threshold = meta.get("map_sensing_boundary_risk_threshold")
+    if boundary_risk_threshold is not None:
+        boundary_risk_threshold = float(boundary_risk_threshold)
     row, col = _obs_xy_to_row_col(x, y, maze_map, maze_size_scaling=maze_size_scaling)
     goal_row, goal_col = _obs_xy_to_row_col(gx, gy, maze_map, maze_size_scaling=maze_size_scaling)
-    up = _neighbor_status(maze_map, row, col, -1, 0)
-    down = _neighbor_status(maze_map, row, col, 1, 0)
-    left = _neighbor_status(maze_map, row, col, 0, -1)
-    right = _neighbor_status(maze_map, row, col, 0, 1)
+    neighbor_kwargs = {
+        "x": x,
+        "y": y,
+        "maze_size_scaling": maze_size_scaling,
+        "boundary_risk_threshold": boundary_risk_threshold,
+    }
+    up = _neighbor_status(maze_map, row, col, -1, 0, **neighbor_kwargs)
+    down = _neighbor_status(maze_map, row, col, 1, 0, **neighbor_kwargs)
+    left = _neighbor_status(maze_map, row, col, 0, -1, **neighbor_kwargs)
+    right = _neighbor_status(maze_map, row, col, 0, 1, **neighbor_kwargs)
 
     row_1 = row + 1
     col_1 = col + 1

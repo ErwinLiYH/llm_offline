@@ -729,6 +729,7 @@ type: project
 **`map_sensing` 坐标转格子更稳健：**
 - `data/pointmaze/formatting.py` 的坐标转换仍优先使用 PointMaze 原始 `floor + map_center + maze_size_scaling` 公式
 - 如果原始 cell 落在墙格，则吸附到最近的 free cell center，避免贴墙或边界数值误差导致 prompt 报告墙内位置
+- 四邻 `wall/free` 判断保持二值输出；如果邻格本身 free，但当前位置距离对应边界小于默认 `0.10 * maze_size_scaling` 且对角格为墙，则保守报告该方向为 `wall`
 
 **dataset cache 文件名改为纯 hash：**
 - `data/pointmaze/dataset.py` 不再生成包含 variant/tokenizer/prompt/action 配置的长文件名，cache 文件统一为 `<cache_signature_hash>.pkl` 和 `<cache_signature_hash>.jsonl`
