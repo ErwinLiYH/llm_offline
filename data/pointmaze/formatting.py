@@ -10,6 +10,14 @@ def _obs_xy_to_row_col(
     maze_map: list[list[int]],
     maze_size_scaling: float = 1.0,
 ) -> tuple[int, int]:
+    """Map continuous PointMaze xy to a free maze cell when possible.
+
+    The raw environment conversion uses floor over cell regions. Near walls,
+    the point mass can be visually and physically constrained by collision while
+    the raw formula falls just inside a wall cell. In that case, snap to the
+    nearest free cell center so prompt sensing never reports a wall as the
+    current/goal cell.
+    """
     rows = len(maze_map)
     cols = len(maze_map[0]) if maze_map else 0
     x_map_center = cols / 2 * maze_size_scaling
@@ -18,7 +26,64 @@ def _obs_xy_to_row_col(
     col = math.floor((x + x_map_center) / maze_size_scaling)
     row = int(np.clip(row, 0, rows - 1))
     col = int(np.clip(col, 0, cols - 1))
+    if _is_free_cell(maze_map, row, col):
+        return row, col
+
+    snapped = _nearest_free_row_col(
+        x,
+        y,
+        maze_map,
+        maze_size_scaling=maze_size_scaling,
+    )
+    if snapped is not None:
+        return snapped
     return row, col
+
+
+def _is_free_cell(maze_map: list[list[int]], row: int, col: int) -> bool:
+    return maze_map[row][col] != 1
+
+
+def _cell_center_xy(
+    row: int,
+    col: int,
+    rows: int,
+    cols: int,
+    maze_size_scaling: float,
+) -> tuple[float, float]:
+    x_map_center = cols / 2 * maze_size_scaling
+    y_map_center = rows / 2 * maze_size_scaling
+    x = (col + 0.5) * maze_size_scaling - x_map_center
+    y = y_map_center - (row + 0.5) * maze_size_scaling
+    return x, y
+
+
+def _nearest_free_row_col(
+    x: float,
+    y: float,
+    maze_map: list[list[int]],
+    maze_size_scaling: float = 1.0,
+) -> tuple[int, int] | None:
+    rows = len(maze_map)
+    cols = len(maze_map[0]) if maze_map else 0
+    best_cell = None
+    best_dist = float("inf")
+    for row, row_values in enumerate(maze_map):
+        for col, _value in enumerate(row_values):
+            if not _is_free_cell(maze_map, row, col):
+                continue
+            center_x, center_y = _cell_center_xy(
+                row,
+                col,
+                rows,
+                cols,
+                maze_size_scaling,
+            )
+            dist = (center_x - x) ** 2 + (center_y - y) ** 2
+            if dist < best_dist:
+                best_dist = dist
+                best_cell = (row, col)
+    return best_cell
 
 
 def _neighbor_status(maze_map: list[list[int]], row: int, col: int, d_row: int, d_col: int) -> str:
@@ -28,7 +93,7 @@ def _neighbor_status(maze_map: list[list[int]], row: int, col: int, d_row: int, 
     cols = len(maze_map[0]) if maze_map else 0
     if n_row < 0 or n_row >= rows or n_col < 0 or n_col >= cols:
         return "wall"
-    return "wall" if maze_map[n_row][n_col] == 1 else "free"
+    return "free" if _is_free_cell(maze_map, n_row, n_col) else "wall"
 
 
 def _build_map_sensing(obs: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
