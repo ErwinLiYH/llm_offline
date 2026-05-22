@@ -32,7 +32,10 @@
 当前观测（6维状态向量）：
 {obs_text}
 
-当前网格位置：
-  {map_sensing_zh}
+位置感知：
+  {location_sensing_zh}
+
+墙体感知：
+  {wall_sensing_zh}
 {history_block_zh}
 动作：

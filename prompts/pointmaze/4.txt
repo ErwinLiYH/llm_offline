@@ -11,6 +11,7 @@
 
 当前状态（x, y：位置；vx, vy：速度；gx, gy：目标位置）：
 {obs_text}
-当前网格位置：{map_sensing_zh}
+位置感知：{location_sensing_zh}
+墙体感知：{wall_sensing_zh}
 {history_block_zh}
 动作：

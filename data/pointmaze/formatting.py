@@ -174,8 +174,8 @@ def _neighbor_status(
     return "free"
 
 
-def _build_map_sensing(obs: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
-    """Build dynamic map sensing context from the current observation and maze layout."""
+def _build_sensing(obs: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
+    """Build dynamic location and wall sensing context from the maze layout."""
     x, y = float(obs[0]), float(obs[1])
     gx, gy = float(goal[0]), float(goal[1])
     maze_map = meta["maze_map"]
@@ -201,16 +201,20 @@ def _build_map_sensing(obs: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
     goal_row_1 = goal_row + 1
     goal_col_1 = goal_col + 1
     return {
-        "map_sensing_en": (
+        "location_sensing_en": (
             f"Current cell: row {row_1}, column {col_1}. "
             f"Goal cell: row {goal_row_1}, column {goal_col_1}. "
-            "Rows and columns are counted from the top-left corner starting at 1. "
+            "Rows and columns are counted from the top-left corner starting at 1."
+        ),
+        "wall_sensing_en": (
             f"Neighboring cells: up={up}, down={down}, left={left}, right={right}."
         ),
-        "map_sensing_zh": (
+        "location_sensing_zh": (
             f"当前位置格子：第 {row_1} 行，第 {col_1} 列。"
             f"目标格子：第 {goal_row_1} 行，第 {goal_col_1} 列。"
             "行列都从左上角开始计数，起始为 1。"
+        ),
+        "wall_sensing_zh": (
             f"相邻格子：上={up}，下={down}，左={left}，右={right}。"
         ),
     }
@@ -304,7 +308,7 @@ def format_obs(obs, meta: dict) -> dict:
             f"  Velocity: (vx={vx:.4f}, vy={vy:.4f})\n"
             f"  Goal:     (gx={gx:.4f}, gy={gy:.4f})"
         ),
-        **_build_map_sensing(obs_vec, goal, meta),
+        **_build_sensing(obs_vec, goal, meta),
     }
 
 

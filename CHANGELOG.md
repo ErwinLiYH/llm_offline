@@ -735,3 +735,13 @@ type: project
 - `data/pointmaze/dataset.py` 不再生成包含 variant/tokenizer/prompt/action 配置的长文件名，cache 文件统一为 `<cache_signature_hash>.pkl` 和 `<cache_signature_hash>.jsonl`
 - `cache_signature_hash` 由完整 tokenization signature payload 计算，payload 包含 variant/data signature、tokenizer/max length、prompt names/templates、prompt vars、history 配置、action 编码配置、action-token schema hash，以及 dataset/formatter/action-bin/chat-template/prompt-loader 源文件 hash
 - cache metadata 只保留 `cache_format`、`cache_signature_hash`、`cache_signature_payload`、`total_episodes`、`episode_indices`；不保留旧长文件名或旧 metadata 兼容路径
+
+---
+
+## PointMaze sensing split（2026-05-22）
+
+**动态 prompt 感知拆分：**
+- `format_obs` 不再返回旧的混合 sensing 字段，改为返回 `location_sensing_en/zh` 和 `wall_sensing_en/zh`
+- location sensing 只描述当前格子、目标格子和 1-based 行列计数规则
+- wall sensing 只描述上下左右相邻格子的 `wall/free` 状态
+- 共享 prompt 模板同步改为两个独立段落注入，`bin_no_sensing.txt` 保持无 sensing

@@ -11,6 +11,7 @@ Each integer equals the action component multiplied by 100, so the precision is 
 
 State (x, y: position; vx, vy: velocity; gx, gy: goal position):
 {obs_text}
-Current grid location: {map_sensing_en}
+Location sensing: {location_sensing_en}
+Wall sensing: {wall_sensing_en}
 {history_block_en}
 Action:

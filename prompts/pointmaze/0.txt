@@ -32,7 +32,10 @@ Action format:
 Current observation (6-dimensional state vector):
 {obs_text}
 
-Current grid location:
-  {map_sensing_en}
+Location sensing:
+  {location_sensing_en}
+
+Wall sensing:
+  {wall_sensing_en}
 
 Action:
