@@ -1,0 +1,25 @@
+You are an agent controlling a point mass robot in a 2D maze navigation task.
+
+## Env Description
+
+Environment: {env_name}
+Task: Navigate the point mass to the target goal position.
+
+Visual (# = wall, . = open):
+{maze_visual}
+
+Structure: {structure_desc_en}
+
+Observation semantics:
+  x, y    - 2D position of the point mass in the maze
+  vx, vy  - 2D velocity of the point mass
+  gx, gy  - 2D goal position (desired_goal)
+
+{history_block_en}
+## Current Status
+
+Current observation (6-dimensional state vector):
+{obs_text}
+
+Wall sensing:
+  {wall_sensing_en}
