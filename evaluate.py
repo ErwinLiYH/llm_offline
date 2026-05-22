@@ -148,9 +148,9 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
             action_config[key] = saved_config[key]
     if "action_dim" in saved_config:
         action_config["action_dim"] = saved_config["action_dim"]
-    if action_config["action_token_mode"] == "paralle_l1" and "action_dim" not in action_config:
+    if action_config["action_token_mode"] == "parallel_l1" and "action_dim" not in action_config:
         raise ValueError(
-            "Checkpoint config.yaml uses action_token_mode='paralle_l1' but does not contain action_dim."
+            "Checkpoint config.yaml uses action_token_mode='parallel_l1' but does not contain action_dim."
         )
     return action_config
 

@@ -617,7 +617,7 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
             soft_label_radius=loss_context["action_soft_label_radius"],
         )
 
-    if loss_context["action_token_mode"] == "paralle_l1":
+    if loss_context["action_token_mode"] == "parallel_l1":
         action_values = batch["action_values"].to(device=device, dtype=torch.float32)
         predicted_actions = model(
             input_ids=input_ids,

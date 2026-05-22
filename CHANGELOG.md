@@ -748,13 +748,13 @@ type: project
 
 ---
 
-## paralle_l1 continuous action regression（2026-05-22）
+## parallel_l1 continuous action regression（2026-05-22）
 
 **新增连续动作模式：**
-- `action_token_mode` 新增合法值 `paralle_l1`，用于 action head + L1 regression 的当前步并行动作预测
+- `action_token_mode` 新增合法值 `parallel_l1`，用于 action head + L1 regression 的当前步并行动作预测
 - `train.py` 在 variant selection 后调用 registry 解析 `action_dim`，写入运行时 config 并随 checkpoint `config.yaml` 保存；PointMaze 当前返回 `2`
 - `data/registry.py` / `BaseOfflineDataset` 新增 `get_action_dim(env_family, variants)` 接口，后续 AntMaze 可在对应 dataset 中返回 `8`
-- `config.yaml`、`DESIGN.md` 和 `AGENTS.md` 同步标注 `paralle_l1` 模式及其训练/eval 数据流
+- `config.yaml`、`DESIGN.md` 和 `AGENTS.md` 同步标注 `parallel_l1` 模式及其训练/eval 数据流
 
 **ContinuousActionDecoder：**
 - 新增 `model/continuous_action.py`，包含 `ContinuousActionDecoder(action_dim, hidden_size)`
@@ -763,21 +763,21 @@ type: project
 - `attach_continuous_action_decoder()` 将 decoder 注册到模型上，并 patch `model.forward(..., continuous_action=True)`；普通 forward 路径保持原样
 
 **dataset / training 路径：**
-- `paralle_l1` 下 PointMaze dataset 只 tokenize generation prompt，不拼 assistant action 文本，`labels` 全部为 `-100`
+- `parallel_l1` 下 PointMaze dataset 只 tokenize generation prompt，不拼 assistant action 文本，`labels` 全部为 `-100`
 - 样本新增 `action_values: float32[action_dim]`，collate 时动态 stack，并拒绝混合有/无 `action_values` 的 batch
 - dataset 构建时校验每条 action shape 等于配置中的 `action_dim`
-- `_compute_batch_loss()` 在 `paralle_l1` 下调用 continuous forward，loss 使用 mean L1，并在训练进度中显示 `l1=...`
+- `_compute_batch_loss()` 在 `parallel_l1` 下调用 continuous forward，loss 使用 mean L1，并在训练进度中显示 `l1=...`
 - `text` / `bin` / `gaussian_bin` 的原有 action token、CE 和 gaussian soft-label loss 路径保持不变
 
 **checkpoint / eval / score：**
-- `paralle_l1` checkpoint 额外保存 `continuous_action_decoder.pt`，其中包含 `action_dim`、`hidden_size` 和 decoder `state_dict`
+- `parallel_l1` checkpoint 额外保存 `continuous_action_decoder.pt`，其中包含 `action_dim`、`hidden_size` 和 decoder `state_dict`
 - `load_from_checkpoint()` 读取 checkpoint `config.yaml` 的 `action_dim` 后加载 sidecar decoder，并在缺失 decoder 文件或维度不匹配时直接报错
 - standalone eval 和 `score.py` 会用真实环境 `env.action_space.shape` 校验 checkpoint `action_dim`
-- `paralle_l1` rollout 不调用 `model.generate()`，直接 forward 得到连续动作，clip 到环境 action bounds 后执行
+- `parallel_l1` rollout 不调用 `model.generate()`，直接 forward 得到连续动作，clip 到环境 action bounds 后执行
 - eval step log 新增 `Raw Continuous Action`，记录未 clip 的连续动作数组，便于高维动作排查
 
 **验证：**
-- 新增 `tests/test_continuous_action.py`，覆盖 `paralle_l1` mode helper、attention mask、`action_dim=2/8` forward shape、decoder 保存加载
+- 新增 `tests/test_continuous_action.py`，覆盖 `parallel_l1` mode helper、attention mask、`action_dim=2/8` forward shape、decoder 保存加载
 - 已通过 `python -m py_compile train.py evaluate.py score.py model/policy.py utils/eval_rollout.py data/base_dataset.py data/registry.py data/pointmaze/dataset.py model/continuous_action.py`
 - 已通过 `python -m unittest discover -s tests -p "test_continuous_action.py"`
 - 已用真实 Qwen3-0.6B PointMaze smoke 跑通 1 epoch 训练、checkpoint 保存/加载和 1 episode standalone eval；该 smoke 的 trainable params 为 `4,742,145 / 857,728,065`，trainable% `0.5529`

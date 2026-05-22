@@ -223,17 +223,17 @@ def unpatch_continuous_action_forward(model):
 
 
 def ensure_continuous_action_decoder(model, config: dict) -> ContinuousActionDecoder | None:
-    if str(config.get("action_token_mode", "text")) != "paralle_l1":
+    if str(config.get("action_token_mode", "text")) != "parallel_l1":
         return None
     if "action_dim" not in config:
-        raise ValueError("action_token_mode='paralle_l1' requires config['action_dim']")
+        raise ValueError("action_token_mode='parallel_l1' requires config['action_dim']")
     return attach_continuous_action_decoder(model, int(config["action_dim"]))
 
 
 def save_continuous_action_decoder(model, checkpoint_dir: str):
     decoder = getattr(model, "continuous_action_decoder", None)
     if decoder is None:
-        raise ValueError("Cannot save paralle_l1 checkpoint without continuous_action_decoder")
+        raise ValueError("Cannot save parallel_l1 checkpoint without continuous_action_decoder")
     payload = {
         "action_dim": int(decoder.action_dim),
         "hidden_size": int(decoder.hidden_size),
@@ -247,7 +247,7 @@ def load_continuous_action_decoder(model, checkpoint_dir: str, *, expected_actio
     if not os.path.exists(path):
         raise FileNotFoundError(
             f"Missing continuous action decoder checkpoint: {path}. "
-            "paralle_l1 checkpoints must include this file."
+            "parallel_l1 checkpoints must include this file."
         )
     payload: dict[str, Any] = torch.load(path, map_location="cpu")
     action_dim = int(payload["action_dim"])

@@ -186,7 +186,7 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
     if uses_continuous_actions(saved_config):
         if "action_dim" not in saved_config:
             raise ValueError(
-                "Checkpoint config.yaml uses action_token_mode='paralle_l1' but does not contain action_dim."
+                "Checkpoint config.yaml uses action_token_mode='parallel_l1' but does not contain action_dim."
             )
         load_continuous_action_decoder(
             model,
