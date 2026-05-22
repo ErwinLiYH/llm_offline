@@ -16,6 +16,7 @@ import sys
 
 import yaml
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, WeightedRandomSampler, ConcatDataset
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel
@@ -24,13 +25,19 @@ with contextlib.redirect_stdout(io.StringIO()):
     from unsloth import FastLanguageModel
 
 from data.base_dataset import DatasetBuildRequest
-from data.registry import get_dataset
+from data.registry import get_action_dim, get_dataset
+from model.continuous_action import (
+    ensure_continuous_action_decoder,
+    save_continuous_action_decoder,
+    unpatch_continuous_action_forward,
+)
 from model.policy import load_model_and_tokenizer, get_model_slug
 from utils.action_bins import (
     gaussian_action_loss,
     get_action_bin_token_ids,
     get_action_num_bins,
     get_action_token_mode,
+    uses_continuous_actions,
 )
 from utils.distributed import (
     DistributedContext,
@@ -271,6 +278,7 @@ def build_dataset_request(config: dict, tokenizer, variant: str, split: str) -> 
         action_bin_min=config.get("action_bin_min", -1.0),
         action_bin_max=config.get("action_bin_max", 1.0),
         new_token=config.get("new_token", False),
+        action_dim=config.get("action_dim"),
         progress_interval_seconds=config.get("progress_interval_seconds", 5.0),
     )
 
@@ -469,6 +477,7 @@ def _build_training_eval_config(config: dict) -> dict:
         "action_bin_min": config.get("action_bin_min", -1.0),
         "action_bin_max": config.get("action_bin_max", 1.0),
         "new_token": config.get("new_token", False),
+        "action_dim": config.get("action_dim"),
     }
 
 
@@ -516,7 +525,9 @@ def _run_eval(
         label = f"{label} (scheduled at batch step {scheduled_step})"
 
     model.eval()
+    unpatch_continuous_action_forward(model)
     FastLanguageModel.for_inference(model)
+    ensure_continuous_action_decoder(model, config)
 
     try:
         for variant in variants:
@@ -578,7 +589,9 @@ def _run_eval(
                 )
     finally:
         model.train()
+        unpatch_continuous_action_forward(model)
         FastLanguageModel.for_training(model)
+        ensure_continuous_action_decoder(model, config)
 
 
 def _compute_batch_loss(model, batch, device, loss_context: dict):
@@ -604,6 +617,16 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
             soft_label_radius=loss_context["action_soft_label_radius"],
         )
 
+    if loss_context["action_token_mode"] == "paralle_l1":
+        action_values = batch["action_values"].to(device=device, dtype=torch.float32)
+        predicted_actions = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            continuous_action=True,
+        )
+        loss = F.l1_loss(predicted_actions.float(), action_values, reduction="mean")
+        return loss, {"l1_loss": float(loss.detach().item())}
+
     outputs = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -616,6 +639,8 @@ def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -
     loss_value = loss.item() if display_loss is None else float(display_loss)
     if loss_parts is None:
         return f"loss={loss_value:.4f}"
+    if "l1_loss" in loss_parts:
+        return f"loss={loss_value:.4f} l1={loss_parts['l1_loss']:.6f}"
     return (
         f"loss={loss_value:.4f} action={loss_parts['action_loss']:.6f} "
         f"stop={loss_parts['stop_loss']:.4f}"
@@ -806,7 +831,9 @@ def _run_training(
             if progress is not None:
                 print(f"[train] Epoch {epoch}/{num_epochs} progress in file: {progress.path.resolve()}")
             model.train()
+            unpatch_continuous_action_forward(raw_model)
             FastLanguageModel.for_training(raw_model)
+            ensure_continuous_action_decoder(raw_model, config)
             total_loss = 0.0
             num_batches = 0
             epoch_optimizer_step = 0
@@ -942,7 +969,9 @@ def _run_training(
                             )
                     barrier(dist_context)
                     model.train()
+                    unpatch_continuous_action_forward(raw_model)
                     FastLanguageModel.for_training(raw_model)
+                    ensure_continuous_action_decoder(raw_model, config)
 
             train_loss = total_loss / max(num_batches, 1)
 
@@ -1000,7 +1029,9 @@ def _run_training(
                 )
         barrier(dist_context)
         model.train()
+        unpatch_continuous_action_forward(raw_model)
         FastLanguageModel.for_training(raw_model)
+        ensure_continuous_action_decoder(raw_model, config)
 
 
 
@@ -1009,6 +1040,8 @@ def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
     os.makedirs(checkpoint_dir, exist_ok=True)
     model.save_pretrained(checkpoint_dir)
     tokenizer.save_pretrained(checkpoint_dir)
+    if uses_continuous_actions(config):
+        save_continuous_action_decoder(model, checkpoint_dir)
     config_dst = os.path.join(checkpoint_dir, "config.yaml")
     with open(config_dst, "w") as f:
         yaml.dump(config, f)
@@ -1092,9 +1125,11 @@ def main():
         available_variants = get_available_variants(config["env_family"])
         train_selection = resolve_train_selection(config, available_variants)
         eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)
+        action_dim = get_action_dim(config["env_family"], train_selection.selected_variants)
 
         config["train_varients"] = train_selection.configured_variants
         config.pop("variants", None)
+        config["action_dim"] = action_dim
         config["resolved_train_variants"] = train_selection.selected_variants
         config["train_selection_tag"] = train_selection.selection_tag
         config["resolved_eval_mode"] = eval_selection.mode
@@ -1109,6 +1144,7 @@ def main():
         device = dist_context.device
         rank_zero_print(dist_context, f"[train] Using device: {device}")
         rank_zero_print(dist_context, f"[train] Experiment ID: {experiment_id}")
+        rank_zero_print(dist_context, f"[train] Resolved action_dim: {action_dim}")
         rank_zero_print(
             dist_context,
             "[train] Parallel setup: "

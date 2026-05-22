@@ -302,6 +302,12 @@ def score_model_variant(
     env = make_pointmaze_score_env(score_env_spec)
     try:
         action_dim = int(env.action_space.shape[0])
+        checkpoint_action_dim = config.get("action_dim")
+        if checkpoint_action_dim is not None and int(checkpoint_action_dim) != action_dim:
+            raise ValueError(
+                "Checkpoint action_dim does not match score env action space: "
+                f"checkpoint={checkpoint_action_dim}, env={action_dim}, variant={variant}"
+            )
         history_num, history_stride = validate_history_config(config)
         action_context = build_action_rollout_context(
             config=config,
@@ -349,6 +355,8 @@ def score_model_variant(
                     action_shape=env.action_space.shape,
                     action_dim=action_dim,
                     parse_retry_limit=int(config["parse_retry_limit"]),
+                    action_low=getattr(env.action_space, "low", None),
+                    action_high=getattr(env.action_space, "high", None),
                 )
 
                 obs, reward, terminated, truncated, _info = env.step(action_result.action)

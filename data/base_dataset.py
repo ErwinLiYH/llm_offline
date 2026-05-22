@@ -43,6 +43,8 @@ class DatasetBuildRequest:
     - `attention_mask`: `torch.long` tensor shaped `[seq_len]`
     - `labels`: `torch.long` tensor shaped `[seq_len]`, prompt positions masked as `-100`
     - `action_bin_labels`: `torch.long` tensor shaped `[seq_len]`, non-action positions as `-1`
+    - `action_values`: optional `torch.float32` tensor shaped `[action_dim]` for continuous
+      regression action modes
     """
 
     # Dataset identity.
@@ -80,6 +82,7 @@ class DatasetBuildRequest:
     action_bin_min: float = -1.0
     action_bin_max: float = 1.0
     new_token: bool = False
+    action_dim: int | None = None
 
     # File progress update cadence for expensive dataset construction.
     progress_interval_seconds: float = 5.0
@@ -122,6 +125,11 @@ class BaseOfflineDataset(ABC, Dataset):
         `balance_variant_episode_count` is enabled.
         """
 
+    @classmethod
+    def get_action_dim(cls, variants: list[str]) -> int:
+        """Return the flat action dimension for the selected variants."""
+        raise NotImplementedError(f"{cls.__name__} must implement get_action_dim().")
+
     @abstractmethod
     def __len__(self) -> int:
         pass
@@ -142,8 +150,12 @@ class BaseOfflineDataset(ABC, Dataset):
         """
         max_len = max(item["input_ids"].shape[0] for item in batch)
         input_ids_list, attention_mask_list, labels_list, action_bin_labels_list = [], [], [], []
+        has_action_values = any("action_values" in item for item in batch)
+        action_values_list = []
 
         for item in batch:
+            if has_action_values and "action_values" not in item:
+                raise ValueError("Cannot collate a mixed batch with and without action_values.")
             seq_len = item["input_ids"].shape[0]
             pad_len = max_len - seq_len
             input_ids_list.append(torch.cat([item["input_ids"], torch.zeros(pad_len, dtype=torch.long)]))
@@ -156,10 +168,15 @@ class BaseOfflineDataset(ABC, Dataset):
             action_bin_labels_list.append(
                 torch.cat([item["action_bin_labels"], torch.full((pad_len,), -1, dtype=torch.long)])
             )
+            if has_action_values:
+                action_values_list.append(item["action_values"].to(dtype=torch.float32))
 
-        return {
+        collated = {
             "input_ids": torch.stack(input_ids_list),
             "attention_mask": torch.stack(attention_mask_list),
             "labels": torch.stack(labels_list),
             "action_bin_labels": torch.stack(action_bin_labels_list),
         }
+        if has_action_values:
+            collated["action_values"] = torch.stack(action_values_list)
+        return collated

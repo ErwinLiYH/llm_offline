@@ -16,6 +16,8 @@ from utils.action_bins import (
     get_action_bin_range,
     get_action_num_bins,
     get_action_token_mode,
+    uses_action_bins,
+    uses_continuous_actions,
 )
 from utils.chat_template import build_generation_prompt
 from utils.prompt_loader import render_template
@@ -59,6 +61,7 @@ class GeneratedActionResult:
     fallback_count: int
     action_time_seconds: float
     generation_count: int
+    raw_continuous_action: list[float] | None = None
 
 
 def resolve_action_generation_config(config: dict) -> dict:
@@ -244,7 +247,7 @@ def format_action_bin_probability_log(distributions: list[list[float]], config: 
 
 
 def format_action_for_mode(formatter, action: np.ndarray, config: dict, action_codec=None) -> str:
-    if get_action_token_mode(config) == "text":
+    if not uses_action_bins(config):
         return formatter.format_action(action)
     if action_codec is None:
         raise RuntimeError("Action-bin display formatting requires an initialized action codec.")
@@ -279,10 +282,10 @@ def build_action_rollout_context(
     action_token_mode = get_action_token_mode(config)
     action_generation_config = resolve_action_generation_config(config)
     action_codec = None
-    if action_token_mode != "text":
+    if uses_action_bins(config):
         action_codec = get_action_bin_codec(tokenizer, config, ensure_registered=True)
 
-    constrain_action_tokens = action_generation_config["action_sampling"] and action_token_mode != "text"
+    constrain_action_tokens = action_generation_config["action_sampling"] and uses_action_bins(config)
     generation_max_new_tokens = action_dim if constrain_action_tokens else 20
     allowed_token_ids = (
         tuple(int(token_id) for token_id in action_codec.model_token_ids)
@@ -311,7 +314,65 @@ def generate_valid_action(
     action_shape: tuple[int, ...],
     action_dim: int,
     parse_retry_limit: int,
+    action_low=None,
+    action_high=None,
 ) -> GeneratedActionResult:
+    if uses_continuous_actions(config):
+        t0 = time.perf_counter()
+        encoded = tokenizer(
+            text=build_generation_prompt(tokenizer, prompt),
+            return_tensors="pt",
+            add_special_tokens=False,
+        )
+        input_ids = encoded.input_ids.to(device)
+        attention_mask = encoded.attention_mask.to(device)
+        with torch.no_grad():
+            predicted = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                continuous_action=True,
+            )
+        action_time_seconds = time.perf_counter() - t0
+        raw_action = predicted[0].detach().float().cpu().numpy().astype(np.float32)
+        if raw_action.shape != (action_dim,):
+            raise ValueError(
+                "Continuous action decoder returned unexpected shape: "
+                f"got {raw_action.shape}, expected {(action_dim,)}"
+            )
+        low = (
+            np.full(action_shape, -1.0, dtype=np.float32)
+            if action_low is None
+            else np.asarray(action_low, dtype=np.float32)
+        )
+        high = (
+            np.full(action_shape, 1.0, dtype=np.float32)
+            if action_high is None
+            else np.asarray(action_high, dtype=np.float32)
+        )
+        action = np.clip(raw_action.reshape(action_shape), low, high).astype(np.float32)
+        valid = formatter.validate_action(action.reshape(-1))
+        if valid:
+            parse_status = "success"
+            fallback_count = 0
+        else:
+            action = np.clip(np.zeros(action_shape, dtype=np.float32), low, high).astype(np.float32)
+            parse_status = "fallback"
+            fallback_count = 1
+        executed_action_text = formatter.format_action(action.reshape(-1))
+        return GeneratedActionResult(
+            action=action,
+            executed_action_text=executed_action_text,
+            generated_attempts=[executed_action_text],
+            generated_probability_logs=[],
+            attempt_count=1,
+            parse_status=parse_status,
+            parse_failures=0,
+            fallback_count=fallback_count,
+            action_time_seconds=action_time_seconds,
+            generation_count=1,
+            raw_continuous_action=[float(value) for value in raw_action.tolist()],
+        )
+
     action = None
     executed_action_text = None
     generated_attempts = []

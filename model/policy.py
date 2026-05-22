@@ -7,11 +7,17 @@ import yaml
 with contextlib.redirect_stdout(io.StringIO()):
     from unsloth import FastLanguageModel
 
+from model.continuous_action import (
+    ensure_continuous_action_decoder,
+    load_continuous_action_decoder,
+    unpatch_continuous_action_forward,
+)
 from utils.action_bins import (
     action_bins_use_new_tokens,
     get_action_bin_codec,
     get_tokenizer_backend,
     uses_action_bins,
+    uses_continuous_actions,
 )
 
 
@@ -137,6 +143,7 @@ def load_model_and_tokenizer(config: dict):
         use_gradient_checkpointing="unsloth",  # 30% less VRAM vs standard checkpointing
         random_state=42,
     )
+    ensure_continuous_action_decoder(model, config)
     model.print_trainable_parameters()
     return model, tokenizer
 
@@ -176,7 +183,19 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
         _prepare_action_tokens(model, tokenizer, saved_config, resize_embeddings=False)
     else:
         _prepare_action_tokens(model, tokenizer, saved_config, resize_embeddings=True)
+    if uses_continuous_actions(saved_config):
+        if "action_dim" not in saved_config:
+            raise ValueError(
+                "Checkpoint config.yaml uses action_token_mode='paralle_l1' but does not contain action_dim."
+            )
+        load_continuous_action_decoder(
+            model,
+            model_path,
+            expected_action_dim=int(saved_config["action_dim"]),
+        )
 
     model.eval()
+    unpatch_continuous_action_forward(model)
     FastLanguageModel.for_inference(model)
+    ensure_continuous_action_decoder(model, saved_config)
     return model, tokenizer

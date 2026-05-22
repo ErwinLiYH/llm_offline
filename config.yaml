@@ -47,7 +47,7 @@ history_num: 0                 # number of sampled history transitions to includ
 history_stride: 1              # sample every n past transitions when building history
 
 ## Action mode
-action_token_mode: bin  # text | bin | gaussian_bin
+action_token_mode: bin  # text | bin | gaussian_bin | paralle_l1
 action_num_bins: 50              # shared action-bin tokens: <act_00> ... <act_49>
 new_token: false                 # false = reuse stable low-frequency tokenizer IDs internally; true = add <act_XX> special tokens
 action_bin_min: -1.0

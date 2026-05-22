@@ -28,6 +28,7 @@ from utils.action_bins import (
     get_action_bin_codec,
     get_action_num_bins,
     get_action_token_mode,
+    uses_action_bins,
 )
 from utils.chat_template import build_generation_prompt
 from utils.eval_rollout import (
@@ -83,6 +84,7 @@ ACTION_CONFIG_KEYS = (
     "action_soft_label_sigma",
     "action_loss_weight",
     "action_stop_loss_weight",
+    "action_dim",
 )
 
 
@@ -144,6 +146,12 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
     for key in ("action_soft_label_sigma", "action_loss_weight", "action_stop_loss_weight"):
         if key in saved_config:
             action_config[key] = saved_config[key]
+    if "action_dim" in saved_config:
+        action_config["action_dim"] = saved_config["action_dim"]
+    if action_config["action_token_mode"] == "paralle_l1" and "action_dim" not in action_config:
+        raise ValueError(
+            "Checkpoint config.yaml uses action_token_mode='paralle_l1' but does not contain action_dim."
+        )
     return action_config
 
 
@@ -307,6 +315,7 @@ def write_step_log(
     parse_status: str,
     attempt_count: int,
     action_bin_probabilities: str | None = None,
+    raw_continuous_action: list[float] | None = None,
 ):
     steps_dir = os.path.join(episode_dir, "steps")
     os.makedirs(steps_dir, exist_ok=True)
@@ -318,6 +327,7 @@ def write_step_log(
         parse_status=parse_status,
         attempt_count=attempt_count,
         action_bin_probabilities=action_bin_probabilities,
+        raw_continuous_action=raw_continuous_action,
     )
     with open(step_path, "w", encoding="utf-8") as f:
         f.write(payload)
@@ -486,7 +496,7 @@ def _format_action_bin_probability_log(distributions: list[list[float]], config:
 
 
 def _format_action_for_mode(formatter, action: np.ndarray, config: dict, action_codec=None) -> str:
-    if get_action_token_mode(config) == "text":
+    if not uses_action_bins(config):
         return formatter.format_action(action)
     if action_codec is None:
         raise RuntimeError("Action-bin display formatting requires an initialized action codec.")
@@ -579,8 +589,8 @@ def evaluate_variant(
     video_episode_index_set = set(video_episode_indices)
     video_fps = int(config.get("video_fps", 20))
     record_step_logs = bool(config.get("record_step_logs", True))
-    action_token_mode = get_action_token_mode(config)
-    collect_bin_probabilities = record_step_logs and action_token_mode != "text"
+    get_action_token_mode(config)
+    collect_bin_probabilities = record_step_logs and uses_action_bins(config)
 
     if record_video:
         render_mode = env_kwargs.get("render_mode")
@@ -593,6 +603,12 @@ def evaluate_variant(
 
     env = gym.make(env_id, **env_kwargs)
     action_dim = int(env.action_space.shape[0])
+    checkpoint_action_dim = config.get("action_dim")
+    if checkpoint_action_dim is not None and int(checkpoint_action_dim) != action_dim:
+        raise ValueError(
+            "Checkpoint action_dim does not match evaluation env action space: "
+            f"checkpoint={checkpoint_action_dim}, env={action_dim}, variant={variant}"
+        )
     action_context = build_action_rollout_context(
         config=config,
         tokenizer=tokenizer,
@@ -653,6 +669,8 @@ def evaluate_variant(
                 action_shape=env.action_space.shape,
                 action_dim=action_dim,
                 parse_retry_limit=parse_retry_limit,
+                action_low=getattr(env.action_space, "low", None),
+                action_high=getattr(env.action_space, "high", None),
             )
             action = action_result.action
             executed_action_text = action_result.executed_action_text
@@ -681,6 +699,7 @@ def evaluate_variant(
                         if action_result.generated_probability_logs
                         else None
                     ),
+                    raw_continuous_action=action_result.raw_continuous_action,
                 )
 
             obs, reward, terminated, truncated, info = env.step(action)

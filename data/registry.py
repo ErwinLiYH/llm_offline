@@ -21,6 +21,16 @@ def get_formatter(env_family: str):
     return _FORMATTER_REGISTRY[env_family]
 
 
+def get_action_dim(env_family: str, variants: list[str]) -> int:
+    dataset_cls = get_dataset(env_family)
+    if not hasattr(dataset_cls, "get_action_dim"):
+        raise ValueError(f"Dataset for env_family={env_family!r} does not expose get_action_dim().")
+    action_dim = int(dataset_cls.get_action_dim(list(variants)))
+    if action_dim < 1:
+        raise ValueError(f"Invalid action_dim={action_dim} for env_family={env_family!r}.")
+    return action_dim
+
+
 # ── Registration ──────────────────────────────────────────────────────────────
 from data.pointmaze.dataset import PointMazeDataset
 from data.pointmaze import formatting as pointmaze_formatting

@@ -15,6 +15,7 @@ def format_eval_step_text(
     parse_status: str,
     attempt_count: int,
     action_bin_probabilities: str | None = None,
+    raw_continuous_action: list[float] | None = None,
 ) -> str:
     base = format_prompt_action_text(prompt, action)
     text = (
@@ -25,4 +26,7 @@ def format_eval_step_text(
     )
     if action_bin_probabilities:
         text = f"{text}\n\nAction Bin Probabilities:\n{action_bin_probabilities}"
+    if raw_continuous_action is not None:
+        values = ", ".join(f"{float(value):.8f}" for value in raw_continuous_action)
+        text = f"{text}\n\nRaw Continuous Action:\n[{values}]"
     return text

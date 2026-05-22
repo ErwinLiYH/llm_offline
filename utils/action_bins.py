@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 
 
-VALID_ACTION_TOKEN_MODES = {"text", "bin", "gaussian_bin"}
+VALID_ACTION_TOKEN_MODES = {"text", "bin", "gaussian_bin", "paralle_l1"}
 
 
 def get_tokenizer_backend(tokenizer_or_processor):
@@ -40,6 +40,10 @@ def get_action_token_mode(config: dict) -> str:
 
 def uses_action_bins(config: dict) -> bool:
     return get_action_token_mode(config) in {"bin", "gaussian_bin"}
+
+
+def uses_continuous_actions(config: dict) -> bool:
+    return get_action_token_mode(config) == "paralle_l1"
 
 
 def action_bins_use_new_tokens(config: dict) -> bool:
