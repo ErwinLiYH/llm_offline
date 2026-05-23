@@ -9,6 +9,13 @@ checkpoint_root: checkpoints  # root directory for saved checkpoints
 result_root: resultsV2        # root directory for train/eval result outputs
 # experiment_id: ab12cd34     # optional; if omitted, auto-generated per run
 
+## Weights & Biases logging
+wandb_enabled: true        # true = log train/val/eval metrics to W&B
+wandb_project: llm_offline # W&B project name when enabled
+wandb_entity: null         # optional W&B entity/team; null uses the SDK default
+wandb_mode: null           # optional: online | offline | disabled; null uses the SDK default
+wandb_log_interval: 10     # log train loss every n global train batches
+
 ## Parallel training
 parallel_backend: single          # single | ddp; use torchrun with --parallel_backend ddp for multi-GPU
 ddp_find_unused_parameters: false # keep false for LoRA/Unsloth unless DDP reports unused parameters

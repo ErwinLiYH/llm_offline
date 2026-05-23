@@ -47,6 +47,15 @@ from utils.distributed_sampler import DistributedWeightedSampler
 from utils.file_progress import FileProgress
 from utils.prompt_loader import load_template_names
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
+from utils.wandb_logging import (
+    WandbLogger,
+    global_batch_sample_count,
+    init_wandb_logger,
+    prompt_template_multiplier,
+    wandb_enabled,
+    wandb_log_interval,
+    wandb_step_metrics,
+)
 
 
 def parse_args():
@@ -489,6 +498,9 @@ def _run_eval(
     batch_step: int | None = None,
     optimizer_step: int | None = None,
     scheduled_step: int | None = None,
+    wandb_logger: WandbLogger | None = None,
+    train_env_steps: float | None = None,
+    wandb_batch_step: int | None = None,
 ):
     import gymnasium_robotics  # noqa: F401
     from evaluate import configure_mujoco_gl, evaluate_variant
@@ -552,6 +564,18 @@ def _run_eval(
             with open(result_path, "w") as f:
                 json.dump(result, f, indent=2)
             print(f"[eval] Saved: {result_path}")
+            if wandb_logger is not None and wandb_logger.enabled and train_env_steps is not None:
+                wandb_logger.log(
+                    {
+                        **wandb_step_metrics(
+                            env_steps=train_env_steps,
+                            batch_step=wandb_batch_step if wandb_batch_step is not None else batch_step,
+                            optimizer_step=optimizer_step,
+                            epoch=epoch,
+                        ),
+                        f"eval/{variant}/success_rate": float(result["success_rate"]),
+                    }
+                )
     finally:
         model.train()
         FastLanguageModel.for_training(model)
@@ -699,7 +723,10 @@ def _run_training(
     dist_context: DistributedContext,
     tokenizer=None,
     eval_variants=None,
+    wandb_logger: WandbLogger | None = None,
 ):
+    if wandb_logger is None:
+        wandb_logger = WandbLogger()
     raw_model = unwrap_model(model)
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -721,6 +748,11 @@ def _run_training(
     if eval_step_interval < 0:
         raise ValueError(f"eval_step_interval must be >= 0, got {eval_step_interval}")
     next_step_eval_at = eval_step_interval if eval_step_interval > 0 else None
+    wandb_tracking_enabled = wandb_enabled(config)
+    wandb_log_every = wandb_log_interval(config) if wandb_tracking_enabled else 10
+    env_step_prompt_multiplier = prompt_template_multiplier(config)
+    global_prompt_samples = 0
+    current_env_steps = 0.0
     global_effective_batch_size = (
         int(config["batch_size"]) * gradient_accumulation_steps * dist_context.world_size
     )
@@ -801,6 +833,9 @@ def _run_training(
                     epoch_optimizer_step += 1
 
                 loss_value = reduce_mean(float(loss.detach().item()), dist_context, device)
+                if wandb_tracking_enabled:
+                    global_prompt_samples += global_batch_sample_count(batch, dist_context, device)
+                    current_env_steps = global_prompt_samples / env_step_prompt_multiplier
                 total_loss += loss_value
                 num_batches += 1
                 accum_step = ((step - 1) % gradient_accumulation_steps) + 1
@@ -816,6 +851,26 @@ def _run_training(
                         train_total,
                         train_start,
                         extra=loss_extra,
+                    )
+
+                if (
+                    wandb_logger.enabled
+                    and (
+                        global_batch_step == 1
+                        or global_batch_step % wandb_log_every == 0
+                        or step == train_total
+                    )
+                ):
+                    wandb_logger.log(
+                        {
+                            **wandb_step_metrics(
+                                env_steps=current_env_steps,
+                                batch_step=global_batch_step,
+                                optimizer_step=optimizer_step,
+                                epoch=epoch,
+                            ),
+                            "train/loss": loss_value,
+                        }
                     )
 
                 if (
@@ -851,6 +906,19 @@ def _run_training(
                             f"val_loss={_format_loss_value(step_val_loss)}  "
                             f"optimizer_step={optimizer_step}"
                         )
+                        if wandb_logger.enabled:
+                            wandb_logger.log(
+                                {
+                                    **wandb_step_metrics(
+                                        env_steps=current_env_steps,
+                                        batch_step=global_batch_step,
+                                        optimizer_step=optimizer_step,
+                                        epoch=epoch,
+                                    ),
+                                    "train/step_loss": step_train_loss,
+                                    "val/loss": step_val_loss,
+                                }
+                            )
                         _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
                         if should_run_eval:
                             _run_eval(
@@ -868,6 +936,9 @@ def _run_training(
                                 batch_step=global_batch_step,
                                 optimizer_step=optimizer_step,
                                 scheduled_step=scheduled_step,
+                                wandb_logger=wandb_logger,
+                                train_env_steps=current_env_steps,
+                                wandb_batch_step=global_batch_step,
                             )
                     barrier(dist_context)
                     model.train()
@@ -892,6 +963,19 @@ def _run_training(
                 f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  "
                 f"val_loss={_format_loss_value(val_loss)}"
             )
+            if wandb_logger.enabled:
+                wandb_logger.log(
+                    {
+                        **wandb_step_metrics(
+                            env_steps=current_env_steps,
+                            batch_step=global_batch_step,
+                            optimizer_step=optimizer_step,
+                            epoch=epoch,
+                        ),
+                        "train/epoch_loss": train_loss,
+                        "val/loss": val_loss,
+                    }
+                )
 
         epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
         if dist_context.is_main_process:
@@ -910,6 +994,9 @@ def _run_training(
                     checkpoint_dir=epoch_ckpt_dir,
                     epoch=epoch,
                     optimizer_step=optimizer_step,
+                    wandb_logger=wandb_logger,
+                    train_env_steps=current_env_steps,
+                    wandb_batch_step=global_batch_step,
                 )
         barrier(dist_context)
         model.train()
@@ -959,23 +1046,28 @@ def train_with_selection(
     )
     _maybe_prompt_eval_step_interval(config, train_loader, dist_context)
     progress_interval = float(config.get("progress_interval_seconds", 5.0))
-    _run_training(
-        config,
-        model,
-        train_loader,
-        val_loader,
-        device,
-        selection_tag=train_selection.selection_tag,
-        progress_interval_seconds=progress_interval,
-        dist_context=dist_context,
-        tokenizer=tokenizer,
-        eval_variants=eval_selection.selected_variants,
-    )
+    wandb_logger = init_wandb_logger(config, dist_context)
+    try:
+        _run_training(
+            config,
+            model,
+            train_loader,
+            val_loader,
+            device,
+            selection_tag=train_selection.selection_tag,
+            progress_interval_seconds=progress_interval,
+            dist_context=dist_context,
+            tokenizer=tokenizer,
+            eval_variants=eval_selection.selected_variants,
+            wandb_logger=wandb_logger,
+        )
 
-    checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
-    if dist_context.is_main_process:
-        _save_checkpoint(config, unwrap_model(model), tokenizer, checkpoint_dir)
-    barrier(dist_context)
+        checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
+        if dist_context.is_main_process:
+            _save_checkpoint(config, unwrap_model(model), tokenizer, checkpoint_dir)
+        barrier(dist_context)
+    finally:
+        wandb_logger.finish()
 
 
 
