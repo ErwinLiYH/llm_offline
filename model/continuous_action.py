@@ -89,15 +89,22 @@ class ContinuousActionDecoder(nn.Module):
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
             nn.Linear(hidden_size, 1),
+            nn.Tanh(),
         )
         self.reset_parameters()
 
     def reset_parameters(self):
         nn.init.normal_(self.action_queries, mean=0.0, std=0.02)
-        for module in self.action_head:
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                nn.init.zeros_(module.bias)
+        linear_layers = [module for module in self.action_head if isinstance(module, nn.Linear)]
+        for module in linear_layers[:-1]:
+            nn.init.xavier_uniform_(module.weight)
+            nn.init.zeros_(module.bias)
+        # Start continuous policies near the zero-action baseline and keep early
+        # regression updates bounded; random Xavier final heads can produce large
+        # out-of-range actions before the first optimizer step.
+        final_layer = linear_layers[-1]
+        nn.init.normal_(final_layer.weight, mean=0.0, std=1e-4)
+        nn.init.zeros_(final_layer.bias)
 
     def forward(
         self,
