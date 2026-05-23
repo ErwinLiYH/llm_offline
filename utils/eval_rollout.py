@@ -10,7 +10,6 @@ import numpy as np
 import torch
 from transformers import LogitsProcessor, LogitsProcessorList
 
-from model.continuous_action import append_continuous_action_placeholders
 from utils.action_bins import (
     bin_to_continuous,
     get_action_bin_codec,
@@ -326,29 +325,17 @@ def generate_valid_action(
             "add_special_tokens": False,
         }
         if config.get("max_length") is not None:
-            max_prompt_length = int(config["max_length"]) - int(action_dim)
-            if max_prompt_length < 1:
-                raise ValueError(
-                    "max_length must leave room for continuous action placeholders: "
-                    f"max_length={config['max_length']}, action_dim={action_dim}"
-                )
-            tokenizer_kwargs["max_length"] = max_prompt_length
+            tokenizer_kwargs["max_length"] = int(config["max_length"])
             tokenizer_kwargs["truncation"] = True
         encoded = tokenizer(
             **tokenizer_kwargs,
         )
         input_ids = encoded.input_ids.to(device)
         attention_mask = encoded.attention_mask.to(device)
-        input_ids, attention_mask, action_query_mask = append_continuous_action_placeholders(
-            input_ids,
-            attention_mask,
-            action_dim,
-        )
         with torch.no_grad():
             predicted = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                action_query_mask=action_query_mask,
                 continuous_action=True,
             )
         action_time_seconds = time.perf_counter() - t0

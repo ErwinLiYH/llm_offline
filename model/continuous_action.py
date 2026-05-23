@@ -11,91 +11,43 @@ from torch import nn
 
 
 CONTINUOUS_ACTION_DECODER_FILENAME = "continuous_action_decoder.pt"
-CONTINUOUS_ACTION_PLACEHOLDER_TOKEN_ID = 1
 
 
-def append_continuous_action_placeholders(
-    input_ids: torch.Tensor,
-    attention_mask: torch.Tensor | None,
-    action_dim: int,
-    *,
-    placeholder_token_id: int = CONTINUOUS_ACTION_PLACEHOLDER_TOKEN_ID,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Append zeroed action-slot placeholders and return their boolean mask."""
-    if input_ids is None:
-        raise ValueError("input_ids is required")
-    if input_ids.dim() != 2:
-        raise ValueError(f"input_ids must be 2D [batch, seq_len], got {tuple(input_ids.shape)}")
-    action_dim = int(action_dim)
-    if action_dim < 1:
-        raise ValueError(f"action_dim must be >= 1, got {action_dim}")
-
-    if attention_mask is None:
-        attention_mask = torch.ones_like(input_ids, dtype=torch.long)
-    if attention_mask.shape != input_ids.shape:
-        raise ValueError(
-            "attention_mask shape must match input_ids shape, "
-            f"got attention_mask={tuple(attention_mask.shape)}, input_ids={tuple(input_ids.shape)}"
-        )
-
-    batch_size = input_ids.shape[0]
-    placeholders = torch.full(
-        (batch_size, action_dim),
-        int(placeholder_token_id),
-        dtype=input_ids.dtype,
-        device=input_ids.device,
-    )
-    slot_attention = torch.ones(
-        (batch_size, action_dim),
-        dtype=attention_mask.dtype,
-        device=attention_mask.device,
-    )
-    prompt_query_mask = torch.zeros_like(input_ids, dtype=torch.bool)
-    slot_query_mask = torch.ones((batch_size, action_dim), dtype=torch.bool, device=input_ids.device)
-    return (
-        torch.cat([input_ids, placeholders], dim=1),
-        torch.cat([attention_mask, slot_attention], dim=1),
-        torch.cat([prompt_query_mask, slot_query_mask], dim=1),
-    )
-
-
-def build_action_slot_bidirectional_attention_mask(
+def build_parallel_action_attention_mask(
     attention_mask: torch.Tensor,
-    action_query_mask: torch.Tensor,
+    action_dim: int,
     *,
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
-    """Return 4D additive mask with causal prompt attention and bidirectional action slots."""
+    """Return 4D additive mask for prompt tokens plus learned action queries."""
     if attention_mask.dim() != 2:
         raise ValueError(
-            "attention_mask must be 2D [batch, seq_len], "
+            "attention_mask must be 2D [batch, prompt_len], "
             f"got shape={tuple(attention_mask.shape)}"
         )
-    if action_query_mask.shape != attention_mask.shape:
-        raise ValueError(
-            "action_query_mask shape must match attention_mask shape, "
-            f"got action_query_mask={tuple(action_query_mask.shape)}, "
-            f"attention_mask={tuple(attention_mask.shape)}"
-        )
+    action_dim = int(action_dim)
+    if action_dim < 1:
+        raise ValueError(f"action_dim must be >= 1, got {action_dim}")
     if not torch.is_floating_point(torch.empty((), dtype=dtype)):
         dtype = torch.float32
 
-    batch_size, seq_len = attention_mask.shape
+    batch_size, prompt_len = attention_mask.shape
+    total_len = prompt_len + action_dim
     device = attention_mask.device
-    key_visible = attention_mask.to(dtype=torch.bool)
-    action_query_mask = action_query_mask.to(device=device, dtype=torch.bool)
-    prompt_mask = key_visible & ~action_query_mask
-    causal = torch.tril(torch.ones((seq_len, seq_len), device=device, dtype=torch.bool))
+    prompt_keys_visible = attention_mask.to(dtype=torch.bool)
+    causal = torch.tril(torch.ones((prompt_len, prompt_len), device=device, dtype=torch.bool))
 
-    allowed = torch.zeros((batch_size, seq_len, seq_len), device=device, dtype=torch.bool)
-    allowed |= causal.unsqueeze(0) & prompt_mask.unsqueeze(1)
-    allowed |= action_query_mask.unsqueeze(1) & action_query_mask.unsqueeze(2)
-    allowed &= key_visible.unsqueeze(1)
+    allowed = torch.zeros((batch_size, total_len, total_len), device=device, dtype=torch.bool)
+    allowed[:, :prompt_len, :prompt_len] = causal.unsqueeze(0) & prompt_keys_visible.unsqueeze(1)
+    allowed[:, prompt_len:, :prompt_len] = prompt_keys_visible.unsqueeze(1).expand(
+        batch_size,
+        action_dim,
+        prompt_len,
+    )
+    allowed[:, prompt_len:, prompt_len:] = True
 
-    query_visible = key_visible
-    allowed &= query_visible.unsqueeze(2)
     blocked_value = torch.finfo(dtype).min
-    mask = torch.zeros((batch_size, 1, seq_len, seq_len), device=device, dtype=dtype)
+    mask = torch.zeros((batch_size, 1, total_len, total_len), device=device, dtype=dtype)
     return mask.masked_fill(~allowed.unsqueeze(1), blocked_value)
 
 
@@ -148,7 +100,7 @@ class MLPResNetActionHead(nn.Module):
 
 
 class ContinuousActionDecoder(nn.Module):
-    """Regress continuous actions from zeroed action-token slots."""
+    """Append learned action queries and regress continuous actions."""
 
     def __init__(self, action_dim: int, hidden_size: int):
         super().__init__()
@@ -161,7 +113,12 @@ class ContinuousActionDecoder(nn.Module):
 
         self.action_dim = action_dim
         self.hidden_size = hidden_size
+        self.action_queries = nn.Parameter(torch.empty(action_dim, hidden_size))
         self.action_head = MLPResNetActionHead(action_dim=action_dim, hidden_size=hidden_size)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.normal_(self.action_queries, mean=0.0, std=0.02)
 
     def forward(
         self,
@@ -169,7 +126,6 @@ class ContinuousActionDecoder(nn.Module):
         *,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
-        action_query_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if input_ids is None:
             raise ValueError("ContinuousActionDecoder.forward requires input_ids")
@@ -182,31 +138,16 @@ class ContinuousActionDecoder(nn.Module):
                 "attention_mask shape must match input_ids shape, "
                 f"got attention_mask={tuple(attention_mask.shape)}, input_ids={tuple(input_ids.shape)}"
             )
-        if action_query_mask is None:
-            raise ValueError(
-                "ContinuousActionDecoder.forward requires action_query_mask. "
-                "Append continuous action placeholders before calling continuous_action=True."
-            )
-        if action_query_mask.shape != input_ids.shape:
-            raise ValueError(
-                "action_query_mask shape must match input_ids shape, "
-                f"got action_query_mask={tuple(action_query_mask.shape)}, input_ids={tuple(input_ids.shape)}"
-            )
-        action_query_mask = action_query_mask.to(device=input_ids.device, dtype=torch.bool)
-        counts = action_query_mask.sum(dim=1)
-        if not torch.all(counts == self.action_dim):
-            raise ValueError(
-                "Each sample must mark exactly action_dim action query slots; "
-                f"expected {self.action_dim}, got {counts.detach().cpu().tolist()}"
-            )
 
-        inputs_embeds = model.get_input_embeddings()(input_ids)
-        inputs_embeds = inputs_embeds.masked_fill(action_query_mask.unsqueeze(-1), 0.0)
-        attention_mask = attention_mask.to(device=input_ids.device)
-        action_attention_mask = build_action_slot_bidirectional_attention_mask(
-            attention_mask,
-            action_query_mask,
-            dtype=inputs_embeds.dtype,
+        prompt_embeds = model.get_input_embeddings()(input_ids)
+        batch_size = int(prompt_embeds.shape[0])
+        query_embeds = self.action_queries.unsqueeze(0).expand(batch_size, -1, -1)
+        query_embeds = query_embeds.to(device=prompt_embeds.device, dtype=prompt_embeds.dtype)
+        inputs_embeds = torch.cat([prompt_embeds, query_embeds], dim=1)
+        action_attention_mask = build_parallel_action_attention_mask(
+            attention_mask.to(device=prompt_embeds.device),
+            self.action_dim,
+            dtype=prompt_embeds.dtype,
         )
 
         base_forward = getattr(model, "_llm_offline_original_forward", None)
@@ -222,11 +163,7 @@ class ContinuousActionDecoder(nn.Module):
         hidden_states = getattr(outputs, "hidden_states", None)
         if hidden_states is None:
             raise RuntimeError("Continuous action forward requires model outputs.hidden_states")
-        action_hidden = hidden_states[-1][action_query_mask].reshape(
-            input_ids.shape[0],
-            self.action_dim,
-            self.hidden_size,
-        )
+        action_hidden = hidden_states[-1][:, -self.action_dim :, :]
         head_dtype = next(self.action_head.parameters()).dtype
         action_hidden = action_hidden.to(dtype=head_dtype)
         return self.action_head(action_hidden)
@@ -263,7 +200,6 @@ def _continuous_forward_patched(self, *args, continuous_action: bool = False, **
 
     input_ids = kwargs.pop("input_ids", None)
     attention_mask = kwargs.pop("attention_mask", None)
-    action_query_mask = kwargs.pop("action_query_mask", None)
     if kwargs:
         unexpected = ", ".join(sorted(kwargs))
         raise ValueError(f"Unexpected continuous_action forward kwargs: {unexpected}")
@@ -271,7 +207,6 @@ def _continuous_forward_patched(self, *args, continuous_action: bool = False, **
         self,
         input_ids=input_ids,
         attention_mask=attention_mask,
-        action_query_mask=action_query_mask,
     )
 
 

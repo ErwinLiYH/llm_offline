@@ -43,8 +43,6 @@ class DatasetBuildRequest:
     - `attention_mask`: `torch.long` tensor shaped `[seq_len]`
     - `labels`: `torch.long` tensor shaped `[seq_len]`, prompt positions masked as `-100`
     - `action_bin_labels`: `torch.long` tensor shaped `[seq_len]`, non-action positions as `-1`
-    - `action_query_mask`: optional `torch.bool` tensor shaped `[seq_len]` for continuous
-      action modes; `True` marks zeroed action-slot placeholder tokens
     - `action_values`: optional `torch.float32` tensor shaped `[action_dim]` for continuous
       regression action modes
     """
@@ -149,7 +147,7 @@ class BaseOfflineDataset(ABC, Dataset):
         - `attention_mask`: `0`
         - `labels`: `-100`
         - `action_bin_labels`: `-1`
-        - `action_query_mask`: `False`
+        - `action_query_mask`: `False` if present in a legacy/custom sample
         """
         max_len = max(item["input_ids"].shape[0] for item in batch)
         input_ids_list, attention_mask_list, labels_list, action_bin_labels_list = [], [], [], []

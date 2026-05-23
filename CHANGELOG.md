@@ -818,3 +818,19 @@ type: project
 - `config.yaml` 新增并启用 `wandb_enabled: true`
 - 新增 `wandb_project`、`wandb_entity`、`wandb_mode`、`wandb_log_interval` 配置
 - 当前实现只记录指标和配置，不上传 checkpoint、视频、step logs 或 result artifacts
+
+---
+
+## parallel_l1 learned query restore（2026-05-23）
+
+**ContinuousActionDecoder 恢复内部可训练 query：**
+- `parallel_l1` 从 zero-placeholder action slots 改回 decoder 内部 `action_queries: nn.Parameter[action_dim, hidden_size]`
+- forward 只接收 prompt `input_ids` / `attention_mask`，先查 prompt embedding，再在末尾拼接可训练 action query embedding
+- attention mask 保持 prompt 内 causal、action query 可看完整非 padding prompt、action query 之间双向可见
+- continuous forward 读取最后 `action_dim` 个 hidden states，经当前 MLPResNet + `Tanh` action head 输出连续动作
+
+**dataset / training / eval：**
+- PointMaze `parallel_l1` 重新只 tokenize generation prompt，不再预留长度或追加 placeholder token
+- 样本不再生成 `action_query_mask`；训练和 eval continuous forward 不再传该参数
+- loss 仍为 `F.l1_loss(predicted_actions, action_values, reduction="mean")`
+- 新 checkpoint 的 `continuous_action_decoder.pt` 包含 `action_queries`；zero-placeholder 版本 sidecar 会因 state dict 不兼容而加载失败
