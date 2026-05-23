@@ -26,6 +26,7 @@ from data.pointmaze.variants import (
     get_pointmaze_variant_type,
     resolve_local_dataset_path,
 )
+from model.continuous_action import CONTINUOUS_ACTION_PLACEHOLDER_TOKEN_ID
 from utils import action_bins as action_bins_module
 from utils import chat_template as chat_template_module
 from utils import prompt_loader as prompt_loader_module
@@ -178,19 +179,33 @@ def _tokenize_pointmaze_sample(
     prompt_len = len(prompt_ids)
 
     if uses_continuous_actions(config):
+        action_dim = int(config.get("action_dim", 2))
+        max_prompt_length = int(config["max_length"]) - action_dim
+        if max_prompt_length < 1:
+            raise ValueError(
+                "max_length must leave room for continuous action placeholders: "
+                f"max_length={config['max_length']}, action_dim={action_dim}"
+            )
         prompt_enc = tok(
             text=prompt_text,
             add_special_tokens=False,
-            max_length=config["max_length"],
+            max_length=max_prompt_length,
             truncation=True,
         )
-        input_ids = prompt_enc["input_ids"]
-        attention_mask = prompt_enc["attention_mask"]
+        prompt_input_ids = list(prompt_enc["input_ids"])
+        prompt_attention_mask = list(prompt_enc["attention_mask"])
+        placeholder_token_id = int(
+            config.get("action_placeholder_token_id", CONTINUOUS_ACTION_PLACEHOLDER_TOKEN_ID)
+        )
+        input_ids = prompt_input_ids + [placeholder_token_id] * action_dim
+        attention_mask = prompt_attention_mask + [1] * action_dim
+        action_query_mask = [False] * len(prompt_input_ids) + [True] * action_dim
         return {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": [-100] * len(input_ids),
             "action_bin_labels": [-1] * len(input_ids),
+            "action_query_mask": action_query_mask,
         }
 
     full_text = build_training_conversation(tok, prompt, action_text)
@@ -912,6 +927,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "new_token": config.new_token,
             "action_dim": config.action_dim,
             "action_token_schema_hash": config.action_token_schema_hash,
+            "action_placeholder_token_id": CONTINUOUS_ACTION_PLACEHOLDER_TOKEN_ID,
         }
         shared_config = {
             "tokenizer_name_or_path": config.tokenizer_name_or_path,
@@ -922,6 +938,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "new_token": config.new_token,
             "action_dim": config.action_dim,
             "action_token_schema_hash": config.action_token_schema_hash,
+            "action_placeholder_token_id": CONTINUOUS_ACTION_PLACEHOLDER_TOKEN_ID,
         }
         return PointMazeTokenizationJob(
             job_id=job_id,
@@ -1182,6 +1199,8 @@ class PointMazeDataset(BaseOfflineDataset):
             "labels": torch.tensor(sample["labels"], dtype=torch.long),
             "action_bin_labels": torch.tensor(action_bin_labels, dtype=torch.long),
         }
+        if "action_query_mask" in sample:
+            item["action_query_mask"] = torch.tensor(sample["action_query_mask"], dtype=torch.bool)
         if "action_values" in sample:
             item["action_values"] = torch.tensor(sample["action_values"], dtype=torch.float32)
         return item

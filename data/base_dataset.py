@@ -43,6 +43,8 @@ class DatasetBuildRequest:
     - `attention_mask`: `torch.long` tensor shaped `[seq_len]`
     - `labels`: `torch.long` tensor shaped `[seq_len]`, prompt positions masked as `-100`
     - `action_bin_labels`: `torch.long` tensor shaped `[seq_len]`, non-action positions as `-1`
+    - `action_query_mask`: optional `torch.bool` tensor shaped `[seq_len]` for continuous
+      action modes; `True` marks zeroed action-slot placeholder tokens
     - `action_values`: optional `torch.float32` tensor shaped `[action_dim]` for continuous
       regression action modes
     """
@@ -147,13 +149,18 @@ class BaseOfflineDataset(ABC, Dataset):
         - `attention_mask`: `0`
         - `labels`: `-100`
         - `action_bin_labels`: `-1`
+        - `action_query_mask`: `False`
         """
         max_len = max(item["input_ids"].shape[0] for item in batch)
         input_ids_list, attention_mask_list, labels_list, action_bin_labels_list = [], [], [], []
+        has_action_query_mask = any("action_query_mask" in item for item in batch)
+        action_query_mask_list = []
         has_action_values = any("action_values" in item for item in batch)
         action_values_list = []
 
         for item in batch:
+            if has_action_query_mask and "action_query_mask" not in item:
+                raise ValueError("Cannot collate a mixed batch with and without action_query_mask.")
             if has_action_values and "action_values" not in item:
                 raise ValueError("Cannot collate a mixed batch with and without action_values.")
             seq_len = item["input_ids"].shape[0]
@@ -168,6 +175,15 @@ class BaseOfflineDataset(ABC, Dataset):
             action_bin_labels_list.append(
                 torch.cat([item["action_bin_labels"], torch.full((pad_len,), -1, dtype=torch.long)])
             )
+            if has_action_query_mask:
+                action_query_mask_list.append(
+                    torch.cat(
+                        [
+                            item["action_query_mask"].to(dtype=torch.bool),
+                            torch.zeros(pad_len, dtype=torch.bool),
+                        ]
+                    )
+                )
             if has_action_values:
                 action_values_list.append(item["action_values"].to(dtype=torch.float32))
 
@@ -177,6 +193,8 @@ class BaseOfflineDataset(ABC, Dataset):
             "labels": torch.stack(labels_list),
             "action_bin_labels": torch.stack(action_bin_labels_list),
         }
+        if has_action_query_mask:
+            collated["action_query_mask"] = torch.stack(action_query_mask_list)
         if has_action_values:
             collated["action_values"] = torch.stack(action_values_list)
         return collated

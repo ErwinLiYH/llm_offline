@@ -478,6 +478,7 @@ def _build_training_eval_config(config: dict) -> dict:
         "action_bin_max": config.get("action_bin_max", 1.0),
         "new_token": config.get("new_token", False),
         "action_dim": config.get("action_dim"),
+        "max_length": config.get("max_length"),
     }
 
 
@@ -619,9 +620,11 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
 
     if loss_context["action_token_mode"] == "parallel_l1":
         action_values = batch["action_values"].to(device=device, dtype=torch.float32)
+        action_query_mask = batch["action_query_mask"].to(device=device, dtype=torch.bool)
         predicted_actions = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            action_query_mask=action_query_mask,
             continuous_action=True,
         )
         loss = F.l1_loss(predicted_actions.float(), action_values, reduction="mean")

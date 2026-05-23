@@ -781,3 +781,40 @@ type: project
 - 已通过 `python -m py_compile train.py evaluate.py score.py model/policy.py utils/eval_rollout.py data/base_dataset.py data/registry.py data/pointmaze/dataset.py model/continuous_action.py`
 - 已通过 `python -m unittest discover -s tests -p "test_continuous_action.py"`
 - 已用真实 Qwen3-0.6B PointMaze smoke 跑通 1 epoch 训练、checkpoint 保存/加载和 1 episode standalone eval；该 smoke 的 trainable params 为 `4,742,145 / 857,728,065`，trainable% `0.5529`
+
+---
+
+## parallel_l1 OFT-style action slots（2026-05-23）
+
+**ContinuousActionDecoder 改为 zero-placeholder action slots：**
+- `parallel_l1` 不再使用可学习 `action_queries` 参数，训练/eval 都在 prompt 后显式追加 `action_dim` 个 placeholder token
+- placeholder 位置通过 `action_query_mask` 标记，进入 transformer 前将对应 input embedding 强制清零；placeholder token id 只作为占位，不提供语义
+- 新增 action-slot 4D attention mask：prompt 内保持 causal，action slots 可看完整非 padding prompt，且 action slots 之间双向可见
+- continuous forward 直接读取 action placeholder 自身的最后层 hidden states，不走 token logits，也不再使用 causal-shift hidden 位置
+
+**OFT-style action head：**
+- action head 从逐维 `hidden -> 1` MLP 改为 MLPResNet，将 `[batch, action_dim, hidden]` flatten 为 `[batch, action_dim * hidden]` 后联合输出 `[batch, action_dim]`
+- MLP 结构为 `LayerNorm -> Linear -> ReLU -> 2x residual MLP block -> LayerNorm -> Linear -> Tanh`
+- 最后一层使用 PyTorch 默认初始化；输出经 `Tanh` 限制到 `[-1, 1]`
+- loss 仍为 `F.l1_loss(predicted_actions, action_values, reduction="mean")`
+
+**dataset / eval / cache 语义：**
+- PointMaze `parallel_l1` tokenization 预留 `action_dim` 个长度并追加 placeholders，样本新增 `action_query_mask`
+- collate 支持 `action_query_mask` 并用 `False` padding；训练和 eval continuous forward 都显式传入该 mask
+- standalone eval / training eval 继承 checkpoint `max_length`，避免追加 placeholders 后超过训练时序列长度
+- 移除 decoder/cache 的人为版本 tag；dataset cache tag 只区分同一代码版本下会改变 tokenized samples 的配置、数据、模板、tokenizer/action schema 等差异，不负责跨代码版本语义兼容
+
+---
+
+## W&B training tracking（2026-05-23）
+
+**训练指标追踪：**
+- 新增 `utils/wandb_logging.py`，封装 W&B optional import、run 初始化、metric 轴定义、日志写入和 DDP 下 env step 计数
+- `train.py` 接入 W&B 日志，记录 `train/loss`、`train/epoch_loss`、`val/loss` 和 `eval/<variant>/success_rate`
+- W&B 图表统一使用 `train/env_steps` 作为 x 轴，环境步数按已消费训练样本数除以 prompt 数折算
+- DDP 下只有 rank0 初始化和写入 W&B；所有 rank 在启用时参与全局 batch sample 计数
+
+**配置：**
+- `config.yaml` 新增并启用 `wandb_enabled: true`
+- 新增 `wandb_project`、`wandb_entity`、`wandb_mode`、`wandb_log_interval` 配置
+- 当前实现只记录指标和配置，不上传 checkpoint、视频、step logs 或 result artifacts

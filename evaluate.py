@@ -85,6 +85,7 @@ ACTION_CONFIG_KEYS = (
     "action_loss_weight",
     "action_stop_loss_weight",
     "action_dim",
+    "max_length",
 )
 
 
@@ -148,6 +149,8 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
             action_config[key] = saved_config[key]
     if "action_dim" in saved_config:
         action_config["action_dim"] = saved_config["action_dim"]
+    if "max_length" in saved_config:
+        action_config["max_length"] = saved_config["max_length"]
     if action_config["action_token_mode"] == "parallel_l1" and "action_dim" not in action_config:
         raise ValueError(
             "Checkpoint config.yaml uses action_token_mode='parallel_l1' but does not contain action_dim."
