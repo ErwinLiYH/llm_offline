@@ -59,6 +59,13 @@ action_stop_loss_weight: 1.0     # gaussian_bin chat-end token loss
 
 ## Optimization
 learning_rate: 0.0001
+# min_lr_ratio: 0.3               # final LR = learning_rate * min_lr_ratio for linear/cosine
+# lr_scheduler_type: cosine       # constant | linear | cosine; warmup applies before the selected schedule
+# lr_decay_ref_epochs: 4.0        # optional decay duration after warmup, measured in reference epochs; lr_decay_steps overrides it
+# warmup_ratio: 0.05              # fraction used for LR warmup when warmup_steps is omitted
+# warmup_ratio_ref_epoch: 1.0     # warmup reference epochs; warmup_steps = steps/epoch * this * warmup_ratio
+# warmup_steps: 200             # optional fixed optimizer-step warmup override
+# lr_decay_steps: 30000         # optional fixed optimizer-step decay duration after warmup
 num_epochs: 5
 batch_size: 8
 gradient_accumulation_steps: 4

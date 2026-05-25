@@ -54,6 +54,15 @@ from utils.distributed import (
 )
 from utils.distributed_sampler import DistributedWeightedSampler
 from utils.file_progress import FileProgress
+from utils.lr_scheduler import (
+    get_optimizer_lr,
+    lr_scale_for_step,
+    normalize_lr_scheduler_type,
+    resolve_lr_decay_steps,
+    resolve_min_lr_ratio,
+    resolve_warmup_steps,
+    set_optimizer_lr,
+)
 from utils.prompt_loader import load_template_names
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 from utils.wandb_logging import (
@@ -758,9 +767,10 @@ def _run_training(
     if wandb_logger is None:
         wandb_logger = WandbLogger()
     raw_model = unwrap_model(model)
+    base_learning_rate = float(config["learning_rate"])
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=config["learning_rate"],
+        lr=base_learning_rate,
     )
 
     num_epochs = config["num_epochs"]
@@ -772,6 +782,31 @@ def _run_training(
         )
     updates_per_epoch = math.ceil(len(train_loader) / gradient_accumulation_steps)
     total_training_steps = max(updates_per_epoch * num_epochs, 1)
+    lr_scheduler_type = normalize_lr_scheduler_type(config.get("lr_scheduler_type", "constant"))
+    warmup_steps = resolve_warmup_steps(
+        config,
+        total_training_steps,
+        steps_per_epoch=updates_per_epoch,
+    )
+    lr_decay_steps = resolve_lr_decay_steps(
+        config,
+        total_training_steps=total_training_steps,
+        warmup_steps=warmup_steps,
+        steps_per_epoch=updates_per_epoch,
+    )
+    min_lr_ratio = resolve_min_lr_ratio(config)
+    initial_lr = set_optimizer_lr(
+        optimizer,
+        base_learning_rate,
+        lr_scale_for_step(
+            step_index=1,
+            total_training_steps=total_training_steps,
+            warmup_steps=warmup_steps,
+            decay_steps=lr_decay_steps,
+            scheduler_type=lr_scheduler_type,
+            min_lr_ratio=min_lr_ratio,
+        ),
+    )
     optimizer_step = 0
     global_batch_step = 0
     eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
@@ -791,7 +826,10 @@ def _run_training(
         "[train] Optimizer setup: "
         f"gradient_accumulation_steps={gradient_accumulation_steps}, "
         f"updates_per_epoch={updates_per_epoch}, total_updates={total_training_steps}, "
-        f"learning_rate={config['learning_rate']}, "
+        f"learning_rate={base_learning_rate}, "
+        f"initial_lr={initial_lr:.6g}, lr_scheduler_type={lr_scheduler_type}, "
+        f"warmup_steps={warmup_steps}, lr_decay_steps={lr_decay_steps}, "
+        f"min_lr_ratio={min_lr_ratio}, "
         f"eval_step_interval={eval_step_interval}, "
         f"parallel_backend={dist_context.backend}, world_size={dist_context.world_size}, "
         f"global_effective_batch_size={global_effective_batch_size}"
@@ -858,11 +896,25 @@ def _run_training(
                 with sync_context:
                     (loss / gradient_accumulation_steps).backward()
                 if should_step:
+                    current_lr = set_optimizer_lr(
+                        optimizer,
+                        base_learning_rate,
+                        lr_scale_for_step(
+                            step_index=optimizer_step + 1,
+                            total_training_steps=total_training_steps,
+                            warmup_steps=warmup_steps,
+                            decay_steps=lr_decay_steps,
+                            scheduler_type=lr_scheduler_type,
+                            min_lr_ratio=min_lr_ratio,
+                        ),
+                    )
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     optimizer_step += 1
                     epoch_optimizer_step += 1
+                else:
+                    current_lr = get_optimizer_lr(optimizer)
 
                 loss_value = reduce_mean(float(loss.detach().item()), dist_context, device)
                 if wandb_tracking_enabled:
@@ -873,7 +925,7 @@ def _run_training(
                 accum_step = ((step - 1) % gradient_accumulation_steps) + 1
                 loss_extra = _format_loss_extra(loss, loss_parts, display_loss=loss_value)
                 loss_extra += (
-                    f" lr={config['learning_rate']:.2e} opt_step={epoch_optimizer_step}/{updates_per_epoch} "
+                    f" lr={current_lr:.2e} opt_step={epoch_optimizer_step}/{updates_per_epoch} "
                     f"batch_step={global_batch_step} accum={accum_step}/{gradient_accumulation_steps}"
                 )
                 if progress is not None:
@@ -902,6 +954,7 @@ def _run_training(
                                 epoch=epoch,
                             ),
                             "train/loss": loss_value,
+                            "train/learning_rate": current_lr,
                         }
                     )
 
@@ -949,6 +1002,7 @@ def _run_training(
                                     ),
                                     "train/step_loss": step_train_loss,
                                     "val/loss": step_val_loss,
+                                    "train/learning_rate": get_optimizer_lr(optimizer),
                                 }
                             )
                         _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
@@ -1008,6 +1062,7 @@ def _run_training(
                         ),
                         "train/epoch_loss": train_loss,
                         "val/loss": val_loss,
+                        "train/learning_rate": get_optimizer_lr(optimizer),
                     }
                 )
 
