@@ -10,6 +10,8 @@ with contextlib.redirect_stdout(io.StringIO()):
 from model.continuous_action import (
     ensure_continuous_action_decoder,
     load_continuous_action_decoder,
+    resolve_continuous_policy_type,
+    resolve_gaussian_log_std_bounds,
     unpatch_continuous_action_forward,
 )
 from utils.action_bins import (
@@ -189,14 +191,21 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
     if uses_continuous_actions(saved_config):
         if "action_dim" not in saved_config:
             raise ValueError(
-                "Checkpoint config.yaml uses action_token_mode='parallel_l1' but does not contain action_dim."
+                "Checkpoint config.yaml uses a continuous action mode but does not contain action_dim."
             )
+        gaussian_log_std_min = None
+        gaussian_log_std_max = None
+        if saved_config.get("action_token_mode") == "parallel_gaussian":
+            gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(saved_config)
         load_continuous_action_decoder(
             model,
             model_path,
             expected_action_dim=int(saved_config["action_dim"]),
             expected_action_query_len=saved_config.get("action_query_len"),
             expected_action_head_num_blocks=saved_config.get("action_head_num_blocks"),
+            expected_policy_type=resolve_continuous_policy_type(saved_config),
+            expected_gaussian_log_std_min=gaussian_log_std_min,
+            expected_gaussian_log_std_max=gaussian_log_std_max,
         )
 
     model.eval()

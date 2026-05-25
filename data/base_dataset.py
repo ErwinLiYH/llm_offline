@@ -44,7 +44,7 @@ class DatasetBuildRequest:
     - `labels`: `torch.long` tensor shaped `[seq_len]`, prompt positions masked as `-100`
     - `action_bin_labels`: `torch.long` tensor shaped `[seq_len]`, non-action positions as `-1`
     - `action_values`: optional `torch.float32` tensor shaped `[action_dim]` for continuous
-      regression action modes
+      action modes
     """
 
     # Dataset identity.

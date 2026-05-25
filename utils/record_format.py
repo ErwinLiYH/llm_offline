@@ -16,6 +16,8 @@ def format_eval_step_text(
     attempt_count: int,
     action_bin_probabilities: str | None = None,
     raw_continuous_action: list[float] | None = None,
+    gaussian_action_mean: list[float] | None = None,
+    gaussian_action_std: list[float] | None = None,
 ) -> str:
     base = format_prompt_action_text(prompt, action)
     text = (
@@ -29,4 +31,10 @@ def format_eval_step_text(
     if raw_continuous_action is not None:
         values = ", ".join(f"{float(value):.8f}" for value in raw_continuous_action)
         text = f"{text}\n\nRaw Continuous Action:\n[{values}]"
+    if gaussian_action_mean is not None:
+        values = ", ".join(f"{float(value):.8f}" for value in gaussian_action_mean)
+        text = f"{text}\n\nGaussian Action Mean:\n[{values}]"
+    if gaussian_action_std is not None:
+        values = ", ".join(f"{float(value):.8f}" for value in gaussian_action_std)
+        text = f"{text}\n\nGaussian Action Std:\n[{values}]"
     return text

@@ -834,3 +834,42 @@ type: project
 - 样本不再生成 `action_query_mask`；训练和 eval continuous forward 不再传该参数
 - loss 仍为 `F.l1_loss(predicted_actions, action_values, reduction="mean")`
 - 新 checkpoint 的 `continuous_action_decoder.pt` 包含 `action_queries`；zero-placeholder 版本 sidecar 会因 state dict 不兼容而加载失败
+
+---
+
+## parallel_gaussian continuous policy（2026-05-25）
+
+**新增高斯连续动作模式：**
+- `action_token_mode` 新增 `parallel_gaussian`，复用 `parallel_l1` 的 prompt-only dataset、learned action queries 和 4D attention mask
+- `ContinuousActionDecoder` 新增 `policy_type`：`deterministic` 对应 `parallel_l1`，`gaussian` 对应 `parallel_gaussian`
+- Gaussian head 输出 `mean/log_std/std`，其中 `mean` 经 `tanh` 限制到 `[-1, 1]`，`log_std` 由 `gaussian_log_std_min/max` clamp
+
+**training / checkpoint / eval：**
+- `_compute_batch_loss()` 在 `parallel_gaussian` 下使用 diagonal Gaussian NLL 做 BC，并显示 `nll`、`mae` 和平均 `std`
+- `continuous_action_decoder.pt` 新增 `policy_type` 和 Gaussian log-std bounds；旧 `parallel_l1` sidecar 缺省视为 `deterministic`
+- rollout 中 `parallel_gaussian` 沿用 `action_sampling`：`true` 从策略分布采样，`false` 执行 mean；执行前按环境 action bounds clip
+- eval step log 在 Gaussian 模式额外记录 policy mean/std
+
+**配置 / 文档 / 测试：**
+- `config.yaml`、`DESIGN.md`、`AGENTS.md`、`eval.yaml`、`score.yaml` 标注 `parallel_gaussian` 和 log-std 配置
+- `tests/test_continuous_action.py` 覆盖 Gaussian mode helper、decoder 输出形状/边界、sidecar 保存加载和 policy type mismatch
+
+---
+
+## continuous prompt rename（2026-05-25）
+
+**PointMaze continuous prompt 命名去 L1 化：**
+- 将 `prompts/pointmaze/parallel_l1_full_sensing.txt` 重命名为 `parallel_full_sensing.txt`
+- 将 `parallel_l1_loca_sensing.txt`、`parallel_l1_no_sensing.txt`、`parallel_l1_wall_sensing.txt` 分别重命名为 `parallel_loca_sensing.txt`、`parallel_no_sensing.txt`、`parallel_wall_sensing.txt`
+- `config.yaml` 默认 `prompt_templete_index` 更新为 `["parallel_full_sensing"]`
+- 这次只调整 prompt 文件名；`action_token_mode: parallel_l1` 仍是确定性 L1 连续动作模式名，`parallel_gaussian` 继续复用同一组 continuous prompts
+
+---
+
+## experiment config snapshots（2026-05-25）
+
+**训练启动时保存完整运行配置：**
+- `train.py` 在解析完 experiment id、variant selection、action_dim、continuous action head 参数、world size 和 global effective batch size 后，立即保存运行时 config 快照
+- 快照路径为 `exp_configs/<experiment_id>/config.yaml`，并额外记录 `train_config_source`
+- 保存发生在模型加载、dataset 构建和正式训练之前；DDP 下只有 rank0 写入，其他 rank 通过 barrier 等待
+- 新增 `utils/experiment_config.py` 和 `tests/test_experiment_config.py` 覆盖快照路径、内容和参数校验

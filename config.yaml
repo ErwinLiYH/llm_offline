@@ -25,13 +25,13 @@ distributed_timeout_seconds: 1800 # process-group timeout for DDP startup/barrie
 # Train-related settings
 
 ## Variant selection
-train_mode: except        # single | all | except
-train_varients: [open-dense, umaze-dense, medium-dense, large-dense, local-layout-07]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
+train_mode: single        # single | all | except
+train_varients: [large]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
 # train_mode: single
 # train_varients: local-layout-07
 
 ## Prompt templates
-prompt_templete_index: ["bin_no_sensing"]  # prompt file names without .txt used for each training split
+prompt_templete_index: ["parallel_full_sensing"]  # prompt file names without .txt used for each training split
 
 ## Data
 dataset_workers: 3            # processes for parallel episode tokenization
@@ -47,9 +47,11 @@ history_num: 0                 # number of sampled history transitions to includ
 history_stride: 1              # sample every n past transitions when building history
 
 ## Action mode
-action_token_mode: bin  # text | bin | gaussian_bin | parallel_l1
-action_query_len: 8            # parallel_l1 only; learned query/workspace length, defaults to action_dim
-action_head_num_blocks: 24      # parallel_l1 only; MLPResNet residual block count, defaults to 2
+action_token_mode: parallel_gaussian  # text | bin | gaussian_bin | parallel_l1 | parallel_gaussian
+action_query_len: 2            # continuous modes only; learned query/workspace length, defaults to action_dim
+action_head_num_blocks: 2      # continuous modes only; MLPResNet residual block count, defaults to 2
+gaussian_log_std_min: -5.0      # parallel_gaussian only; lower clamp for policy log std
+gaussian_log_std_max: 1.0       # parallel_gaussian only; upper clamp for policy log std
 action_num_bins: 50              # shared action-bin tokens: <act_00> ... <act_49>
 new_token: false                 # false = reuse stable low-frequency tokenizer IDs internally; true = add <act_XX> special tokens
 action_bin_min: -1.0
@@ -69,8 +71,8 @@ learning_rate: 0.0001
 # warmup_steps: 200             # optional fixed optimizer-step warmup override
 # lr_decay_steps: 30000         # optional fixed optimizer-step decay duration after warmup
 num_epochs: 5
-batch_size: 8
-gradient_accumulation_steps: 4
+batch_size: 16
+gradient_accumulation_steps: 1
 
 # LoRA
 lora_r: 16
@@ -78,6 +80,7 @@ lora_alpha: 32
 lora_dropout: 0
 # lora_target_modules: ["q_proj", "v_proj"]
 lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+# lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 
 # Eval-related settings
@@ -85,8 +88,8 @@ lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
 ## Epoch-level and optional step-level environment evaluation
 eval_num_episodes: 20    # rollout episodes per variant per training eval; 0 = disable rollout eval
 eval_step_interval: 449802    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
-eval_mode: except           # optional; defaults to following train_mode
-eval_variants: [open-dense, umaze-dense, medium-dense, large-dense]  # single: one variant; all: selected variants or omit for all; except: excluded variants
+eval_mode: single           # optional; defaults to following train_mode
+eval_variants: [large]  # single: one variant; all: selected variants or omit for all; except: excluded variants
 # eval_mode: single
 # eval_variants: local-layout-07
 eval_env_kwargs:

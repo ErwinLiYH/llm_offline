@@ -18,6 +18,7 @@ from utils.action_bins import (
     get_action_token_mode,
     uses_action_bins,
     uses_continuous_actions,
+    uses_gaussian_continuous_actions,
 )
 from utils.chat_template import build_generation_prompt
 from utils.prompt_loader import render_template
@@ -62,6 +63,8 @@ class GeneratedActionResult:
     action_time_seconds: float
     generation_count: int
     raw_continuous_action: list[float] | None = None
+    gaussian_action_mean: list[float] | None = None
+    gaussian_action_std: list[float] | None = None
 
 
 def resolve_action_generation_config(config: dict) -> dict:
@@ -339,7 +342,20 @@ def generate_valid_action(
                 continuous_action=True,
             )
         action_time_seconds = time.perf_counter() - t0
-        raw_action = predicted[0].detach().float().cpu().numpy().astype(np.float32)
+        gaussian_mean = None
+        gaussian_std = None
+        if uses_gaussian_continuous_actions(config):
+            mean = predicted.mean.float()
+            std = predicted.std.float()
+            gaussian_mean = mean[0].detach().cpu().numpy().astype(np.float32)
+            gaussian_std = std[0].detach().cpu().numpy().astype(np.float32)
+            if action_context.action_generation_config["action_sampling"]:
+                selected = torch.normal(mean=mean, std=std)
+            else:
+                selected = mean
+        else:
+            selected = predicted
+        raw_action = selected[0].detach().float().cpu().numpy().astype(np.float32)
         if raw_action.shape != (action_dim,):
             raise ValueError(
                 "Continuous action decoder returned unexpected shape: "
@@ -377,6 +393,16 @@ def generate_valid_action(
             action_time_seconds=action_time_seconds,
             generation_count=1,
             raw_continuous_action=[float(value) for value in raw_action.tolist()],
+            gaussian_action_mean=(
+                [float(value) for value in gaussian_mean.tolist()]
+                if gaussian_mean is not None
+                else None
+            ),
+            gaussian_action_std=(
+                [float(value) for value in gaussian_std.tolist()]
+                if gaussian_std is not None
+                else None
+            ),
         )
 
     action = None

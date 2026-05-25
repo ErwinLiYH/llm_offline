@@ -28,6 +28,7 @@ from data.base_dataset import DatasetBuildRequest
 from data.registry import get_action_dim, get_dataset
 from model.continuous_action import (
     ensure_continuous_action_decoder,
+    resolve_gaussian_log_std_bounds,
     resolve_action_head_num_blocks,
     resolve_action_query_len,
     save_continuous_action_decoder,
@@ -491,6 +492,8 @@ def _build_training_eval_config(config: dict) -> dict:
         "action_dim": config.get("action_dim"),
         "action_query_len": config.get("action_query_len"),
         "action_head_num_blocks": config.get("action_head_num_blocks"),
+        "gaussian_log_std_min": config.get("gaussian_log_std_min"),
+        "gaussian_log_std_max": config.get("gaussian_log_std_max"),
         "max_length": config.get("max_length"),
     }
 
@@ -641,6 +644,30 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
         loss = F.l1_loss(predicted_actions.float(), action_values, reduction="mean")
         return loss, {"l1_loss": float(loss.detach().item())}
 
+    if loss_context["action_token_mode"] == "parallel_gaussian":
+        action_values = batch["action_values"].to(device=device, dtype=torch.float32)
+        action_output = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            continuous_action=True,
+        )
+        mean = action_output.mean.float()
+        log_std = action_output.log_std.float()
+        std = action_output.std.float()
+        normalized_error = (action_values - mean) / std
+        nll = 0.5 * (
+            normalized_error.square()
+            + 2.0 * log_std
+            + math.log(2.0 * math.pi)
+        )
+        loss = nll.mean()
+        mae = F.l1_loss(mean, action_values, reduction="mean")
+        return loss, {
+            "gaussian_nll_loss": float(loss.detach().item()),
+            "gaussian_mae": float(mae.detach().item()),
+            "gaussian_mean_std": float(std.detach().mean().item()),
+        }
+
     outputs = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -655,6 +682,12 @@ def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -
         return f"loss={loss_value:.4f}"
     if "l1_loss" in loss_parts:
         return f"loss={loss_value:.4f} l1={loss_parts['l1_loss']:.6f}"
+    if "gaussian_nll_loss" in loss_parts:
+        return (
+            f"loss={loss_value:.4f} nll={loss_parts['gaussian_nll_loss']:.6f} "
+            f"mae={loss_parts['gaussian_mae']:.6f} "
+            f"std={loss_parts['gaussian_mean_std']:.6f}"
+        )
     return (
         f"loss={loss_value:.4f} action={loss_parts['action_loss']:.6f} "
         f"stop={loss_parts['stop_loss']:.4f}"
@@ -1191,7 +1224,8 @@ def main():
         config["train_varients"] = train_selection.configured_variants
         config.pop("variants", None)
         config["action_dim"] = action_dim
-        if get_action_token_mode(config) == "parallel_l1":
+        action_token_mode = get_action_token_mode(config)
+        if uses_continuous_actions(config):
             config["action_query_len"] = resolve_action_query_len(
                 action_dim,
                 config.get("action_query_len"),
@@ -1199,6 +1233,10 @@ def main():
             config["action_head_num_blocks"] = resolve_action_head_num_blocks(
                 config.get("action_head_num_blocks")
             )
+            if action_token_mode == "parallel_gaussian":
+                gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(config)
+                config["gaussian_log_std_min"] = gaussian_log_std_min
+                config["gaussian_log_std_max"] = gaussian_log_std_max
         config["resolved_train_variants"] = train_selection.selected_variants
         config["train_selection_tag"] = train_selection.selection_tag
         config["resolved_eval_mode"] = eval_selection.mode
@@ -1214,10 +1252,11 @@ def main():
         rank_zero_print(dist_context, f"[train] Using device: {device}")
         rank_zero_print(dist_context, f"[train] Experiment ID: {experiment_id}")
         rank_zero_print(dist_context, f"[train] Resolved action_dim: {action_dim}")
-        if get_action_token_mode(config) == "parallel_l1":
+        if uses_continuous_actions(config):
             rank_zero_print(
                 dist_context,
                 "[train] Resolved continuous decoder: "
+                f"mode={action_token_mode}, "
                 f"action_query_len={config['action_query_len']}, "
                 f"action_head_num_blocks={config['action_head_num_blocks']}",
             )
