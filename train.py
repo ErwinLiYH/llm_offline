@@ -694,6 +694,44 @@ def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -
     )
 
 
+def _loss_parts_to_wandb_metrics(loss_parts, *, prefix: str) -> dict[str, float]:
+    if not loss_parts:
+        return {}
+    if "l1_loss" in loss_parts:
+        return {f"{prefix}/l1": float(loss_parts["l1_loss"])}
+    if "gaussian_nll_loss" in loss_parts:
+        return {
+            f"{prefix}/nll": float(loss_parts["gaussian_nll_loss"]),
+            f"{prefix}/mae": float(loss_parts["gaussian_mae"]),
+            f"{prefix}/std": float(loss_parts["gaussian_mean_std"]),
+        }
+    if "student_t_nll_loss" in loss_parts:
+        return {
+            f"{prefix}/tnll": float(loss_parts["student_t_nll_loss"]),
+            f"{prefix}/mae": float(loss_parts["student_t_mae"]),
+            f"{prefix}/scale": float(loss_parts["student_t_mean_scale"]),
+            f"{prefix}/df": float(loss_parts["student_t_df"]),
+        }
+    return {
+        f"{prefix}/action_loss": float(loss_parts["action_loss"]),
+        f"{prefix}/stop_loss": float(loss_parts["stop_loss"]),
+    }
+
+
+def _reduce_wandb_loss_part_metrics(
+    loss_parts,
+    *,
+    prefix: str,
+    dist_context: DistributedContext,
+    device: torch.device,
+) -> dict[str, float]:
+    metrics = _loss_parts_to_wandb_metrics(loss_parts, prefix=prefix)
+    return {
+        key: reduce_mean(value, dist_context, device)
+        for key, value in metrics.items()
+    }
+
+
 def _run_validation(
     model,
     val_loader,
@@ -970,14 +1008,23 @@ def _run_training(
                         extra=loss_extra,
                     )
 
-                if (
-                    wandb_logger.enabled
+                should_log_wandb_batch = (
+                    wandb_tracking_enabled
                     and (
                         global_batch_step == 1
                         or global_batch_step % wandb_log_every == 0
                         or step == train_total
                     )
-                ):
+                )
+                wandb_loss_part_metrics = {}
+                if should_log_wandb_batch:
+                    wandb_loss_part_metrics = _reduce_wandb_loss_part_metrics(
+                        loss_parts,
+                        prefix="train",
+                        dist_context=dist_context,
+                        device=device,
+                    )
+                if wandb_logger.enabled and should_log_wandb_batch:
                     wandb_logger.log(
                         {
                             **wandb_step_metrics(
@@ -988,6 +1035,7 @@ def _run_training(
                             ),
                             "train/loss": loss_value,
                             "train/learning_rate": current_lr,
+                            **wandb_loss_part_metrics,
                         }
                     )
 
