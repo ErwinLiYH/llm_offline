@@ -53,6 +53,7 @@ from utils.distributed import (
     unwrap_model,
 )
 from utils.distributed_sampler import DistributedWeightedSampler
+from utils.experiment_config import save_experiment_config_snapshot
 from utils.file_progress import FileProgress
 from utils.lr_scheduler import (
     get_optimizer_lr,
@@ -1167,6 +1168,7 @@ def main():
     args = parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+    config["train_config_source"] = args.config
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)
     try:
@@ -1225,6 +1227,10 @@ def main():
             f"backend={dist_context.backend}, world_size={dist_context.world_size}, "
             f"rank={dist_context.rank}, local_rank={dist_context.local_rank}",
         )
+        if dist_context.is_main_process:
+            exp_config_path = save_experiment_config_snapshot(config)
+            print(f"[train] Experiment config saved: {exp_config_path}")
+        barrier(dist_context)
 
         model, tokenizer = load_model_and_tokenizer(config)
         model.to(device)
