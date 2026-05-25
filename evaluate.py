@@ -20,6 +20,7 @@ import yaml
 
 from data.registry import get_formatter
 from data.pointmaze.variants import POINTMAZE_VARIANTS, get_pointmaze_variant_type
+from model.continuous_action import resolve_action_head_num_blocks, resolve_action_query_len
 from model.policy import load_from_checkpoint
 from transformers import LogitsProcessor, LogitsProcessorList
 from utils.action_bins import (
@@ -85,6 +86,8 @@ ACTION_CONFIG_KEYS = (
     "action_loss_weight",
     "action_stop_loss_weight",
     "action_dim",
+    "action_query_len",
+    "action_head_num_blocks",
     "max_length",
 )
 
@@ -151,9 +154,17 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
         action_config["action_dim"] = saved_config["action_dim"]
     if "max_length" in saved_config:
         action_config["max_length"] = saved_config["max_length"]
-    if action_config["action_token_mode"] == "parallel_l1" and "action_dim" not in action_config:
-        raise ValueError(
-            "Checkpoint config.yaml uses action_token_mode='parallel_l1' but does not contain action_dim."
+    if action_config["action_token_mode"] == "parallel_l1":
+        if "action_dim" not in action_config:
+            raise ValueError(
+                "Checkpoint config.yaml uses action_token_mode='parallel_l1' but does not contain action_dim."
+            )
+        action_config["action_query_len"] = resolve_action_query_len(
+            int(action_config["action_dim"]),
+            saved_config.get("action_query_len"),
+        )
+        action_config["action_head_num_blocks"] = resolve_action_head_num_blocks(
+            saved_config.get("action_head_num_blocks")
         )
     return action_config
 

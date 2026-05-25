@@ -28,6 +28,8 @@ from data.base_dataset import DatasetBuildRequest
 from data.registry import get_action_dim, get_dataset
 from model.continuous_action import (
     ensure_continuous_action_decoder,
+    resolve_action_head_num_blocks,
+    resolve_action_query_len,
     save_continuous_action_decoder,
     unpatch_continuous_action_forward,
 )
@@ -478,6 +480,8 @@ def _build_training_eval_config(config: dict) -> dict:
         "action_bin_max": config.get("action_bin_max", 1.0),
         "new_token": config.get("new_token", False),
         "action_dim": config.get("action_dim"),
+        "action_query_len": config.get("action_query_len"),
+        "action_head_num_blocks": config.get("action_head_num_blocks"),
         "max_length": config.get("max_length"),
     }
 
@@ -1131,6 +1135,14 @@ def main():
         config["train_varients"] = train_selection.configured_variants
         config.pop("variants", None)
         config["action_dim"] = action_dim
+        if get_action_token_mode(config) == "parallel_l1":
+            config["action_query_len"] = resolve_action_query_len(
+                action_dim,
+                config.get("action_query_len"),
+            )
+            config["action_head_num_blocks"] = resolve_action_head_num_blocks(
+                config.get("action_head_num_blocks")
+            )
         config["resolved_train_variants"] = train_selection.selected_variants
         config["train_selection_tag"] = train_selection.selection_tag
         config["resolved_eval_mode"] = eval_selection.mode
@@ -1146,6 +1158,13 @@ def main():
         rank_zero_print(dist_context, f"[train] Using device: {device}")
         rank_zero_print(dist_context, f"[train] Experiment ID: {experiment_id}")
         rank_zero_print(dist_context, f"[train] Resolved action_dim: {action_dim}")
+        if get_action_token_mode(config) == "parallel_l1":
+            rank_zero_print(
+                dist_context,
+                "[train] Resolved continuous decoder: "
+                f"action_query_len={config['action_query_len']}, "
+                f"action_head_num_blocks={config['action_head_num_blocks']}",
+            )
         rank_zero_print(
             dist_context,
             "[train] Parallel setup: "

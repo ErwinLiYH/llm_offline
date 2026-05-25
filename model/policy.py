@@ -192,6 +192,8 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
             model,
             model_path,
             expected_action_dim=int(saved_config["action_dim"]),
+            expected_action_query_len=saved_config.get("action_query_len"),
+            expected_action_head_num_blocks=saved_config.get("action_head_num_blocks"),
         )
 
     model.eval()
