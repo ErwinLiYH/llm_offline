@@ -63,3 +63,7 @@ Thumbs.db
 
 # unsloth cache
 unsloth_compiled_cache/
+
+
+tests/
+scripts/

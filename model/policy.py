@@ -99,6 +99,9 @@ def _resolve_lora_target_modules(config: dict) -> list[str]:
     """Return LoRA target modules, force-adding action-token input/output layers."""
     raw_modules = config["lora_target_modules"]
     if isinstance(raw_modules, str):
+        raw_modules = raw_modules.strip()
+        if not raw_modules:
+            raise ValueError("lora_target_modules must contain non-empty strings")
         modules = [raw_modules]
     else:
         modules = list(raw_modules)

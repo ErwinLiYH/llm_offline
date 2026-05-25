@@ -94,7 +94,6 @@ def _as_bool(value) -> bool:
     return bool(value)
 
 
-
 def ensure_experiment_id(config: dict) -> str:
     experiment_id = config.get("experiment_id")
     if experiment_id:
