@@ -162,11 +162,17 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
         action_config["action_dim"] = saved_config["action_dim"]
     if "max_length" in saved_config:
         action_config["max_length"] = saved_config["max_length"]
-    if action_config["action_token_mode"] in {"parallel_l1", "parallel_gaussian", "parallel_t"}:
+    if action_config["action_token_mode"] in {
+        "parallel_llm_bin",
+        "parallel_l1",
+        "parallel_gaussian",
+        "parallel_t",
+    }:
         if "action_dim" not in action_config:
             raise ValueError(
-                "Checkpoint config.yaml uses a continuous action mode but does not contain action_dim."
+                "Checkpoint config.yaml uses a parallel action mode but does not contain action_dim."
             )
+    if action_config["action_token_mode"] in {"parallel_l1", "parallel_gaussian", "parallel_t"}:
         action_config["action_query_len"] = resolve_action_query_len(
             int(action_config["action_dim"]),
             saved_config.get("action_query_len"),

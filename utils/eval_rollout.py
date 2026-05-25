@@ -13,6 +13,7 @@ from transformers import LogitsProcessor, LogitsProcessorList
 from model.continuous_action import resolve_student_t_df
 from utils.action_bins import (
     bin_to_continuous,
+    build_parallel_llm_bin_attention_mask,
     get_action_bin_codec,
     get_action_bin_range,
     get_action_num_bins,
@@ -20,6 +21,7 @@ from utils.action_bins import (
     uses_action_bins,
     uses_continuous_actions,
     uses_gaussian_continuous_actions,
+    uses_parallel_llm_bins,
     uses_student_t_continuous_actions,
 )
 from utils.chat_template import build_generation_prompt
@@ -235,6 +237,132 @@ def collect_action_bin_probabilities(
     return distributions
 
 
+def _filtered_bin_logits(
+    logits: torch.Tensor,
+    *,
+    top_k: int,
+    top_p: float,
+) -> torch.Tensor:
+    filtered = logits.clone()
+    if top_k > 0 and top_k < filtered.shape[-1]:
+        kth_values = torch.topk(filtered, top_k, dim=-1).values[:, -1].unsqueeze(-1)
+        filtered = filtered.masked_fill(filtered < kth_values, -float("inf"))
+    if top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(filtered, descending=True, dim=-1)
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        cumulative = sorted_probs.cumsum(dim=-1)
+        remove_sorted = cumulative > top_p
+        remove_sorted[:, 1:] = remove_sorted[:, :-1].clone()
+        remove_sorted[:, 0] = False
+        remove = torch.zeros_like(remove_sorted)
+        remove.scatter_(dim=-1, index=sorted_indices, src=remove_sorted)
+        filtered = filtered.masked_fill(remove, -float("inf"))
+    return filtered
+
+
+def _select_parallel_llm_bin_indices(
+    bin_logits: torch.Tensor,
+    action_generation_config: dict,
+) -> list[int]:
+    logits = bin_logits.float()
+    if not action_generation_config["action_sampling"]:
+        return [int(value) for value in torch.argmax(logits, dim=-1).detach().cpu().tolist()]
+
+    logits = logits / float(action_generation_config["action_temperature"])
+    logits = _filtered_bin_logits(
+        logits,
+        top_k=int(action_generation_config["action_top_k"]),
+        top_p=float(action_generation_config["action_top_p"]),
+    )
+    probs = torch.softmax(logits, dim=-1)
+    sampled = torch.multinomial(probs, num_samples=1).squeeze(-1)
+    return [int(value) for value in sampled.detach().cpu().tolist()]
+
+
+def generate_parallel_llm_bin_action(
+    model,
+    tokenizer,
+    prompt: str,
+    device: torch.device,
+    *,
+    action_dim: int,
+    config: dict,
+    action_codec,
+    collect_probabilities: bool,
+    action_generation_config: dict,
+) -> tuple[str, list[int], list[list[float]]]:
+    if action_codec is None:
+        raise RuntimeError("parallel_llm_bin eval requires an initialized action codec.")
+    action_dim = int(action_dim)
+    if action_dim < 1:
+        raise ValueError(f"action_dim must be >= 1, got {action_dim}")
+
+    tokenizer_kwargs = {
+        "text": build_generation_prompt(tokenizer, prompt),
+        "return_tensors": "pt",
+        "add_special_tokens": False,
+    }
+    if config.get("max_length") is not None:
+        prompt_budget = int(config["max_length"]) - action_dim
+        if prompt_budget <= 0:
+            raise ValueError(
+                "parallel_llm_bin requires max_length > action_dim so PHT tokens fit: "
+                f"max_length={config['max_length']}, action_dim={action_dim}."
+            )
+        tokenizer_kwargs["max_length"] = prompt_budget
+        tokenizer_kwargs["truncation"] = True
+    encoded = tokenizer(**tokenizer_kwargs)
+    input_ids = encoded.input_ids.to(device)
+    attention_mask = encoded.attention_mask.to(device)
+    placeholder_ids = torch.full(
+        (input_ids.shape[0], action_dim),
+        action_codec.require_placeholder_token_id(),
+        device=device,
+        dtype=input_ids.dtype,
+    )
+    placeholder_attention = torch.ones_like(placeholder_ids, dtype=attention_mask.dtype)
+    input_ids = torch.cat([input_ids, placeholder_ids], dim=1)
+    attention_mask = torch.cat([attention_mask, placeholder_attention], dim=1)
+    placeholder_mask = torch.zeros_like(attention_mask, dtype=torch.bool)
+    placeholder_mask[:, -action_dim:] = True
+
+    embedding_weight = getattr(model.get_input_embeddings(), "weight", None)
+    mask_dtype = (
+        embedding_weight.dtype
+        if embedding_weight is not None and torch.is_floating_point(embedding_weight)
+        else torch.float32
+    )
+    parallel_attention_mask = build_parallel_llm_bin_attention_mask(
+        attention_mask,
+        placeholder_mask,
+        dtype=mask_dtype,
+    )
+    with torch.no_grad():
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=parallel_attention_mask,
+            use_cache=False,
+        )
+
+    action_logits = outputs.logits[placeholder_mask].reshape(action_dim, -1)
+    bin_token_ids = torch.tensor(action_codec.model_token_ids, device=device, dtype=torch.long)
+    bin_logits = action_logits.index_select(dim=-1, index=bin_token_ids)
+    selected_bins = _select_parallel_llm_bin_indices(
+        bin_logits,
+        action_generation_config,
+    )
+    generated_token_ids = action_codec.token_ids_for_bins(selected_bins)
+    generated = action_codec.display_text_for_bins(selected_bins)
+    distributions = []
+    if collect_probabilities:
+        bin_probs = torch.softmax(bin_logits.float(), dim=-1)
+        distributions = [
+            [float(value) for value in row.detach().cpu().tolist()]
+            for row in bin_probs
+        ]
+    return generated, generated_token_ids, distributions
+
+
 def format_action_bin_probability_log(distributions: list[list[float]], config: dict, action_codec) -> str:
     if not distributions:
         return ""
@@ -433,6 +561,78 @@ def generate_valid_action(
                 if student_t_scale is not None
                 else None
             ),
+        )
+
+    if uses_parallel_llm_bins(config):
+        t0 = time.perf_counter()
+        generated, generated_token_ids, distributions = generate_parallel_llm_bin_action(
+            model,
+            tokenizer,
+            prompt,
+            device,
+            action_dim=action_dim,
+            config=config,
+            action_codec=action_context.action_codec,
+            collect_probabilities=action_context.collect_bin_probabilities,
+            action_generation_config=action_context.action_generation_config,
+        )
+        action_time_seconds = time.perf_counter() - t0
+        generated_probability_logs = []
+        if action_context.collect_bin_probabilities:
+            probability_log = format_action_bin_probability_log(
+                distributions,
+                config,
+                action_context.action_codec,
+            )
+            generated_probability_logs.append(
+                f"[Attempt 1]\n{probability_log}" if probability_log else "[Attempt 1]"
+            )
+
+        parsed_action, success = parse_action_for_mode(
+            formatter,
+            generated,
+            generated_token_ids,
+            config,
+            action_dim=action_dim,
+            action_codec=action_context.action_codec,
+        )
+        low = (
+            np.full(action_shape, -1.0, dtype=np.float32)
+            if action_low is None
+            else np.asarray(action_low, dtype=np.float32)
+        )
+        high = (
+            np.full(action_shape, 1.0, dtype=np.float32)
+            if action_high is None
+            else np.asarray(action_high, dtype=np.float32)
+        )
+        parse_failures = 0
+        if success and formatter.validate_action(parsed_action):
+            action = np.clip(parsed_action.reshape(action_shape), low, high).astype(np.float32)
+            parse_status = "success"
+            fallback_count = 0
+        else:
+            action = np.clip(np.zeros(action_shape, dtype=np.float32), low, high).astype(np.float32)
+            parse_status = "fallback"
+            fallback_count = 1
+            parse_failures = 1
+        executed_action_text = format_action_for_mode(
+            formatter,
+            action.reshape(-1),
+            config,
+            action_context.action_codec,
+        )
+        return GeneratedActionResult(
+            action=action,
+            executed_action_text=executed_action_text,
+            generated_attempts=[generated],
+            generated_probability_logs=generated_probability_logs,
+            attempt_count=1,
+            parse_status=parse_status,
+            parse_failures=parse_failures,
+            fallback_count=fallback_count,
+            action_time_seconds=action_time_seconds,
+            generation_count=1,
         )
 
     action = None

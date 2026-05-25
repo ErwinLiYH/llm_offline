@@ -38,10 +38,12 @@ from model.continuous_action import (
 )
 from model.policy import load_model_and_tokenizer, get_model_slug
 from utils.action_bins import (
+    build_parallel_llm_bin_attention_mask,
     gaussian_action_loss,
     get_action_bin_token_ids,
     get_action_num_bins,
     get_action_token_mode,
+    parallel_llm_bin_action_loss,
     uses_continuous_actions,
 )
 from utils.distributed import (
@@ -628,6 +630,30 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
     attention_mask = batch["attention_mask"].to(device)
     labels = batch["labels"].to(device)
 
+    if loss_context["action_token_mode"] == "parallel_llm_bin":
+        action_bin_labels = batch["action_bin_labels"].to(device)
+        embedding_weight = getattr(model.get_input_embeddings(), "weight", None)
+        mask_dtype = (
+            embedding_weight.dtype
+            if embedding_weight is not None and torch.is_floating_point(embedding_weight)
+            else torch.float32
+        )
+        parallel_attention_mask = build_parallel_llm_bin_attention_mask(
+            attention_mask,
+            action_bin_labels >= 0,
+            dtype=mask_dtype,
+        )
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=parallel_attention_mask,
+            use_cache=False,
+        )
+        return parallel_llm_bin_action_loss(
+            outputs.logits,
+            action_bin_labels,
+            loss_context["bin_token_ids"],
+        )
+
     if loss_context["action_token_mode"] == "gaussian_bin":
         action_bin_labels = batch["action_bin_labels"].to(device)
         outputs = model(
@@ -735,6 +761,11 @@ def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -
             f"scale={loss_parts['student_t_mean_scale']:.6f} "
             f"df={loss_parts['student_t_df']:.2f}"
         )
+    if int(loss_parts.get("stop_tokens", 0)) == 0:
+        return (
+            f"loss={loss_value:.4f} action={loss_parts['action_loss']:.6f} "
+            f"tokens={int(loss_parts.get('action_tokens', 0))}"
+        )
     return (
         f"loss={loss_value:.4f} action={loss_parts['action_loss']:.6f} "
         f"stop={loss_parts['stop_loss']:.4f}"
@@ -761,10 +792,10 @@ def _loss_parts_to_wandb_metrics(loss_parts, *, prefix: str) -> dict[str, float]
             f"{prefix}/scale": float(loss_parts["student_t_mean_scale"]),
             f"{prefix}/df": float(loss_parts["student_t_df"]),
         }
-    return {
-        f"{prefix}/action_loss": float(loss_parts["action_loss"]),
-        f"{prefix}/stop_loss": float(loss_parts["stop_loss"]),
-    }
+    metrics = {f"{prefix}/action_loss": float(loss_parts["action_loss"])}
+    if int(loss_parts.get("stop_tokens", 1)) > 0:
+        metrics[f"{prefix}/stop_loss"] = float(loss_parts["stop_loss"])
+    return metrics
 
 
 def _reduce_wandb_loss_part_metrics(
@@ -963,9 +994,10 @@ def _run_training(
     action_soft_label_radius = None
     student_t_df = None
     continuous_mean_l1_weight = 0.0
-    if action_token_mode == "gaussian_bin":
+    if action_token_mode in {"gaussian_bin", "parallel_llm_bin"}:
         bin_token_ids = get_action_bin_token_ids(tokenizer, config)
         action_num_bins = get_action_num_bins(config)
+    if action_token_mode == "gaussian_bin":
         action_sigma = float(config.get("action_soft_label_sigma", 1.0))
         action_loss_weight = float(config.get("action_loss_weight", 1.0))
         action_stop_loss_weight = float(config.get("action_stop_loss_weight", 1.0))

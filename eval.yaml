@@ -12,7 +12,7 @@ num_episodes: 20
 parse_retry_limit: 3
 record_step_logs: true   # whether to save one txt per eval step under the eval result artifacts directory
 # prompt_templete_index: bin  # optional standalone eval prompt override; default = checkpoint's first training prompt
-action_sampling: false    # generation modes: sample vs greedy; parallel_gaussian/parallel_t: sample vs mean action
+action_sampling: false    # generation/bin modes: sample vs greedy; parallel_gaussian/parallel_t: sample vs mean action
 action_temperature: 0.7  # lower = closer to argmax; higher = more random
 action_top_p: 0.9        # nucleus sampling threshold when action_sampling=true
 action_top_k: 0          # 0 disables top-k filtering

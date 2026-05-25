@@ -149,6 +149,7 @@ POINTMAZE_VARIANTS = {
 - 训练时使用 `prompt_templete_index` 指定的共享模板名，因此每个 timestep 产生“所选模板数”条训练样本
 - 训练期评估默认使用训练 prompt 列表中的第一个模板；standalone eval 默认使用 checkpoint config 中记录的第一个训练 prompt。`eval.yaml` 可用单个 `prompt_templete_index` 覆盖 standalone eval prompt；若覆盖值不在 checkpoint 训练 prompt 列表中，`evaluate.py` 会强警告并要求输入 `Y`，或通过 `-y/--yes` 自动确认
 - 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的动态字段；PointMaze 当前动态字段至少包括 `obs_text`、`location_sensing_en/zh`、`wall_sensing_en/zh`、`history_block_en/zh`
+- PointMaze action-bin prompt 使用 `bin_full_sensing`、`bin_loca_sensing`、`bin_wall_sensing`、`bin_no_sensing`，由 `bin`、`gaussian_bin` 和 `parallel_llm_bin` 共享；当前 `config.yaml` 默认使用 `bin_full_sensing` + `parallel_llm_bin`
 - PointMaze 连续动作 prompt 使用去模式化命名：`parallel_full_sensing`、`parallel_loca_sensing`、`parallel_wall_sensing`、`parallel_no_sensing`，由 `parallel_l1`、`parallel_gaussian` 和 `parallel_t` 共享
 - 共享模板当前按“静态 Env Description 在前、动态 Current Status 在后”的结构组织，以提高前缀 cache 命中率
 - 渲染出的共享模板文本只负责环境/任务语义；最终输入序列会再通过 tokenizer 自带的 `chat_template` 包装成 `user` / `assistant` 对话格式
@@ -170,10 +171,10 @@ Action:
 
 #### PointMaze 当前实现
 
-- 当前 `prompts/pointmaze/` 下定义了 5 个共享模板：`0`–`2` 英文、`3`–`4` 中文
+- 当前 `prompts/pointmaze/` 下定义了 legacy `0`–`4` 文本模板、`bin_*_sensing` action-bin 模板和 `parallel_*_sensing` 连续动作模板
 - `POINTMAZE_VARIANTS` 中的每个变种通过 `prompt_vars` 提供共享模板需要的静态字段，如 `env_name`、`maze_map`、`maze_shape`、`maze_visual`、`structure_desc_en`、`structure_desc_zh`
 - PointMaze prompt 当前不再使用 reward 描述；`prompt 0` 也不再输出 raw matrix，只保留 visual maze
-- text 模式 target 文本由 `data/pointmaze/formatting.py` 定义，动作格式为紧凑的百分位整数，如 `35,-72`；bin 模式由共享 action-bin codec 负责离散化、model token 映射和 display text
+- text 模式 target 文本由 `data/pointmaze/formatting.py` 定义，动作格式为紧凑的百分位整数，如 `35,-72`；bin / gaussian_bin / parallel_llm_bin 由共享 action-bin codec 负责离散化、model token 映射和 display text
 - `format_obs(obs, meta)` 负责生成 `obs_text` 与动态 `location_sensing_en/zh`、`wall_sensing_en/zh`
 - `format_history(history_entries, meta)` 负责生成可选历史块 `history_block_en/zh`
 - 当历史块存在时，历史条目按时间从早到晚排列：第一条是最早采样到的历史 step，最后一条是当前 step 之前最近的采样历史 step
@@ -183,8 +184,8 @@ Action:
 - 每个 timestep 的 `(obs, [goal,] action)` 元组展开为多条训练样本，每条对应 `prompt_templete_index` 中指定的一个共享模板
 - obs、goal 的序列化方式（精度、格式）由各环境族的 `formatting.py` 中的 `format_obs` 函数定义，结果填入模板占位符
 - 如启用历史 prompt，训练数据会在同一 episode 内按 `t-1`、`t-1-history_stride`、... 回溯采样过去 transition，最多取 `history_num` 条，再通过 `format_history(...)` 注入 prompt
-- action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` 使用离散 action bin。默认 `new_token: false` 时，模型内部复用 tokenizer 词表末尾筛选出的稳定低频 token ID，但 jsonl、step log 和 history prompt 中的人类可读显示仍统一为 `<act_XX>`；`new_token: true` 时沿用新增 `<act_XX>` special token 的旧路径
-- 训练 tokenization 不再直接编码 `prompt + action_text`；而是将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence
+- action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` / `parallel_llm_bin` 使用离散 action bin。默认 `new_token: false` 时，模型内部复用 tokenizer 词表末尾筛选出的稳定低频 token ID，`parallel_llm_bin` 还额外复用一个不同于 ABT 的 PHT token ID；jsonl、step log 和 history prompt 中的人类可读显示仍统一为 `<act_XX>`。`new_token: true` 时新增 `<act_XX>` special token，`parallel_llm_bin` 额外新增 `<pht>`
+- 训练 tokenization 不再直接编码 `prompt + action_text`；text/bin/gaussian_bin 将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence；`parallel_llm_bin` 只构造 generation prompt 并在末尾追加 `action_dim` 个 PHT
 - `gaussian_bin` 会额外在 dataset 中记录 `action_bin_labels`，动作 token 位置使用高斯 soft-label CE；若设置 `action_soft_label_radius`，则每个动作位置只在中心 bin 及左右 n 个相邻 bin 上做 softmax，窗口外 action token 不产生梯度。chat-template 结束 token 等非动作 assistant token 仍使用普通 CE
 - train/val 划分在 **episode 级别**进行：先按 `episode_keep_num` 随机无放回抽样一个 episode pool（如果真实 episode 数更少则使用全部），再在该 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余 episodes 作为 val，避免同一 episode 同时出现在 train 和 val 中
 - 每个 episode 的第一个 timestep 没有历史；评估 rollout 中也同样如此，只有一步实际动作执行完成后才会写入在线 history buffer
@@ -223,13 +224,13 @@ lora_target_modules: ["q_proj", "v_proj"]
 # 评估辅助
 parse_retry_limit: 3     # action 解析失败时的最大重试次数
 eval_step_interval: 0    # 0 = dataloader 构建后交互式提示；非交互运行保持关闭
-action_sampling: false   # 生成式模式 true = 采样 / false = greedy；parallel_gaussian/parallel_t true = 策略采样 / false = mean action
+action_sampling: false   # 生成式/bin 模式 true = 采样 / false = greedy；parallel_gaussian/parallel_t true = 策略采样 / false = mean action
 action_temperature: 1.0
 action_top_p: 1.0
 action_top_k: 0          # 0 = 不启用 top-k 截断
-action_token_mode: text  # text | bin | gaussian_bin | parallel_l1 | parallel_gaussian | parallel_t
-action_num_bins: 10      # bin 模式下的共享动作 token 数
-new_token: false         # false = 内部复用低频 token ID；true = 新增 <act_XX> special tokens
+action_token_mode: text  # text | bin | gaussian_bin | parallel_llm_bin | parallel_l1 | parallel_gaussian | parallel_t
+action_num_bins: 10      # action-bin 模式下的共享动作 token 数；parallel_llm_bin 额外使用一个 PHT
+new_token: false         # false = 内部复用低频 token ID；true = 新增 <act_XX>，parallel_llm_bin 额外新增 <pht>
 action_bin_min: -1.0
 action_bin_max: 1.0
 action_soft_label_sigma: 1.0  # gaussian_bin 的高斯宽度，单位是 bin index
@@ -333,7 +334,7 @@ dataset_cache/
 - 如果现有 cache 不覆盖当前 sampled episodes，则忽略旧 cache，重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
 - `max_data_num` 截断发生在最终 dataset 组装之后，只影响本次训练返回的数据，不影响 cache 内容和 cache 命中判断
 - cache 文件名是 32 位 sha256 前缀；hash payload 包含 variant/data signature、tokenizer/max length、`prompt_templete_index` 解析后的 prompt 名称、prompt 模板内容、variant prompt vars、dataset/formatter/chat-template/action-bin/prompt-loader 源文件 hash、`history_num/history_stride` 和 action 编码配置，避免不同 tokenization 或 prompt 配置误复用同一份 tokenized 数据
-- bin 模式下，cache signature payload 和 metadata 额外记录 `new_token` 与 `action_token_schema_hash`。该 hash 由 `new_token`、真实 model token ids 和 display tokens 计算得到；若 cache metadata 与当前 signature 不一致，加载阶段直接报错，避免把旧 action-token 映射下的 tokenized samples 用到新训练里
+- action-bin 模式下，cache signature payload 和 metadata 额外记录 `new_token` 与 `action_token_schema_hash`。该 hash 由 `new_token`、真实 ABT token ids、display tokens 以及 `parallel_llm_bin` 的 PHT token id 计算得到；若 cache metadata 与当前 signature 不一致，加载阶段直接报错，避免把旧 action-token 映射下的 tokenized samples 用到新训练里
 - `.jsonl` 中的 `action` 永远使用 display text，例如 `<act_24><act_37>`；`.pkl` 中保存的 `input_ids` 则是模型实际训练使用的 token ids。`new_token: false` 时二者不是同一组文本 token
 
 ---
@@ -392,7 +393,7 @@ dataset_cache/
 | official normalized score open | `score_results/score_<score_id>/score=pointmaze-open/result.json` |
 | local reference 分数生成 | `score_results/reference_<score_id>/score=pointmaze-local-layout-07/result.json`，并写入 `local_references/pointmaze/local-layout-07.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step，如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存与评估。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。如果 step eval 与 epoch eval 落在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin` 和 `gaussian_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的生成概率与对应 token id。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step，如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存与评估。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。如果 step eval 与 epoch eval 落在同一个 epoch 末尾权重点，只保留 epoch checkpoint/eval，跳过重复的 step eval。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin`、`gaussian_bin` 和 `parallel_llm_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的概率与对应 token id，其中 `parallel_llm_bin` 的概率来自 PHT 位置 logits。
 
 `score.py` 使用独立路径语义，不嵌入训练期/standalone eval 的 `eval=<...>` 目录。每次运行写入 `<result_root>/<mode>_<score_id>/`，其中每个变种写 `score=<env_family>-<variant>/result.json`，run 根目录写 `summary.json` 和实际使用的 `score_config.yaml`。
 
@@ -531,7 +532,7 @@ project/
 ├── score_results/
 ├── local_references/
 └── utils/
-    ├── action_bins.py           # action-bin display/model token codec 与 gaussian-bin loss
+    ├── action_bins.py           # action-bin display/model token codec、PHT mask、gaussian/parallel bin loss
     ├── eval_rollout.py          # eval/score 共享 prompt、history、动作生成、parse retry、fallback 逻辑
     ├── pointmaze_score.py       # PointMaze score env、reference、fingerprint 和 normalized score 逻辑
     └── prompt_loader.py         # 加载指定环境族的共享模板，返回列表
@@ -559,18 +560,18 @@ def validate_action(action) -> bool:
 
 ### 关键实现细节
 
-1. **Loss masking**：labels 中 `user` turn 与 assistant 前缀部分设为 `-100`，只训练 assistant 动作文本及其结束标记。bin 模式另有 `action_bin_labels` mask：action token 位置记录 bin index，其余位置为 `-1`；`gaussian_bin` 用它选择 action 位置做 soft-label CE，`bin` 模式保留该 mask 但仍走普通 causal LM loss
+1. **Loss masking**：labels 中 `user` turn 与 assistant 前缀部分设为 `-100`，text/bin/gaussian_bin 只训练 assistant 动作文本及其结束标记。bin 模式另有 `action_bin_labels` mask：action token 位置记录 bin index，其余位置为 `-1`；`gaussian_bin` 用它选择 action 位置做 soft-label CE，`bin` 模式保留该 mask 但仍走普通 causal LM loss。`parallel_llm_bin` 的 labels 全部为 `-100`，`action_bin_labels` 在 PHT 位置记录目标 bin，并只在这些位置做 hard CE
 2. **每 timestep 按所选 prompt 展开**：`dataset.py` 构造数据时对每个 timestep 遍历 `prompt_templete_index` 指定的共享模板名，生成对应数量的独立样本
-3. **Action generation / parsing**：默认 rollout 使用 greedy decoding。若 `action_sampling: true`，text 模式使用普通采样并继续依赖 parse retry / fallback 兜底；bin / gaussian_bin 模式只允许 action-bin token 参与生成，并固定生成 `action_dim` 个 token，避免 EOS 或普通 token 导致动作维度缺失。`parallel_l1`、`parallel_gaussian` 和 `parallel_t` 模式不调用 `generate()`，而是由 decoder 在 generation prompt embedding 后追加可训练 `action_queries`，使用自定义 attention mask 保持 prompt 内 causal、action query 可看完整非 padding prompt 且 action query 之间双向可见，再读取最后的 query hidden states，经 OFT-style MLPResNet action head 并行预测当前步动作。`parallel_l1` 输出确定性连续动作；`parallel_gaussian` 输出对角高斯策略的 `mean/log_std`；`parallel_t` 输出 Student-t 策略的 `mean/log_scale`，`action_sampling: true` 时从对应策略采样、`false` 时执行 mean，并在进入环境前按 action bounds clip。text 模式通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 解析 decoded 文本；bin 模式不进入环境族 formatter，而是通过共享 `ActionBinCodec` 从 generated token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。生成式模式都会调用环境族 `validate_action` 做合法性校验。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
-   - *PointMaze text 模式实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回；bin 模式由共享 action-bin codec 从 generated token ids 解析
+3. **Action generation / parsing**：默认 rollout 使用 greedy decoding。若 `action_sampling: true`，text 模式使用普通采样并继续依赖 parse retry / fallback 兜底；bin / gaussian_bin 模式只允许 action-bin token 参与生成，并固定生成 `action_dim` 个 token，避免 EOS 或普通 token 导致动作维度缺失。`parallel_llm_bin` 不调用 `generate()`，而是在 generation prompt 后追加 `action_dim` 个共享 PHT，PHT 之间双向注意，每个 PHT hidden state 经原始 `lm_head` 并行预测一个 action-bin token；`action_sampling: true` 时在每个 PHT 的 ABT logits 上采样，`false` 时 greedy。`parallel_l1`、`parallel_gaussian` 和 `parallel_t` 模式也不调用 `generate()`，而是由 decoder 在 generation prompt embedding 后追加可训练 `action_queries`，使用自定义 attention mask 保持 prompt 内 causal、action query 可看完整非 padding prompt 且 action query 之间双向可见，再读取最后的 query hidden states，经 OFT-style MLPResNet action head 并行预测当前步动作。`parallel_l1` 输出确定性连续动作；`parallel_gaussian` 输出对角高斯策略的 `mean/log_std`；`parallel_t` 输出 Student-t 策略的 `mean/log_scale`，`action_sampling: true` 时从对应策略采样、`false` 时执行 mean，并在进入环境前按 action bounds clip。text 模式通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 解析 decoded 文本；bin 模式不进入环境族 formatter，而是通过共享 `ActionBinCodec` 从 generated/PHT token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。生成式模式都会调用环境族 `validate_action` 做合法性校验。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）；`parallel_llm_bin` 输出受 ABT 限制，单次 direct forward 失败时直接 fallback。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
+   - *PointMaze text 模式实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回；bin 模式由共享 action-bin codec 从 generated/PHT-selected token ids 解析
    - 其他环境族在各自 `formatting.py` 中实现 text action 解析和校验；bin action 的 token-id 解析保持共享
-4. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text；连续模式只 tokenize generation prompt，存储连续 `action_values`，不拼 assistant action 文本；`parallel_l1` 用 L1 BC，`parallel_gaussian` 用对角 Gaussian NLL BC，`parallel_t` 用 Student-t NLL BC，并可通过 `continuous_mean_l1_weight` 额外加入 `alpha * L1(mean, action)`
+4. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text；`parallel_llm_bin` 只 tokenize generation prompt 并追加 `action_dim` 个 PHT，`action_bin_labels` 在 PHT 位置记录目标 bin，loss 是 PHT logits 到 ABT token id 的 hard CE；连续模式只 tokenize generation prompt，存储连续 `action_values`，不拼 assistant action 文本；`parallel_l1` 用 L1 BC，`parallel_gaussian` 用对角 Gaussian NLL BC，`parallel_t` 用 Student-t NLL BC，并可通过 `continuous_mean_l1_weight` 额外加入 `alpha * L1(mean, action)`
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text`、动态 `location_sensing_en/zh` 和动态 `wall_sensing_en/zh`
    - `location_sensing` 会直接给出当前位置格子和目标格子；`wall_sensing` 会给出上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数。坐标先按 PointMaze 的 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。四邻方向在靠近 cell 边界时采用保守二值判断：如果邻格本身 free，但当前位置贴近对应边界且对角格为墙，则该方向报告为 `wall`。
 5. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 6. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 7. **DDP 并行训练**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint、validation、训练期 rollout eval、step logs 和视频只由 rank0 写入
-8. **W&B 指标**：启用 `wandb_enabled` 时，batch 级日志除 `train/loss` / `train/learning_rate` 外，还记录动作模式相关 loss parts：L1 模式记录 `train/l1`，Gaussian 模式记录 `train/nll`、`train/mae`、`train/std`，Student-t 模式记录 `train/tnll`、`train/mae`、`train/scale`、`train/mean_l1_aux`、`train/mean_l1_weight`、`train/df`，bin soft-label 模式记录 `train/action_loss`、`train/stop_loss`。DDP 下这些指标先跨 rank 平均，再由 rank0 写入。
+8. **W&B 指标**：启用 `wandb_enabled` 时，batch 级日志除 `train/loss` / `train/learning_rate` 外，还记录动作模式相关 loss parts：L1 模式记录 `train/l1`，Gaussian 模式记录 `train/nll`、`train/mae`、`train/std`，Student-t 模式记录 `train/tnll`、`train/mae`、`train/scale`、`train/mean_l1_aux`、`train/mean_l1_weight`、`train/df`，`parallel_llm_bin` 记录 `train/action_loss`，bin soft-label 模式记录 `train/action_loss`、`train/stop_loss`。DDP 下这些指标先跨 rank 平均，再由 rank0 写入。
 9. **Official normalized score**：`score.py` 复用 `utils/eval_rollout.py` 中的 prompt 渲染、history、模型动作生成、parse retry 和 fallback 逻辑，但结果 schema 与路径独立于 `evaluate.py`。remote PointMaze reference 使用静态 Minari metadata；local reference 使用显式 goal cell、固定 score env fingerprint 和本地 JSON 校验，避免在 goal/horizon/reward type 变动后误复用旧 reference
 10. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
 

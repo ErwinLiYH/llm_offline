@@ -17,10 +17,13 @@ VALID_ACTION_TOKEN_MODES = {
     "text",
     "bin",
     "gaussian_bin",
+    "parallel_llm_bin",
     "parallel_l1",
     "parallel_gaussian",
     "parallel_t",
 }
+
+ACTION_PLACEHOLDER_TOKEN = "<pht>"
 
 
 def get_tokenizer_backend(tokenizer_or_processor):
@@ -46,7 +49,11 @@ def get_action_token_mode(config: dict) -> str:
 
 
 def uses_action_bins(config: dict) -> bool:
-    return get_action_token_mode(config) in {"bin", "gaussian_bin"}
+    return get_action_token_mode(config) in {"bin", "gaussian_bin", "parallel_llm_bin"}
+
+
+def uses_parallel_llm_bins(config: dict) -> bool:
+    return get_action_token_mode(config) == "parallel_llm_bin"
 
 
 def uses_continuous_actions(config: dict) -> bool:
@@ -100,6 +107,10 @@ def get_action_token_width(num_bins: int) -> int:
 def get_action_bin_tokens(num_bins: int) -> list[str]:
     width = get_action_token_width(num_bins)
     return [f"<act_{idx:0{width}d}>" for idx in range(num_bins)]
+
+
+def get_action_placeholder_token() -> str:
+    return ACTION_PLACEHOLDER_TOKEN
 
 
 def _decode_token_ids(tokenizer, token_ids: list[int] | tuple[int, ...]) -> str:
@@ -170,12 +181,24 @@ def _select_existing_action_token_ids(tokenizer, num_bins: int) -> tuple[list[in
     )
 
 
-def _mapping_hash(*, new_token: bool, token_ids: list[int], display_tokens: list[str]) -> str:
+def _mapping_hash(
+    *,
+    new_token: bool,
+    token_ids: list[int],
+    display_tokens: list[str],
+    placeholder_token_id: int | None = None,
+    placeholder_token: str | None = None,
+) -> str:
     payload = {
         "new_token": bool(new_token),
         "token_ids": [int(token_id) for token_id in token_ids],
         "display_tokens": list(display_tokens),
     }
+    if placeholder_token_id is not None or placeholder_token is not None:
+        payload["placeholder_token_id"] = (
+            None if placeholder_token_id is None else int(placeholder_token_id)
+        )
+        payload["placeholder_token"] = placeholder_token
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
 
@@ -189,9 +212,22 @@ class ActionBinCodec:
     model_token_ids: tuple[int, ...]
     display_tokens: tuple[str, ...]
     mapping_hash: str
+    placeholder_token_id: int | None = None
+    placeholder_token: str | None = None
 
     def token_id_to_bin(self) -> dict[int, int]:
         return {int(token_id): bin_idx for bin_idx, token_id in enumerate(self.model_token_ids)}
+
+    def require_placeholder_token_id(self) -> int:
+        if self.placeholder_token_id is None:
+            raise RuntimeError("This action-bin codec does not define a placeholder token ID.")
+        return int(self.placeholder_token_id)
+
+    def placeholder_token_ids(self, count: int) -> list[int]:
+        count = int(count)
+        if count < 0:
+            raise ValueError(f"Placeholder token count must be >= 0, got {count}")
+        return [self.require_placeholder_token_id()] * count
 
     def token_ids_for_bins(self, bin_indices: list[int] | tuple[int, ...]) -> list[int]:
         ids = []
@@ -299,6 +335,8 @@ def register_action_tokens(tokenizer, config: dict) -> int:
         return 0
     tok = get_tokenizer_backend(tokenizer)
     tokens = get_action_bin_tokens(get_action_num_bins(config))
+    if uses_parallel_llm_bins(config):
+        tokens.append(get_action_placeholder_token())
     existing = list(getattr(tok, "additional_special_tokens", []) or [])
     merged = existing + [token for token in tokens if token not in existing]
     return tok.add_special_tokens({"additional_special_tokens": merged})
@@ -309,14 +347,31 @@ def get_action_bin_codec(tokenizer, config: dict, *, ensure_registered: bool = F
     num_bins = get_action_num_bins(config)
     display_tokens = get_action_bin_tokens(num_bins)
     new_token = action_bins_use_new_tokens(config)
+    use_placeholder = uses_parallel_llm_bins(config)
+    placeholder_token = get_action_placeholder_token() if use_placeholder else None
+    placeholder_token_id = None
 
     if new_token:
         if ensure_registered:
             register_action_tokens(tok, config)
-        token_ids = tok.convert_tokens_to_ids(display_tokens)
+        lookup_tokens = list(display_tokens)
+        if use_placeholder:
+            lookup_tokens.append(placeholder_token)
+        raw_token_ids = tok.convert_tokens_to_ids(lookup_tokens)
+        if not isinstance(raw_token_ids, list):
+            raw_token_ids = [raw_token_ids]
+        if len(raw_token_ids) != len(lookup_tokens):
+            raise ValueError(
+                "Tokenizer returned an unexpected number of action token IDs: "
+                f"tokens={lookup_tokens}, token_ids={raw_token_ids}"
+            )
+        token_ids = raw_token_ids[:num_bins]
+        raw_placeholder_token_id = raw_token_ids[num_bins] if use_placeholder else None
+        if use_placeholder:
+            placeholder_token_id = raw_placeholder_token_id
         missing = [
             token
-            for token, token_id in zip(display_tokens, token_ids)
+            for token, token_id in zip(lookup_tokens, raw_token_ids)
             if token_id is None or int(token_id) < 0
         ]
         if missing:
@@ -325,24 +380,42 @@ def get_action_bin_codec(tokenizer, config: dict, *, ensure_registered: bool = F
         if unk_id is not None:
             missing = [
                 token
-                for token, token_id in zip(display_tokens, token_ids)
+                for token, token_id in zip(lookup_tokens, raw_token_ids)
                 if int(token_id) == int(unk_id)
             ]
             if missing:
                 raise ValueError(f"Tokenizer maps action-bin tokens to unk_token_id: {missing}")
         token_ids = [int(token_id) for token_id in token_ids]
+        if use_placeholder:
+            placeholder_token_id = int(raw_placeholder_token_id)
+        all_token_ids = token_ids + ([placeholder_token_id] if use_placeholder else [])
     else:
-        token_ids, _ = _select_existing_action_token_ids(tok, num_bins)
+        selected_count = num_bins + (1 if use_placeholder else 0)
+        selected_ids, _ = _select_existing_action_token_ids(tok, selected_count)
+        token_ids = selected_ids[:num_bins]
+        if use_placeholder:
+            placeholder_token_id = int(selected_ids[num_bins])
+        all_token_ids = token_ids + ([placeholder_token_id] if use_placeholder else [])
+
+    if len(set(int(token_id) for token_id in all_token_ids)) != len(all_token_ids):
+        raise ValueError(
+            "Action-bin token schema contains duplicate token IDs: "
+            f"{all_token_ids}"
+        )
 
     return ActionBinCodec(
         num_bins=num_bins,
         new_token=new_token,
         model_token_ids=tuple(token_ids),
         display_tokens=tuple(display_tokens),
+        placeholder_token_id=placeholder_token_id,
+        placeholder_token=placeholder_token,
         mapping_hash=_mapping_hash(
             new_token=new_token,
             token_ids=token_ids,
             display_tokens=display_tokens,
+            placeholder_token_id=placeholder_token_id,
+            placeholder_token=placeholder_token,
         ),
     )
 
@@ -514,3 +587,81 @@ def gaussian_action_loss(
         metrics["stop_loss"] = float(stop_loss.detach().item())
 
     return total_loss, metrics
+
+
+def build_parallel_llm_bin_attention_mask(
+    attention_mask: torch.Tensor,
+    placeholder_mask: torch.Tensor,
+    *,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Return a 4D additive mask for prompt tokens plus parallel PHT tokens."""
+    if attention_mask.dim() != 2:
+        raise ValueError(
+            "attention_mask must be 2D [batch, seq_len], "
+            f"got shape={tuple(attention_mask.shape)}"
+        )
+    if placeholder_mask.shape != attention_mask.shape:
+        raise ValueError(
+            "placeholder_mask shape must match attention_mask shape, "
+            f"got placeholder_mask={tuple(placeholder_mask.shape)}, "
+            f"attention_mask={tuple(attention_mask.shape)}"
+        )
+    if not torch.is_floating_point(torch.empty((), dtype=dtype)):
+        dtype = torch.float32
+
+    device = attention_mask.device
+    batch_size, seq_len = attention_mask.shape
+    visible = attention_mask.to(dtype=torch.bool)
+    placeholder = placeholder_mask.to(device=device, dtype=torch.bool) & visible
+    prompt = visible & ~placeholder
+    causal = torch.tril(torch.ones((seq_len, seq_len), device=device, dtype=torch.bool))
+
+    allowed = torch.zeros((batch_size, seq_len, seq_len), device=device, dtype=torch.bool)
+    allowed |= prompt.unsqueeze(2) & prompt.unsqueeze(1) & causal.unsqueeze(0)
+    allowed |= placeholder.unsqueeze(2) & prompt.unsqueeze(1)
+    allowed |= placeholder.unsqueeze(2) & placeholder.unsqueeze(1)
+
+    blocked_value = torch.finfo(dtype).min
+    mask = torch.zeros((batch_size, 1, seq_len, seq_len), device=device, dtype=dtype)
+    return mask.masked_fill(~allowed.unsqueeze(1), blocked_value)
+
+
+def parallel_llm_bin_action_loss(
+    logits: torch.Tensor,
+    action_bin_labels: torch.Tensor,
+    bin_token_ids: list[int],
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Full-vocab CE at PHT positions, with targets set to the matching ABT IDs."""
+    if logits.dim() != 3:
+        raise ValueError(f"logits must be 3D [batch, seq_len, vocab], got {tuple(logits.shape)}")
+    if action_bin_labels.shape != logits.shape[:2]:
+        raise ValueError(
+            "action_bin_labels must match logits batch/sequence dimensions, "
+            f"got labels={tuple(action_bin_labels.shape)}, logits={tuple(logits.shape)}"
+        )
+
+    action_mask = action_bin_labels >= 0
+    total_loss = logits.float().sum() * 0.0
+    metrics = {
+        "action_loss": math.nan,
+        "stop_loss": math.nan,
+        "action_tokens": int(action_mask.sum().item()),
+        "stop_tokens": 0,
+    }
+    if not action_mask.any():
+        return total_loss, metrics
+
+    token_ids = torch.tensor(bin_token_ids, device=logits.device, dtype=torch.long)
+    target_bins = action_bin_labels[action_mask]
+    if target_bins.min().item() < 0 or target_bins.max().item() >= token_ids.numel():
+        raise ValueError(
+            "parallel_llm_bin target bin index out of range: "
+            f"min={int(target_bins.min().item())}, max={int(target_bins.max().item())}, "
+            f"num_bins={token_ids.numel()}"
+        )
+    target_token_ids = token_ids[target_bins]
+    selected_logits = logits[action_mask].float()
+    action_loss = F.cross_entropy(selected_logits, target_token_ids)
+    metrics["action_loss"] = float(action_loss.detach().item())
+    return action_loss, metrics

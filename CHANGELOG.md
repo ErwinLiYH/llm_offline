@@ -894,3 +894,22 @@ type: project
 - `config.yaml` 默认示例切到 `parallel_t` 并新增 `student_t_df: 3.0`
 - `DESIGN.md`、`AGENTS.md`、`eval.yaml`、`score.yaml` 标注 `parallel_t`
 - `tests/test_continuous_action.py` 覆盖 mode helper、df 解析、Student-t NLL、decoder 输出形状和 sidecar 保存加载
+
+---
+
+## parallel_llm_bin PHT action-bin policy（2026-05-25）
+
+**新增并行动作 bin 模式：**
+- `action_token_mode` 新增 `parallel_llm_bin`，输入为 generation prompt 后追加 `action_dim` 个共享 PHT
+- `new_token: false` 时 action-bin codec 额外保留一个不同于 ABT 的低频 tokenizer id 作为 PHT；`new_token: true` 时注册 `<pht>`
+- PHT 之间使用双向 attention，每个 PHT hidden state 直接经原模型 `lm_head` 预测对应维度 ABT
+
+**training / eval：**
+- PointMaze dataset 为 `parallel_llm_bin` 保留 PHT 长度，`action_bin_labels` 在 PHT 位置记录目标 bin，`labels` 全部为 `-100`
+- `_compute_batch_loss()` 在 PHT 位置使用 hard full-vocab CE，不做 causal shift，也不训练 chat stop token
+- rollout/score 不调用 `generate()`，一次 direct forward 得到全部动作维度；`action_sampling` 在 PHT 的 ABT logits 上做采样或 greedy
+
+**配置 / 文档 / 测试：**
+- `config.yaml`、`DESIGN.md`、`AGENTS.md`、`eval.yaml`、`score.yaml` 标注 `parallel_llm_bin`
+- `config.yaml` 默认示例切到 `action_token_mode: parallel_llm_bin`，并将训练 prompt 切到 `bin_full_sensing`
+- `tests/test_continuous_action.py` 扩展覆盖 token schema、PHT attention mask、loss 对齐、PointMaze tokenization 和 direct-forward eval

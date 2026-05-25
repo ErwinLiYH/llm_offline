@@ -36,6 +36,7 @@ from utils.action_bins import (
     get_action_token_mode,
     uses_action_bins,
     uses_continuous_actions,
+    uses_parallel_llm_bins,
 )
 from utils.chat_template import build_generation_prompt, build_training_conversation
 from utils.file_progress import (
@@ -191,6 +192,40 @@ def _tokenize_pointmaze_sample(
             "attention_mask": prompt_attention_mask,
             "labels": [-100] * len(prompt_input_ids),
             "action_bin_labels": [-1] * len(prompt_input_ids),
+        }
+
+    if uses_parallel_llm_bins(config):
+        if _POINTMAZE_WORKER_ACTION_CODEC is None:
+            raise RuntimeError("PointMaze parallel_llm_bin codec was not initialized.")
+        if expected_action_bin_indices is None:
+            raise RuntimeError("Missing expected action-bin labels for PointMaze parallel_llm_bin.")
+        action_dim = int(config.get("action_dim", len(expected_action_bin_indices)))
+        if len(expected_action_bin_indices) != action_dim:
+            raise ValueError(
+                "PointMaze parallel_llm_bin action labels do not match action_dim: "
+                f"labels={len(expected_action_bin_indices)}, action_dim={action_dim}."
+            )
+        prompt_budget = int(config["max_length"]) - action_dim
+        if prompt_budget <= 0:
+            raise ValueError(
+                "parallel_llm_bin requires max_length > action_dim so PHT tokens fit: "
+                f"max_length={config['max_length']}, action_dim={action_dim}."
+            )
+        prompt_enc = tok(
+            text=prompt_text,
+            add_special_tokens=False,
+            max_length=prompt_budget,
+            truncation=True,
+        )
+        prompt_input_ids = list(prompt_enc["input_ids"])
+        prompt_attention_mask = list(prompt_enc["attention_mask"])
+        placeholder_ids = _POINTMAZE_WORKER_ACTION_CODEC.placeholder_token_ids(action_dim)
+        return {
+            "input_ids": prompt_input_ids + placeholder_ids,
+            "attention_mask": prompt_attention_mask + [1] * action_dim,
+            "labels": [-100] * (len(prompt_input_ids) + action_dim),
+            "action_bin_labels": [-1] * len(prompt_input_ids)
+            + [int(bin_idx) for bin_idx in expected_action_bin_indices],
         }
 
     full_text = build_training_conversation(tok, prompt, action_text)
