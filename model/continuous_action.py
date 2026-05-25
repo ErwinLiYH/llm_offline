@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import math
 import types
 from dataclasses import dataclass
 from typing import Any
@@ -14,8 +15,10 @@ from torch import nn
 CONTINUOUS_ACTION_DECODER_FILENAME = "continuous_action_decoder.pt"
 CONTINUOUS_POLICY_DETERMINISTIC = "deterministic"
 CONTINUOUS_POLICY_GAUSSIAN = "gaussian"
+CONTINUOUS_POLICY_STUDENT_T = "student_t"
 GAUSSIAN_LOG_STD_MIN = -5.0
 GAUSSIAN_LOG_STD_MAX = 1.0
+STUDENT_T_DF = 3.0
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,14 @@ class GaussianActionOutput:
     log_std: torch.Tensor
     std: torch.Tensor
 
+    @property
+    def log_scale(self) -> torch.Tensor:
+        return self.log_std
+
+    @property
+    def scale(self) -> torch.Tensor:
+        return self.std
+
 
 def resolve_continuous_policy_type(config: dict) -> str:
     mode = str(config.get("action_token_mode", "text"))
@@ -31,6 +42,8 @@ def resolve_continuous_policy_type(config: dict) -> str:
         return CONTINUOUS_POLICY_DETERMINISTIC
     if mode == "parallel_gaussian":
         return CONTINUOUS_POLICY_GAUSSIAN
+    if mode == "parallel_t":
+        return CONTINUOUS_POLICY_STUDENT_T
     raise ValueError(f"action_token_mode={mode!r} is not a continuous action mode")
 
 
@@ -46,6 +59,33 @@ def resolve_gaussian_log_std_bounds(config: dict | None = None) -> tuple[float, 
             f"got {log_std_min} >= {log_std_max}"
         )
     return log_std_min, log_std_max
+
+
+def resolve_student_t_df(config: dict | None = None) -> float:
+    config = config or {}
+    raw_df = config.get("student_t_df", STUDENT_T_DF)
+    df = STUDENT_T_DF if raw_df is None else float(raw_df)
+    if df <= 0:
+        raise ValueError(f"student_t_df must be > 0, got {df}")
+    return df
+
+
+def student_t_negative_log_likelihood(
+    target: torch.Tensor,
+    mean: torch.Tensor,
+    log_scale: torch.Tensor,
+    df: float,
+) -> torch.Tensor:
+    df_value = resolve_student_t_df({"student_t_df": df})
+    df_tensor = torch.as_tensor(df_value, dtype=mean.dtype, device=mean.device)
+    z = (target - mean) / torch.exp(log_scale)
+    log_normalizer = (
+        log_scale
+        + 0.5 * (torch.log(df_tensor) + math.log(math.pi))
+        + torch.lgamma(0.5 * df_tensor)
+        - torch.lgamma(0.5 * (df_tensor + 1.0))
+    )
+    return log_normalizer + 0.5 * (df_tensor + 1.0) * torch.log1p(z.square() / df_tensor)
 
 
 def build_parallel_action_attention_mask(
@@ -171,7 +211,7 @@ class MLPResNetActionHead(nn.Module):
 
 
 class ContinuousActionDecoder(nn.Module):
-    """Append learned action queries and predict deterministic or Gaussian actions."""
+    """Append learned action queries and predict deterministic or distributional actions."""
 
     def __init__(
         self,
@@ -189,10 +229,15 @@ class ContinuousActionDecoder(nn.Module):
         action_query_len = resolve_action_query_len(action_dim, action_query_len)
         action_head_num_blocks = resolve_action_head_num_blocks(action_head_num_blocks)
         policy_type = str(policy_type)
-        if policy_type not in {CONTINUOUS_POLICY_DETERMINISTIC, CONTINUOUS_POLICY_GAUSSIAN}:
+        valid_policy_types = {
+            CONTINUOUS_POLICY_DETERMINISTIC,
+            CONTINUOUS_POLICY_GAUSSIAN,
+            CONTINUOUS_POLICY_STUDENT_T,
+        }
+        if policy_type not in valid_policy_types:
             raise ValueError(
                 f"Invalid continuous policy_type={policy_type!r}; "
-                f"expected {CONTINUOUS_POLICY_DETERMINISTIC!r} or {CONTINUOUS_POLICY_GAUSSIAN!r}"
+                f"expected one of {sorted(valid_policy_types)}"
             )
         gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(
             {
@@ -215,7 +260,7 @@ class ContinuousActionDecoder(nn.Module):
         self.action_queries = nn.Parameter(torch.empty(action_query_len, hidden_size))
         output_dim = action_dim
         output_tanh = True
-        if self.policy_type == CONTINUOUS_POLICY_GAUSSIAN:
+        if self.policy_type in {CONTINUOUS_POLICY_GAUSSIAN, CONTINUOUS_POLICY_STUDENT_T}:
             output_dim = action_dim * 2
             output_tanh = False
         self.action_head = MLPResNetActionHead(
@@ -230,7 +275,7 @@ class ContinuousActionDecoder(nn.Module):
 
     def reset_parameters(self):
         nn.init.normal_(self.action_queries, mean=0.0, std=0.02)
-        if self.policy_type == CONTINUOUS_POLICY_GAUSSIAN:
+        if self.policy_type in {CONTINUOUS_POLICY_GAUSSIAN, CONTINUOUS_POLICY_STUDENT_T}:
             bias = self.action_head.output_proj.bias
             if bias is not None:
                 with torch.no_grad():
@@ -423,7 +468,11 @@ def unpatch_continuous_action_forward(model):
 
 
 def ensure_continuous_action_decoder(model, config: dict) -> ContinuousActionDecoder | None:
-    if str(config.get("action_token_mode", "text")) not in {"parallel_l1", "parallel_gaussian"}:
+    if str(config.get("action_token_mode", "text")) not in {
+        "parallel_l1",
+        "parallel_gaussian",
+        "parallel_t",
+    }:
         return None
     if "action_dim" not in config:
         raise ValueError(

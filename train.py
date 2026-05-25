@@ -29,9 +29,11 @@ from data.registry import get_action_dim, get_dataset
 from model.continuous_action import (
     ensure_continuous_action_decoder,
     resolve_gaussian_log_std_bounds,
+    resolve_student_t_df,
     resolve_action_head_num_blocks,
     resolve_action_query_len,
     save_continuous_action_decoder,
+    student_t_negative_log_likelihood,
     unpatch_continuous_action_forward,
 )
 from model.policy import load_model_and_tokenizer, get_model_slug
@@ -94,6 +96,14 @@ def _as_bool(value) -> bool:
             return False
         raise ValueError(f"Expected a boolean value, got {value!r}")
     return bool(value)
+
+
+def resolve_continuous_mean_l1_weight(config: dict) -> float:
+    raw_weight = config.get("continuous_mean_l1_weight", 0.0)
+    weight = 0.0 if raw_weight is None else float(raw_weight)
+    if weight < 0:
+        raise ValueError(f"continuous_mean_l1_weight must be >= 0, got {weight}")
+    return weight
 
 
 def ensure_experiment_id(config: dict) -> str:
@@ -494,6 +504,8 @@ def _build_training_eval_config(config: dict) -> dict:
         "action_head_num_blocks": config.get("action_head_num_blocks"),
         "gaussian_log_std_min": config.get("gaussian_log_std_min"),
         "gaussian_log_std_max": config.get("gaussian_log_std_max"),
+        "student_t_df": config.get("student_t_df"),
+        "continuous_mean_l1_weight": config.get("continuous_mean_l1_weight"),
         "max_length": config.get("max_length"),
     }
 
@@ -668,6 +680,32 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
             "gaussian_mean_std": float(std.detach().mean().item()),
         }
 
+    if loss_context["action_token_mode"] == "parallel_t":
+        action_values = batch["action_values"].to(device=device, dtype=torch.float32)
+        action_output = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            continuous_action=True,
+        )
+        mean = action_output.mean.float()
+        log_scale = action_output.log_scale.float()
+        scale = action_output.scale.float()
+        df = loss_context["student_t_df"]
+        nll = student_t_negative_log_likelihood(action_values, mean, log_scale, df)
+        nll_loss = nll.mean()
+        mae = F.l1_loss(mean, action_values, reduction="mean")
+        mean_l1_weight = loss_context["continuous_mean_l1_weight"]
+        mean_l1_aux = mean_l1_weight * mae
+        loss = nll_loss + mean_l1_aux
+        return loss, {
+            "student_t_nll_loss": float(nll_loss.detach().item()),
+            "student_t_mae": float(mae.detach().item()),
+            "student_t_mean_l1_aux": float(mean_l1_aux.detach().item()),
+            "student_t_mean_l1_weight": float(mean_l1_weight),
+            "student_t_mean_scale": float(scale.detach().mean().item()),
+            "student_t_df": float(df),
+        }
+
     outputs = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -687,6 +725,15 @@ def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -
             f"loss={loss_value:.4f} nll={loss_parts['gaussian_nll_loss']:.6f} "
             f"mae={loss_parts['gaussian_mae']:.6f} "
             f"std={loss_parts['gaussian_mean_std']:.6f}"
+        )
+    if "student_t_nll_loss" in loss_parts:
+        return (
+            f"loss={loss_value:.4f} tnll={loss_parts['student_t_nll_loss']:.6f} "
+            f"mae={loss_parts['student_t_mae']:.6f} "
+            f"aux_l1={loss_parts['student_t_mean_l1_aux']:.6f} "
+            f"l1w={loss_parts['student_t_mean_l1_weight']:.3f} "
+            f"scale={loss_parts['student_t_mean_scale']:.6f} "
+            f"df={loss_parts['student_t_df']:.2f}"
         )
     return (
         f"loss={loss_value:.4f} action={loss_parts['action_loss']:.6f} "
@@ -709,6 +756,8 @@ def _loss_parts_to_wandb_metrics(loss_parts, *, prefix: str) -> dict[str, float]
         return {
             f"{prefix}/tnll": float(loss_parts["student_t_nll_loss"]),
             f"{prefix}/mae": float(loss_parts["student_t_mae"]),
+            f"{prefix}/mean_l1_aux": float(loss_parts["student_t_mean_l1_aux"]),
+            f"{prefix}/mean_l1_weight": float(loss_parts["student_t_mean_l1_weight"]),
             f"{prefix}/scale": float(loss_parts["student_t_mean_scale"]),
             f"{prefix}/df": float(loss_parts["student_t_df"]),
         }
@@ -912,6 +961,8 @@ def _run_training(
     action_loss_weight = None
     action_stop_loss_weight = None
     action_soft_label_radius = None
+    student_t_df = None
+    continuous_mean_l1_weight = 0.0
     if action_token_mode == "gaussian_bin":
         bin_token_ids = get_action_bin_token_ids(tokenizer, config)
         action_num_bins = get_action_num_bins(config)
@@ -921,6 +972,9 @@ def _run_training(
         action_soft_label_radius = config.get("action_soft_label_radius")
         if action_soft_label_radius is not None:
             action_soft_label_radius = int(action_soft_label_radius)
+    if action_token_mode == "parallel_t":
+        student_t_df = resolve_student_t_df(config)
+        continuous_mean_l1_weight = resolve_continuous_mean_l1_weight(config)
     loss_context = {
         "action_token_mode": action_token_mode,
         "bin_token_ids": bin_token_ids,
@@ -929,6 +983,8 @@ def _run_training(
         "action_loss_weight": action_loss_weight,
         "action_stop_loss_weight": action_stop_loss_weight,
         "action_soft_label_radius": action_soft_label_radius,
+        "student_t_df": student_t_df,
+        "continuous_mean_l1_weight": continuous_mean_l1_weight,
     }
     should_run_eval = bool(config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants)
     for epoch in range(1, num_epochs + 1):
@@ -1281,10 +1337,13 @@ def main():
             config["action_head_num_blocks"] = resolve_action_head_num_blocks(
                 config.get("action_head_num_blocks")
             )
-            if action_token_mode == "parallel_gaussian":
+            if action_token_mode in {"parallel_gaussian", "parallel_t"}:
                 gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(config)
                 config["gaussian_log_std_min"] = gaussian_log_std_min
                 config["gaussian_log_std_max"] = gaussian_log_std_max
+            if action_token_mode == "parallel_t":
+                config["student_t_df"] = resolve_student_t_df(config)
+                config["continuous_mean_l1_weight"] = resolve_continuous_mean_l1_weight(config)
         config["resolved_train_variants"] = train_selection.selected_variants
         config["train_selection_tag"] = train_selection.selection_tag
         config["resolved_eval_mode"] = eval_selection.mode
@@ -1301,12 +1360,20 @@ def main():
         rank_zero_print(dist_context, f"[train] Experiment ID: {experiment_id}")
         rank_zero_print(dist_context, f"[train] Resolved action_dim: {action_dim}")
         if uses_continuous_actions(config):
-            rank_zero_print(
-                dist_context,
+            continuous_decoder_info = (
                 "[train] Resolved continuous decoder: "
                 f"mode={action_token_mode}, "
                 f"action_query_len={config['action_query_len']}, "
-                f"action_head_num_blocks={config['action_head_num_blocks']}",
+                f"action_head_num_blocks={config['action_head_num_blocks']}"
+            )
+            if action_token_mode == "parallel_t":
+                continuous_decoder_info = (
+                    f"{continuous_decoder_info}, student_t_df={config['student_t_df']}, "
+                    f"continuous_mean_l1_weight={config['continuous_mean_l1_weight']}"
+                )
+            rank_zero_print(
+                dist_context,
+                continuous_decoder_info,
             )
         rank_zero_print(
             dist_context,

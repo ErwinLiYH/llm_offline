@@ -24,6 +24,7 @@ from model.continuous_action import (
     resolve_action_head_num_blocks,
     resolve_action_query_len,
     resolve_gaussian_log_std_bounds,
+    resolve_student_t_df,
 )
 from model.policy import load_from_checkpoint
 from transformers import LogitsProcessor, LogitsProcessorList
@@ -94,6 +95,7 @@ ACTION_CONFIG_KEYS = (
     "action_head_num_blocks",
     "gaussian_log_std_min",
     "gaussian_log_std_max",
+    "student_t_df",
     "max_length",
 )
 
@@ -160,7 +162,7 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
         action_config["action_dim"] = saved_config["action_dim"]
     if "max_length" in saved_config:
         action_config["max_length"] = saved_config["max_length"]
-    if action_config["action_token_mode"] in {"parallel_l1", "parallel_gaussian"}:
+    if action_config["action_token_mode"] in {"parallel_l1", "parallel_gaussian", "parallel_t"}:
         if "action_dim" not in action_config:
             raise ValueError(
                 "Checkpoint config.yaml uses a continuous action mode but does not contain action_dim."
@@ -172,12 +174,14 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
         action_config["action_head_num_blocks"] = resolve_action_head_num_blocks(
             saved_config.get("action_head_num_blocks")
         )
-        if action_config["action_token_mode"] == "parallel_gaussian":
+        if action_config["action_token_mode"] in {"parallel_gaussian", "parallel_t"}:
             gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(
                 saved_config
             )
             action_config["gaussian_log_std_min"] = gaussian_log_std_min
             action_config["gaussian_log_std_max"] = gaussian_log_std_max
+        if action_config["action_token_mode"] == "parallel_t":
+            action_config["student_t_df"] = resolve_student_t_df(saved_config)
     return action_config
 
 
@@ -344,6 +348,8 @@ def write_step_log(
     raw_continuous_action: list[float] | None = None,
     gaussian_action_mean: list[float] | None = None,
     gaussian_action_std: list[float] | None = None,
+    student_t_action_mean: list[float] | None = None,
+    student_t_action_scale: list[float] | None = None,
 ):
     steps_dir = os.path.join(episode_dir, "steps")
     os.makedirs(steps_dir, exist_ok=True)
@@ -358,6 +364,8 @@ def write_step_log(
         raw_continuous_action=raw_continuous_action,
         gaussian_action_mean=gaussian_action_mean,
         gaussian_action_std=gaussian_action_std,
+        student_t_action_mean=student_t_action_mean,
+        student_t_action_scale=student_t_action_scale,
     )
     with open(step_path, "w", encoding="utf-8") as f:
         f.write(payload)
@@ -732,6 +740,8 @@ def evaluate_variant(
                     raw_continuous_action=action_result.raw_continuous_action,
                     gaussian_action_mean=action_result.gaussian_action_mean,
                     gaussian_action_std=action_result.gaussian_action_std,
+                    student_t_action_mean=action_result.student_t_action_mean,
+                    student_t_action_scale=action_result.student_t_action_scale,
                 )
 
             obs, reward, terminated, truncated, info = env.step(action)

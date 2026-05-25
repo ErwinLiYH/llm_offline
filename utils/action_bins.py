@@ -13,7 +13,14 @@ import torch
 import torch.nn.functional as F
 
 
-VALID_ACTION_TOKEN_MODES = {"text", "bin", "gaussian_bin", "parallel_l1", "parallel_gaussian"}
+VALID_ACTION_TOKEN_MODES = {
+    "text",
+    "bin",
+    "gaussian_bin",
+    "parallel_l1",
+    "parallel_gaussian",
+    "parallel_t",
+}
 
 
 def get_tokenizer_backend(tokenizer_or_processor):
@@ -43,11 +50,19 @@ def uses_action_bins(config: dict) -> bool:
 
 
 def uses_continuous_actions(config: dict) -> bool:
-    return get_action_token_mode(config) in {"parallel_l1", "parallel_gaussian"}
+    return get_action_token_mode(config) in {"parallel_l1", "parallel_gaussian", "parallel_t"}
 
 
 def uses_gaussian_continuous_actions(config: dict) -> bool:
     return get_action_token_mode(config) == "parallel_gaussian"
+
+
+def uses_student_t_continuous_actions(config: dict) -> bool:
+    return get_action_token_mode(config) == "parallel_t"
+
+
+def uses_distributional_continuous_actions(config: dict) -> bool:
+    return get_action_token_mode(config) in {"parallel_gaussian", "parallel_t"}
 
 
 def action_bins_use_new_tokens(config: dict) -> bool:

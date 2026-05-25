@@ -1,0 +1,81 @@
+env_family: pointmaze
+model_name: Qwen/Qwen3.5-0.8B
+load_in_4bit: false
+max_length: 1024
+checkpoint_root: checkpoints
+result_root: resultsV2
+wandb_enabled: true
+wandb_project: llm_offline
+wandb_entity: null
+wandb_mode: null
+wandb_log_interval: 10
+parallel_backend: single
+ddp_find_unused_parameters: false
+distributed_timeout_seconds: 1800
+train_mode: single
+train_varients:
+- large
+prompt_templete_index:
+- parallel_full_sensing
+dataset_workers: 3
+dataset_cache_dir: dataset_cache
+train_data_ratio: 0.95
+episode_keep_num: 1500
+balance_variant_episode_count: false
+sampling_seed: 42
+history_num: 0
+history_stride: 1
+action_token_mode: parallel_gaussian
+action_query_len: 2
+action_head_num_blocks: 2
+gaussian_log_std_min: -5.0
+gaussian_log_std_max: 1.0
+action_num_bins: 50
+new_token: false
+action_bin_min: -1.0
+action_bin_max: 1.0
+action_soft_label_sigma: 1.0
+action_loss_weight: 1.0
+action_stop_loss_weight: 1.0
+learning_rate: 0.0001
+num_epochs: 5
+batch_size: 16
+gradient_accumulation_steps: 1
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0
+lora_target_modules:
+- q_proj
+- k_proj
+- v_proj
+- o_proj
+eval_num_episodes: 20
+eval_step_interval: 449802
+eval_mode: single
+eval_variants:
+- large
+eval_env_kwargs:
+  continuing_task: false
+parse_retry_limit: 3
+record_step_logs: true
+action_sampling: false
+action_temperature: 0.7
+action_top_p: 0.9
+action_top_k: 0
+record_video: true
+record_all: true
+video_episode_index: 0
+video_fps: 30
+video_format: mp4
+mujoco_gl: egl
+train_config_source: config.yaml
+experiment_id: '14958158'
+action_dim: 2
+resolved_train_variants:
+- large
+train_selection_tag: large
+resolved_eval_mode: single
+resolved_eval_variants:
+- large
+world_size: 1
+global_effective_batch_size: 16

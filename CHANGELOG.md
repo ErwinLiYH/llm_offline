@@ -811,6 +811,7 @@ type: project
 **训练指标追踪：**
 - 新增 `utils/wandb_logging.py`，封装 W&B optional import、run 初始化、metric 轴定义、日志写入和 DDP 下 env step 计数
 - `train.py` 接入 W&B 日志，记录 `train/loss`、`train/epoch_loss`、`val/loss` 和 `eval/<variant>/success_rate`
+- batch 级日志新增动作模式相关 loss parts：`train/l1`、`train/nll` / `train/mae` / `train/std`、`train/tnll` / `train/scale` / `train/mean_l1_aux` / `train/mean_l1_weight` / `train/df`、`train/action_loss` / `train/stop_loss`
 - W&B 图表统一使用 `train/env_steps` 作为 x 轴，环境步数按已消费训练样本数除以 prompt 数折算
 - DDP 下只有 rank0 初始化和写入 W&B；所有 rank 在启用时参与全局 batch sample 计数
 
@@ -873,3 +874,23 @@ type: project
 - 快照路径为 `exp_configs/<experiment_id>/config.yaml`，并额外记录 `train_config_source`
 - 保存发生在模型加载、dataset 构建和正式训练之前；DDP 下只有 rank0 写入，其他 rank 通过 barrier 等待
 - 新增 `utils/experiment_config.py` 和 `tests/test_experiment_config.py` 覆盖快照路径、内容和参数校验
+
+---
+
+## parallel_t Student-t continuous policy（2026-05-25）
+
+**新增 t 分布连续动作模式：**
+- `action_token_mode` 新增 `parallel_t`，复用 continuous prompt、prompt-only dataset、learned action queries 和 4D attention mask
+- `ContinuousActionDecoder` 新增 `policy_type: student_t`，动作头输出 `mean/log_scale/scale`
+- `student_t_df` 控制 Student-t 自由度，默认 `3.0`；`gaussian_log_std_min/max` 在该模式下复用为 log scale clamp
+- 新增 `continuous_mean_l1_weight`，可在 `parallel_t` loss 中加入 `alpha * L1(mean, action)` 辅助均值拟合
+
+**training / checkpoint / eval：**
+- `_compute_batch_loss()` 在 `parallel_t` 下使用 Student-t NLL 做 BC，并显示 `tnll`、`mae`、`aux_l1`、平均 `scale` 和 `df`
+- `continuous_action_decoder.pt` 保存并校验 `policy_type: student_t`，避免和 `parallel_gaussian` checkpoint 混用
+- rollout 中 `action_sampling: true` 从 Student-t 策略采样，`false` 执行 mean；eval step log 额外记录 Student-t mean/scale
+
+**配置 / 文档 / 测试：**
+- `config.yaml` 默认示例切到 `parallel_t` 并新增 `student_t_df: 3.0`
+- `DESIGN.md`、`AGENTS.md`、`eval.yaml`、`score.yaml` 标注 `parallel_t`
+- `tests/test_continuous_action.py` 覆盖 mode helper、df 解析、Student-t NLL、decoder 输出形状和 sidecar 保存加载

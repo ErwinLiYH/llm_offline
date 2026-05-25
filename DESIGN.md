@@ -149,7 +149,7 @@ POINTMAZE_VARIANTS = {
 - 训练时使用 `prompt_templete_index` 指定的共享模板名，因此每个 timestep 产生“所选模板数”条训练样本
 - 训练期评估默认使用训练 prompt 列表中的第一个模板；standalone eval 默认使用 checkpoint config 中记录的第一个训练 prompt。`eval.yaml` 可用单个 `prompt_templete_index` 覆盖 standalone eval prompt；若覆盖值不在 checkpoint 训练 prompt 列表中，`evaluate.py` 会强警告并要求输入 `Y`，或通过 `-y/--yes` 自动确认
 - 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的动态字段；PointMaze 当前动态字段至少包括 `obs_text`、`location_sensing_en/zh`、`wall_sensing_en/zh`、`history_block_en/zh`
-- PointMaze 连续动作 prompt 使用去模式化命名：`parallel_full_sensing`、`parallel_loca_sensing`、`parallel_wall_sensing`、`parallel_no_sensing`，由 `parallel_l1` 和 `parallel_gaussian` 共享
+- PointMaze 连续动作 prompt 使用去模式化命名：`parallel_full_sensing`、`parallel_loca_sensing`、`parallel_wall_sensing`、`parallel_no_sensing`，由 `parallel_l1`、`parallel_gaussian` 和 `parallel_t` 共享
 - 共享模板当前按“静态 Env Description 在前、动态 Current Status 在后”的结构组织，以提高前缀 cache 命中率
 - 渲染出的共享模板文本只负责环境/任务语义；最终输入序列会再通过 tokenizer 自带的 `chat_template` 包装成 `user` / `assistant` 对话格式
 
@@ -223,19 +223,21 @@ lora_target_modules: ["q_proj", "v_proj"]
 # 评估辅助
 parse_retry_limit: 3     # action 解析失败时的最大重试次数
 eval_step_interval: 0    # 0 = dataloader 构建后交互式提示；非交互运行保持关闭
-action_sampling: false   # 生成式模式 true = 采样 / false = greedy；parallel_gaussian true = 高斯采样 / false = mean action
+action_sampling: false   # 生成式模式 true = 采样 / false = greedy；parallel_gaussian/parallel_t true = 策略采样 / false = mean action
 action_temperature: 1.0
 action_top_p: 1.0
 action_top_k: 0          # 0 = 不启用 top-k 截断
-action_token_mode: text  # text | bin | gaussian_bin | parallel_l1 | parallel_gaussian
+action_token_mode: text  # text | bin | gaussian_bin | parallel_l1 | parallel_gaussian | parallel_t
 action_num_bins: 10      # bin 模式下的共享动作 token 数
 new_token: false         # false = 内部复用低频 token ID；true = 新增 <act_XX> special tokens
 action_bin_min: -1.0
 action_bin_max: 1.0
 action_soft_label_sigma: 1.0  # gaussian_bin 的高斯宽度，单位是 bin index
 action_soft_label_radius: 2   # gaussian_bin 的局部训练窗口，中心 bin 左右各 n 个
-gaussian_log_std_min: -5.0    # parallel_gaussian 的 log std 下界
-gaussian_log_std_max: 1.0     # parallel_gaussian 的 log std 上界
+gaussian_log_std_min: -5.0    # parallel_gaussian/parallel_t 的 log std/log scale 下界
+gaussian_log_std_max: 1.0     # parallel_gaussian/parallel_t 的 log std/log scale 上界
+student_t_df: 3.0             # parallel_t 的 Student-t 自由度
+continuous_mean_l1_weight: 0.1 # parallel_t 的 mean L1 辅助项权重，0 = 关闭
 
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
@@ -559,17 +561,18 @@ def validate_action(action) -> bool:
 
 1. **Loss masking**：labels 中 `user` turn 与 assistant 前缀部分设为 `-100`，只训练 assistant 动作文本及其结束标记。bin 模式另有 `action_bin_labels` mask：action token 位置记录 bin index，其余位置为 `-1`；`gaussian_bin` 用它选择 action 位置做 soft-label CE，`bin` 模式保留该 mask 但仍走普通 causal LM loss
 2. **每 timestep 按所选 prompt 展开**：`dataset.py` 构造数据时对每个 timestep 遍历 `prompt_templete_index` 指定的共享模板名，生成对应数量的独立样本
-3. **Action generation / parsing**：默认 rollout 使用 greedy decoding。若 `action_sampling: true`，text 模式使用普通采样并继续依赖 parse retry / fallback 兜底；bin / gaussian_bin 模式只允许 action-bin token 参与生成，并固定生成 `action_dim` 个 token，避免 EOS 或普通 token 导致动作维度缺失。`parallel_l1` 和 `parallel_gaussian` 模式不调用 `generate()`，而是由 decoder 在 generation prompt embedding 后追加可训练 `action_queries`，使用自定义 attention mask 保持 prompt 内 causal、action query 可看完整非 padding prompt 且 action query 之间双向可见，再读取最后的 query hidden states，经 OFT-style MLPResNet action head 并行预测当前步动作。`parallel_l1` 输出确定性连续动作；`parallel_gaussian` 输出对角高斯策略的 `mean/log_std`，`action_sampling: true` 时采样、`false` 时执行 mean，并在进入环境前按 action bounds clip。text 模式通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 解析 decoded 文本；bin 模式不进入环境族 formatter，而是通过共享 `ActionBinCodec` 从 generated token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。生成式模式都会调用环境族 `validate_action` 做合法性校验。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
+3. **Action generation / parsing**：默认 rollout 使用 greedy decoding。若 `action_sampling: true`，text 模式使用普通采样并继续依赖 parse retry / fallback 兜底；bin / gaussian_bin 模式只允许 action-bin token 参与生成，并固定生成 `action_dim` 个 token，避免 EOS 或普通 token 导致动作维度缺失。`parallel_l1`、`parallel_gaussian` 和 `parallel_t` 模式不调用 `generate()`，而是由 decoder 在 generation prompt embedding 后追加可训练 `action_queries`，使用自定义 attention mask 保持 prompt 内 causal、action query 可看完整非 padding prompt 且 action query 之间双向可见，再读取最后的 query hidden states，经 OFT-style MLPResNet action head 并行预测当前步动作。`parallel_l1` 输出确定性连续动作；`parallel_gaussian` 输出对角高斯策略的 `mean/log_std`；`parallel_t` 输出 Student-t 策略的 `mean/log_scale`，`action_sampling: true` 时从对应策略采样、`false` 时执行 mean，并在进入环境前按 action bounds clip。text 模式通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 解析 decoded 文本；bin 模式不进入环境族 formatter，而是通过共享 `ActionBinCodec` 从 generated token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。生成式模式都会调用环境族 `validate_action` 做合法性校验。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
    - *PointMaze text 模式实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回；bin 模式由共享 action-bin codec 从 generated token ids 解析
    - 其他环境族在各自 `formatting.py` 中实现 text action 解析和校验；bin action 的 token-id 解析保持共享
-4. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text；连续模式只 tokenize generation prompt，存储连续 `action_values`，不拼 assistant action 文本；`parallel_l1` 用 L1 BC，`parallel_gaussian` 用对角 Gaussian NLL BC
+4. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text；连续模式只 tokenize generation prompt，存储连续 `action_values`，不拼 assistant action 文本；`parallel_l1` 用 L1 BC，`parallel_gaussian` 用对角 Gaussian NLL BC，`parallel_t` 用 Student-t NLL BC，并可通过 `continuous_mean_l1_weight` 额外加入 `alpha * L1(mean, action)`
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text`、动态 `location_sensing_en/zh` 和动态 `wall_sensing_en/zh`
    - `location_sensing` 会直接给出当前位置格子和目标格子；`wall_sensing` 会给出上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数。坐标先按 PointMaze 的 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。四邻方向在靠近 cell 边界时采用保守二值判断：如果邻格本身 free，但当前位置贴近对应边界且对角格为墙，则该方向报告为 `wall`。
 5. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 6. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 7. **DDP 并行训练**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint、validation、训练期 rollout eval、step logs 和视频只由 rank0 写入
-8. **Official normalized score**：`score.py` 复用 `utils/eval_rollout.py` 中的 prompt 渲染、history、模型动作生成、parse retry 和 fallback 逻辑，但结果 schema 与路径独立于 `evaluate.py`。remote PointMaze reference 使用静态 Minari metadata；local reference 使用显式 goal cell、固定 score env fingerprint 和本地 JSON 校验，避免在 goal/horizon/reward type 变动后误复用旧 reference
-9. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
+8. **W&B 指标**：启用 `wandb_enabled` 时，batch 级日志除 `train/loss` / `train/learning_rate` 外，还记录动作模式相关 loss parts：L1 模式记录 `train/l1`，Gaussian 模式记录 `train/nll`、`train/mae`、`train/std`，Student-t 模式记录 `train/tnll`、`train/mae`、`train/scale`、`train/mean_l1_aux`、`train/mean_l1_weight`、`train/df`，bin soft-label 模式记录 `train/action_loss`、`train/stop_loss`。DDP 下这些指标先跨 rank 平均，再由 rank0 写入。
+9. **Official normalized score**：`score.py` 复用 `utils/eval_rollout.py` 中的 prompt 渲染、history、模型动作生成、parse retry 和 fallback 逻辑，但结果 schema 与路径独立于 `evaluate.py`。remote PointMaze reference 使用静态 Minari metadata；local reference 使用显式 goal cell、固定 score env fingerprint 和本地 JSON 校验，避免在 goal/horizon/reward type 变动后误复用旧 reference
+10. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
 
 ---
 

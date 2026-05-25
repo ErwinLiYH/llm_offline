@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from transformers import LogitsProcessor, LogitsProcessorList
 
+from model.continuous_action import resolve_student_t_df
 from utils.action_bins import (
     bin_to_continuous,
     get_action_bin_codec,
@@ -19,6 +20,7 @@ from utils.action_bins import (
     uses_action_bins,
     uses_continuous_actions,
     uses_gaussian_continuous_actions,
+    uses_student_t_continuous_actions,
 )
 from utils.chat_template import build_generation_prompt
 from utils.prompt_loader import render_template
@@ -65,6 +67,8 @@ class GeneratedActionResult:
     raw_continuous_action: list[float] | None = None
     gaussian_action_mean: list[float] | None = None
     gaussian_action_std: list[float] | None = None
+    student_t_action_mean: list[float] | None = None
+    student_t_action_scale: list[float] | None = None
 
 
 def resolve_action_generation_config(config: dict) -> dict:
@@ -344,6 +348,8 @@ def generate_valid_action(
         action_time_seconds = time.perf_counter() - t0
         gaussian_mean = None
         gaussian_std = None
+        student_t_mean = None
+        student_t_scale = None
         if uses_gaussian_continuous_actions(config):
             mean = predicted.mean.float()
             std = predicted.std.float()
@@ -351,6 +357,20 @@ def generate_valid_action(
             gaussian_std = std[0].detach().cpu().numpy().astype(np.float32)
             if action_context.action_generation_config["action_sampling"]:
                 selected = torch.normal(mean=mean, std=std)
+            else:
+                selected = mean
+        elif uses_student_t_continuous_actions(config):
+            mean = predicted.mean.float()
+            scale = predicted.scale.float()
+            student_t_mean = mean[0].detach().cpu().numpy().astype(np.float32)
+            student_t_scale = scale[0].detach().cpu().numpy().astype(np.float32)
+            if action_context.action_generation_config["action_sampling"]:
+                df = torch.as_tensor(
+                    resolve_student_t_df(config),
+                    dtype=mean.dtype,
+                    device=mean.device,
+                )
+                selected = torch.distributions.StudentT(df, loc=mean, scale=scale).sample()
             else:
                 selected = mean
         else:
@@ -401,6 +421,16 @@ def generate_valid_action(
             gaussian_action_std=(
                 [float(value) for value in gaussian_std.tolist()]
                 if gaussian_std is not None
+                else None
+            ),
+            student_t_action_mean=(
+                [float(value) for value in student_t_mean.tolist()]
+                if student_t_mean is not None
+                else None
+            ),
+            student_t_action_scale=(
+                [float(value) for value in student_t_scale.tolist()]
+                if student_t_scale is not None
                 else None
             ),
         )

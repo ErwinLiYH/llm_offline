@@ -195,7 +195,7 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
             )
         gaussian_log_std_min = None
         gaussian_log_std_max = None
-        if saved_config.get("action_token_mode") == "parallel_gaussian":
+        if saved_config.get("action_token_mode") in {"parallel_gaussian", "parallel_t"}:
             gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(saved_config)
         load_continuous_action_decoder(
             model,
