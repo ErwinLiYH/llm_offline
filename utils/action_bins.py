@@ -665,3 +665,53 @@ def parallel_llm_bin_action_loss(
     action_loss = F.cross_entropy(selected_logits, target_token_ids)
     metrics["action_loss"] = float(action_loss.detach().item())
     return action_loss, metrics
+
+
+def action_bin_equivalent_l1(
+    logits: torch.Tensor,
+    action_bin_labels: torch.Tensor,
+    bin_token_ids: list[int],
+    num_bins: int,
+    low: float = -1.0,
+    high: float = 1.0,
+    *,
+    causal_shift: bool,
+) -> float:
+    """Return greedy-bin MAE in continuous action units for logging only."""
+    if logits.dim() != 3:
+        raise ValueError(f"logits must be 3D [batch, seq_len, vocab], got {tuple(logits.shape)}")
+    if action_bin_labels.shape != logits.shape[:2]:
+        raise ValueError(
+            "action_bin_labels must match logits batch/sequence dimensions, "
+            f"got labels={tuple(action_bin_labels.shape)}, logits={tuple(logits.shape)}"
+        )
+
+    with torch.no_grad():
+        if causal_shift:
+            selected_logits = logits[:, :-1, :]
+            selected_labels = action_bin_labels[:, 1:]
+        else:
+            selected_logits = logits
+            selected_labels = action_bin_labels
+
+        action_mask = selected_labels >= 0
+        if not action_mask.any():
+            return math.nan
+
+        token_ids = torch.tensor(bin_token_ids, device=logits.device, dtype=torch.long)
+        target_bins = selected_labels[action_mask].long()
+        if target_bins.min().item() < 0 or target_bins.max().item() >= int(num_bins):
+            raise ValueError(
+                "action-bin target index out of range: "
+                f"min={int(target_bins.min().item())}, max={int(target_bins.max().item())}, "
+                f"num_bins={int(num_bins)}"
+            )
+        bin_logits = selected_logits[action_mask].float().index_select(dim=-1, index=token_ids)
+        predicted_bins = torch.argmax(bin_logits, dim=-1)
+
+        scale = float(high - low) / float(int(num_bins) - 1)
+        low_tensor = torch.as_tensor(float(low), device=logits.device, dtype=torch.float32)
+        scale_tensor = torch.as_tensor(scale, device=logits.device, dtype=torch.float32)
+        predicted_values = low_tensor + predicted_bins.float() * scale_tensor
+        target_values = low_tensor + target_bins.float() * scale_tensor
+        return float(torch.mean(torch.abs(predicted_values - target_values)).detach().item())

@@ -908,6 +908,7 @@ type: project
 - PointMaze dataset 为 `parallel_llm_bin` 保留 PHT 长度，`action_bin_labels` 在 PHT 位置记录目标 bin，`labels` 全部为 `-100`
 - `_compute_batch_loss()` 在 PHT 位置使用 hard full-vocab CE，不做 causal shift，也不训练 chat stop token
 - rollout/score 不调用 `generate()`，一次 direct forward 得到全部动作维度；`action_sampling` 在 PHT 的 ABT logits 上做采样或 greedy
+- 所有 action-bin 模式新增日志指标 `bin_l1` / `train/bin_l1`，按 greedy 预测 bin center 与目标 bin center 的连续动作 MAE 计算，只用于记录，不参与训练 loss
 
 **配置 / 文档 / 测试：**
 - `config.yaml`、`DESIGN.md`、`AGENTS.md`、`eval.yaml`、`score.yaml` 标注 `parallel_llm_bin`

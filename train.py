@@ -38,8 +38,10 @@ from model.continuous_action import (
 )
 from model.policy import load_model_and_tokenizer, get_model_slug
 from utils.action_bins import (
+    action_bin_equivalent_l1,
     build_parallel_llm_bin_attention_mask,
     gaussian_action_loss,
+    get_action_bin_range,
     get_action_bin_token_ids,
     get_action_num_bins,
     get_action_token_mode,
@@ -648,11 +650,21 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
             attention_mask=parallel_attention_mask,
             use_cache=False,
         )
-        return parallel_llm_bin_action_loss(
+        loss, metrics = parallel_llm_bin_action_loss(
             outputs.logits,
             action_bin_labels,
             loss_context["bin_token_ids"],
         )
+        metrics["bin_l1"] = action_bin_equivalent_l1(
+            outputs.logits,
+            action_bin_labels,
+            loss_context["bin_token_ids"],
+            loss_context["action_num_bins"],
+            loss_context["action_bin_min"],
+            loss_context["action_bin_max"],
+            causal_shift=False,
+        )
+        return loss, metrics
 
     if loss_context["action_token_mode"] == "gaussian_bin":
         action_bin_labels = batch["action_bin_labels"].to(device)
@@ -660,7 +672,7 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
             input_ids=input_ids,
             attention_mask=attention_mask,
         )
-        return gaussian_action_loss(
+        loss, metrics = gaussian_action_loss(
             outputs.logits,
             labels,
             action_bin_labels,
@@ -671,6 +683,16 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
             stop_loss_weight=loss_context["action_stop_loss_weight"],
             soft_label_radius=loss_context["action_soft_label_radius"],
         )
+        metrics["bin_l1"] = action_bin_equivalent_l1(
+            outputs.logits,
+            action_bin_labels,
+            loss_context["bin_token_ids"],
+            loss_context["action_num_bins"],
+            loss_context["action_bin_min"],
+            loss_context["action_bin_max"],
+            causal_shift=True,
+        )
+        return loss, metrics
 
     if loss_context["action_token_mode"] == "parallel_l1":
         action_values = batch["action_values"].to(device=device, dtype=torch.float32)
@@ -737,6 +759,19 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
         attention_mask=attention_mask,
         labels=labels,
     )
+    if loss_context["action_token_mode"] == "bin":
+        action_bin_labels = batch["action_bin_labels"].to(device)
+        return outputs.loss, {
+            "bin_l1": action_bin_equivalent_l1(
+                outputs.logits,
+                action_bin_labels,
+                loss_context["bin_token_ids"],
+                loss_context["action_num_bins"],
+                loss_context["action_bin_min"],
+                loss_context["action_bin_max"],
+                causal_shift=True,
+            )
+        }
     return outputs.loss, None
 
 
@@ -744,6 +779,13 @@ def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -
     loss_value = loss.item() if display_loss is None else float(display_loss)
     if loss_parts is None:
         return f"loss={loss_value:.4f}"
+    def _append_bin_l1(text: str) -> str:
+        if "bin_l1" not in loss_parts:
+            return text
+        return f"{text} bin_l1={float(loss_parts['bin_l1']):.6f}"
+
+    if "bin_l1" in loss_parts and "action_loss" not in loss_parts:
+        return _append_bin_l1(f"loss={loss_value:.4f}")
     if "l1_loss" in loss_parts:
         return f"loss={loss_value:.4f} l1={loss_parts['l1_loss']:.6f}"
     if "gaussian_nll_loss" in loss_parts:
@@ -762,11 +804,11 @@ def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -
             f"df={loss_parts['student_t_df']:.2f}"
         )
     if int(loss_parts.get("stop_tokens", 0)) == 0:
-        return (
+        return _append_bin_l1(
             f"loss={loss_value:.4f} action={loss_parts['action_loss']:.6f} "
             f"tokens={int(loss_parts.get('action_tokens', 0))}"
         )
-    return (
+    return _append_bin_l1(
         f"loss={loss_value:.4f} action={loss_parts['action_loss']:.6f} "
         f"stop={loss_parts['stop_loss']:.4f}"
     )
@@ -792,9 +834,13 @@ def _loss_parts_to_wandb_metrics(loss_parts, *, prefix: str) -> dict[str, float]
             f"{prefix}/scale": float(loss_parts["student_t_mean_scale"]),
             f"{prefix}/df": float(loss_parts["student_t_df"]),
         }
-    metrics = {f"{prefix}/action_loss": float(loss_parts["action_loss"])}
-    if int(loss_parts.get("stop_tokens", 1)) > 0:
+    metrics = {}
+    if "action_loss" in loss_parts:
+        metrics[f"{prefix}/action_loss"] = float(loss_parts["action_loss"])
+    if "stop_loss" in loss_parts and int(loss_parts.get("stop_tokens", 1)) > 0:
         metrics[f"{prefix}/stop_loss"] = float(loss_parts["stop_loss"])
+    if "bin_l1" in loss_parts:
+        metrics[f"{prefix}/bin_l1"] = float(loss_parts["bin_l1"])
     return metrics
 
 
@@ -988,15 +1034,18 @@ def _run_training(
     action_token_mode = get_action_token_mode(config)
     bin_token_ids = None
     action_num_bins = None
+    action_bin_min = None
+    action_bin_max = None
     action_sigma = None
     action_loss_weight = None
     action_stop_loss_weight = None
     action_soft_label_radius = None
     student_t_df = None
     continuous_mean_l1_weight = 0.0
-    if action_token_mode in {"gaussian_bin", "parallel_llm_bin"}:
+    if action_token_mode in {"bin", "gaussian_bin", "parallel_llm_bin"}:
         bin_token_ids = get_action_bin_token_ids(tokenizer, config)
         action_num_bins = get_action_num_bins(config)
+        action_bin_min, action_bin_max = get_action_bin_range(config)
     if action_token_mode == "gaussian_bin":
         action_sigma = float(config.get("action_soft_label_sigma", 1.0))
         action_loss_weight = float(config.get("action_loss_weight", 1.0))
@@ -1011,6 +1060,8 @@ def _run_training(
         "action_token_mode": action_token_mode,
         "bin_token_ids": bin_token_ids,
         "action_num_bins": action_num_bins,
+        "action_bin_min": action_bin_min,
+        "action_bin_max": action_bin_max,
         "action_sigma": action_sigma,
         "action_loss_weight": action_loss_weight,
         "action_stop_loss_weight": action_stop_loss_weight,
