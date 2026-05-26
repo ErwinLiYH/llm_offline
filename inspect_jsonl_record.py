@@ -32,9 +32,9 @@ def main():
             prompt = record.get("prompt", "")
             action = record.get("action", "")
             text = format_prompt_action_text(prompt, action)
-            pht_text = record.get("place holder")
-            if pht_text:
-                text = f"{text}\n\nPlace Holder:\n{pht_text}"
+            action_query_text = record.get("action_query")
+            if action_query_text:
+                text = f"{text}\n\nAction Query:\n{action_query_text}"
             print(text)
             return
 

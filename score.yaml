@@ -14,6 +14,7 @@ prompt_templete_index: null
 history_num: 0
 history_stride: 1
 action_sampling: false     # generation/bin modes: sample vs greedy; parallel_gaussian/parallel_t: sample vs mean action
+mtp_quadratic_decoding: true  # mtp_bin only; false trusts the first MTP NTP+AQT proposal directly
 action_temperature: 1.0
 action_top_p: 1.0
 action_top_k: 0

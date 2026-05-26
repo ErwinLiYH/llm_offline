@@ -26,6 +26,7 @@ from model.continuous_action import (
     resolve_gaussian_log_std_bounds,
     resolve_student_t_df,
 )
+from model.mtp_bin import resolve_mtp_k
 from model.policy import load_from_checkpoint
 from transformers import LogitsProcessor, LogitsProcessorList
 from utils.action_bins import (
@@ -87,7 +88,8 @@ ACTION_CONFIG_KEYS = (
     "action_bin_min",
     "action_bin_max",
     "new_token",
-    "parallel_llm_bin_pht_mode",
+    "mtp_k",
+    "mtp_lcm_weight",
     "action_soft_label_sigma",
     "action_loss_weight",
     "action_stop_loss_weight",
@@ -155,7 +157,8 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
         "action_bin_min": saved_config.get("action_bin_min", -1.0),
         "action_bin_max": saved_config.get("action_bin_max", 1.0),
         "new_token": saved_config.get("new_token", False),
-        "parallel_llm_bin_pht_mode": saved_config.get("parallel_llm_bin_pht_mode", "shared"),
+        "mtp_k": saved_config.get("mtp_k"),
+        "mtp_lcm_weight": saved_config.get("mtp_lcm_weight", 1.0),
     }
     for key in ("action_soft_label_sigma", "action_loss_weight", "action_stop_loss_weight"):
         if key in saved_config:
@@ -165,7 +168,7 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
     if "max_length" in saved_config:
         action_config["max_length"] = saved_config["max_length"]
     if action_config["action_token_mode"] in {
-        "parallel_llm_bin",
+        "mtp_bin",
         "parallel_l1",
         "parallel_gaussian",
         "parallel_t",
@@ -174,6 +177,11 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
             raise ValueError(
                 "Checkpoint config.yaml uses a parallel action mode but does not contain action_dim."
             )
+    if action_config["action_token_mode"] == "mtp_bin":
+        action_config["mtp_k"] = resolve_mtp_k(
+            int(action_config["action_dim"]),
+            saved_config.get("mtp_k"),
+        )
     if action_config["action_token_mode"] in {"parallel_l1", "parallel_gaussian", "parallel_t"}:
         action_config["action_query_len"] = resolve_action_query_len(
             int(action_config["action_dim"]),
@@ -195,6 +203,7 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
 
 def apply_checkpoint_action_config(config: dict) -> dict:
     action_config = _load_checkpoint_action_config(config["model_path"])
+    saved_config = _load_checkpoint_config(config["model_path"])
     for key in ACTION_CONFIG_KEYS:
         if key in config and config[key] != action_config.get(key):
             raise ValueError(
@@ -203,6 +212,8 @@ def apply_checkpoint_action_config(config: dict) -> dict:
             )
     merged = dict(config)
     merged.update(action_config)
+    if "mtp_quadratic_decoding" not in merged:
+        merged["mtp_quadratic_decoding"] = saved_config.get("mtp_quadratic_decoding", True)
     get_action_token_mode(merged)
     get_action_num_bins(merged)
     get_action_bin_range(merged)

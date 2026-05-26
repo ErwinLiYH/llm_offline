@@ -14,6 +14,13 @@ from model.continuous_action import (
     resolve_gaussian_log_std_bounds,
     unpatch_continuous_action_forward,
 )
+from model.mtp_bin import (
+    ensure_mtp_bin_decoder,
+    load_mtp_bin_decoder,
+    resolve_mtp_k,
+    unpatch_mtp_bin_forward,
+    uses_mtp_bin,
+)
 from utils.action_bins import (
     action_bins_use_new_tokens,
     get_action_bin_codec,
@@ -149,6 +156,7 @@ def load_model_and_tokenizer(config: dict):
         random_state=42,
     )
     ensure_continuous_action_decoder(model, config)
+    ensure_mtp_bin_decoder(model, config)
     model.print_trainable_parameters()
     return model, tokenizer
 
@@ -207,9 +215,25 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
             expected_gaussian_log_std_min=gaussian_log_std_min,
             expected_gaussian_log_std_max=gaussian_log_std_max,
         )
+    if uses_mtp_bin(saved_config):
+        if "action_dim" not in saved_config:
+            raise ValueError(
+                "Checkpoint config.yaml uses mtp_bin but does not contain action_dim."
+            )
+        load_mtp_bin_decoder(
+            model,
+            model_path,
+            expected_action_dim=int(saved_config["action_dim"]),
+            expected_mtp_k=resolve_mtp_k(
+                int(saved_config["action_dim"]),
+                saved_config.get("mtp_k"),
+            ),
+        )
 
     model.eval()
     unpatch_continuous_action_forward(model)
+    unpatch_mtp_bin_forward(model)
     FastLanguageModel.for_inference(model)
     ensure_continuous_action_decoder(model, saved_config)
+    ensure_mtp_bin_decoder(model, saved_config)
     return model, tokenizer

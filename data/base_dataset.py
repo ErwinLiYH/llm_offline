@@ -43,9 +43,10 @@ class DatasetBuildRequest:
     - `attention_mask`: `torch.long` tensor shaped `[seq_len]`
     - `labels`: `torch.long` tensor shaped `[seq_len]`, prompt positions masked as `-100`
     - `action_bin_labels`: `torch.long` tensor shaped `[seq_len]`, non-action positions as `-1`;
-      bin/gaussian_bin mark generated action-token positions, parallel_llm_bin marks PHT positions
+      bin/gaussian_bin mark generated action-token positions, mtp_bin marks NTP/AQT prediction positions
     - `action_values`: optional `torch.float32` tensor shaped `[action_dim]` for continuous
       action modes
+    - `action_query_mask` and related `action_query_*` tensors: optional metadata for mtp_bin
     """
 
     # Dataset identity.
@@ -84,7 +85,7 @@ class DatasetBuildRequest:
     action_bin_max: float = 1.0
     new_token: bool = False
     action_dim: int | None = None
-    parallel_llm_bin_pht_mode: str = "shared"
+    mtp_k: int | None = None
 
     # File progress update cadence for expensive dataset construction.
     progress_interval_seconds: float = 5.0
@@ -153,14 +154,31 @@ class BaseOfflineDataset(ABC, Dataset):
         """
         max_len = max(item["input_ids"].shape[0] for item in batch)
         input_ids_list, attention_mask_list, labels_list, action_bin_labels_list = [], [], [], []
+        has_position_ids = any("position_ids" in item for item in batch)
+        position_ids_list = []
         has_action_query_mask = any("action_query_mask" in item for item in batch)
         action_query_mask_list = []
+        action_query_fields = {
+            "action_query_offsets": -1,
+            "action_query_source_positions": -1,
+            "action_query_anchor_positions": -1,
+            "action_query_prev_token_ids": 0,
+        }
+        has_action_query_field = {
+            key: any(key in item for item in batch) for key in action_query_fields
+        }
+        action_query_field_lists = {key: [] for key in action_query_fields}
         has_action_values = any("action_values" in item for item in batch)
         action_values_list = []
 
         for item in batch:
+            if has_position_ids and "position_ids" not in item:
+                raise ValueError("Cannot collate a mixed batch with and without position_ids.")
             if has_action_query_mask and "action_query_mask" not in item:
                 raise ValueError("Cannot collate a mixed batch with and without action_query_mask.")
+            for key, enabled in has_action_query_field.items():
+                if enabled and key not in item:
+                    raise ValueError(f"Cannot collate a mixed batch with and without {key}.")
             if has_action_values and "action_values" not in item:
                 raise ValueError("Cannot collate a mixed batch with and without action_values.")
             seq_len = item["input_ids"].shape[0]
@@ -175,6 +193,10 @@ class BaseOfflineDataset(ABC, Dataset):
             action_bin_labels_list.append(
                 torch.cat([item["action_bin_labels"], torch.full((pad_len,), -1, dtype=torch.long)])
             )
+            if has_position_ids:
+                position_ids_list.append(
+                    torch.cat([item["position_ids"], torch.zeros(pad_len, dtype=torch.long)])
+                )
             if has_action_query_mask:
                 action_query_mask_list.append(
                     torch.cat(
@@ -184,6 +206,16 @@ class BaseOfflineDataset(ABC, Dataset):
                         ]
                     )
                 )
+            for key, pad_value in action_query_fields.items():
+                if has_action_query_field[key]:
+                    action_query_field_lists[key].append(
+                        torch.cat(
+                            [
+                                item[key].to(dtype=torch.long),
+                                torch.full((pad_len,), pad_value, dtype=torch.long),
+                            ]
+                        )
+                    )
             if has_action_values:
                 action_values_list.append(item["action_values"].to(dtype=torch.float32))
 
@@ -193,8 +225,13 @@ class BaseOfflineDataset(ABC, Dataset):
             "labels": torch.stack(labels_list),
             "action_bin_labels": torch.stack(action_bin_labels_list),
         }
+        if has_position_ids:
+            collated["position_ids"] = torch.stack(position_ids_list)
         if has_action_query_mask:
             collated["action_query_mask"] = torch.stack(action_query_mask_list)
+        for key, enabled in has_action_query_field.items():
+            if enabled:
+                collated[key] = torch.stack(action_query_field_lists[key])
         if has_action_values:
             collated["action_values"] = torch.stack(action_values_list)
         return collated

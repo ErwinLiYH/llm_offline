@@ -11,9 +11,14 @@ import torch
 from transformers import LogitsProcessor, LogitsProcessorList
 
 from model.continuous_action import resolve_student_t_df
+from model.mtp_bin import (
+    _module_weight_dtype,
+    resolve_mtp_k,
+    resolve_mtp_quadratic_decoding,
+    uses_mtp_bin,
+)
 from utils.action_bins import (
     bin_to_continuous,
-    build_parallel_llm_bin_attention_mask,
     get_action_bin_codec,
     get_action_bin_range,
     get_action_num_bins,
@@ -21,7 +26,6 @@ from utils.action_bins import (
     uses_action_bins,
     uses_continuous_actions,
     uses_gaussian_continuous_actions,
-    uses_parallel_llm_bins,
     uses_student_t_continuous_actions,
 )
 from utils.chat_template import build_generation_prompt
@@ -260,7 +264,7 @@ def _filtered_bin_logits(
     return filtered
 
 
-def _select_parallel_llm_bin_indices(
+def _select_action_bin_indices(
     bin_logits: torch.Tensor,
     action_generation_config: dict,
 ) -> list[int]:
@@ -279,7 +283,65 @@ def _select_parallel_llm_bin_indices(
     return [int(value) for value in sampled.detach().cpu().tolist()]
 
 
-def generate_parallel_llm_bin_action(
+def _get_mtp_decoder(model):
+    decoder = getattr(model, "mtp_bin_decoder", None)
+    if decoder is None and hasattr(model, "module"):
+        decoder = getattr(model.module, "mtp_bin_decoder", None)
+    if decoder is None:
+        raise RuntimeError("mtp_bin eval requires an initialized mtp_bin_decoder.")
+    return decoder
+
+
+def _build_mtp_eval_tensors(
+    prompt_input_ids: torch.Tensor,
+    prompt_attention_mask: torch.Tensor,
+    prefix_token_ids: list[int],
+    *,
+    query_count: int,
+    device: torch.device,
+) -> dict[str, torch.Tensor | int]:
+    if prompt_input_ids.dim() != 2 or prompt_input_ids.shape[0] != 1:
+        raise ValueError("mtp_bin eval currently expects a single prompt batch.")
+    prefix = torch.tensor([prefix_token_ids], device=device, dtype=prompt_input_ids.dtype)
+    prefix_attention = torch.ones_like(prefix, dtype=prompt_attention_mask.dtype)
+    query_ids = torch.zeros((1, query_count), device=device, dtype=prompt_input_ids.dtype)
+    query_attention = torch.ones_like(query_ids, dtype=prompt_attention_mask.dtype)
+    input_ids = torch.cat([prompt_input_ids, prefix, query_ids], dim=1)
+    attention_mask = torch.cat([prompt_attention_mask, prefix_attention, query_attention], dim=1)
+
+    seq_len = input_ids.shape[1]
+    prompt_len = int(prompt_input_ids.shape[1])
+    source_pos = prompt_len + len(prefix_token_ids) - 1 if prefix_token_ids else prompt_len - 1
+    if source_pos < 0:
+        raise ValueError("mtp_bin eval requires a non-empty prompt.")
+    action_query_mask = torch.zeros((1, seq_len), device=device, dtype=torch.bool)
+    action_query_offsets = torch.full((1, seq_len), -1, device=device, dtype=torch.long)
+    action_query_source_positions = torch.full((1, seq_len), -1, device=device, dtype=torch.long)
+    action_query_anchor_positions = torch.full((1, seq_len), -1, device=device, dtype=torch.long)
+    action_query_prev_token_ids = torch.zeros((1, seq_len), device=device, dtype=torch.long)
+    position_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
+    for offset in range(query_count):
+        pos = prompt_len + len(prefix_token_ids) + offset
+        action_query_mask[0, pos] = True
+        action_query_offsets[0, pos] = offset
+        action_query_source_positions[0, pos] = source_pos
+        action_query_anchor_positions[0, pos] = source_pos + 1 + offset
+        position_ids[0, pos] = source_pos + 1 + offset
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "position_ids": position_ids,
+        "action_query_mask": action_query_mask,
+        "action_query_offsets": action_query_offsets,
+        "action_query_source_positions": action_query_source_positions,
+        "action_query_anchor_positions": action_query_anchor_positions,
+        "action_query_prev_token_ids": action_query_prev_token_ids,
+        "source_pos": source_pos,
+    }
+
+
+def generate_mtp_bin_action(
     model,
     tokenizer,
     prompt: str,
@@ -292,10 +354,15 @@ def generate_parallel_llm_bin_action(
     action_generation_config: dict,
 ) -> tuple[str, list[int], list[list[float]]]:
     if action_codec is None:
-        raise RuntimeError("parallel_llm_bin eval requires an initialized action codec.")
+        raise RuntimeError("mtp_bin eval requires an initialized action codec.")
+    if action_generation_config.get("action_sampling", False):
+        raise ValueError("mtp_bin eval currently requires action_sampling: false.")
+    use_quadratic_decoding = resolve_mtp_quadratic_decoding(config)
+    decoder = _get_mtp_decoder(model)
     action_dim = int(action_dim)
-    if action_dim < 1:
-        raise ValueError(f"action_dim must be >= 1, got {action_dim}")
+    mtp_k = resolve_mtp_k(action_dim, config.get("mtp_k"))
+    if mtp_k != action_dim - 1:
+        raise ValueError("mtp_bin eval expects mtp_k == action_dim - 1.")
 
     tokenizer_kwargs = {
         "text": build_generation_prompt(tokenizer, prompt),
@@ -303,63 +370,125 @@ def generate_parallel_llm_bin_action(
         "add_special_tokens": False,
     }
     if config.get("max_length") is not None:
-        prompt_budget = int(config["max_length"]) - action_dim
-        if prompt_budget <= 0:
-            raise ValueError(
-                "parallel_llm_bin requires max_length > action_dim so PHT tokens fit: "
-                f"max_length={config['max_length']}, action_dim={action_dim}."
-            )
-        tokenizer_kwargs["max_length"] = prompt_budget
+        tokenizer_kwargs["max_length"] = max(int(config["max_length"]) - action_dim - mtp_k, 1)
         tokenizer_kwargs["truncation"] = True
     encoded = tokenizer(**tokenizer_kwargs)
-    input_ids = encoded.input_ids.to(device)
-    attention_mask = encoded.attention_mask.to(device)
-    placeholder_ids = torch.tensor(
-        [action_codec.placeholder_token_ids(action_dim)],
-        device=device,
-        dtype=input_ids.dtype,
-    ).expand(input_ids.shape[0], -1)
-    placeholder_attention = torch.ones_like(placeholder_ids, dtype=attention_mask.dtype)
-    input_ids = torch.cat([input_ids, placeholder_ids], dim=1)
-    attention_mask = torch.cat([attention_mask, placeholder_attention], dim=1)
-    placeholder_mask = torch.zeros_like(attention_mask, dtype=torch.bool)
-    placeholder_mask[:, -action_dim:] = True
+    prompt_input_ids = encoded.input_ids.to(device)
+    prompt_attention_mask = encoded.attention_mask.to(device)
+    bin_token_ids = torch.tensor(action_codec.model_token_ids, device=device, dtype=torch.long)
 
-    embedding_weight = getattr(model.get_input_embeddings(), "weight", None)
-    mask_dtype = (
-        embedding_weight.dtype
-        if embedding_weight is not None and torch.is_floating_point(embedding_weight)
-        else torch.float32
-    )
-    parallel_attention_mask = build_parallel_llm_bin_attention_mask(
-        attention_mask,
-        placeholder_mask,
-        dtype=mask_dtype,
-    )
-    with torch.no_grad():
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=parallel_attention_mask,
-            use_cache=False,
+    def propose(prefix_token_ids: list[int]) -> tuple[list[int], list[int], list[list[float]]]:
+        remaining = action_dim - len(prefix_token_ids)
+        if remaining <= 0:
+            return [], [], []
+        query_count = min(mtp_k, remaining - 1)
+        tensors = _build_mtp_eval_tensors(
+            prompt_input_ids,
+            prompt_attention_mask,
+            prefix_token_ids,
+            query_count=query_count,
+            device=device,
+        )
+        with torch.no_grad():
+            output = model(
+                input_ids=tensors["input_ids"],
+                attention_mask=tensors["attention_mask"],
+                position_ids=tensors["position_ids"],
+                action_query_mask=tensors["action_query_mask"],
+                action_query_offsets=tensors["action_query_offsets"],
+                action_query_source_positions=tensors["action_query_source_positions"],
+                action_query_prev_token_ids=tensors["action_query_prev_token_ids"],
+                mtp_bin=True,
+            )
+        source_pos = int(tensors["source_pos"])
+        ntp_bin_logits = output.logits[0, source_pos].index_select(dim=-1, index=bin_token_ids)
+        ntp_bin = int(ntp_bin_logits.argmax(dim=-1).item())
+        bins = [ntp_bin]
+        token_ids = [int(action_codec.model_token_ids[ntp_bin])]
+        distributions = []
+        if collect_probabilities:
+            distributions.append(
+                [float(value) for value in torch.softmax(ntp_bin_logits.float(), dim=-1).cpu().tolist()]
+            )
+
+        if query_count > 0:
+            query_hidden = output.hidden_states[tensors["action_query_mask"]]
+            previous_token_id = token_ids[0]
+            embeddings = model.get_input_embeddings()
+            output_embeddings = model.get_output_embeddings()
+            if output_embeddings is None:
+                raise ValueError("mtp_bin eval requires a model output embedding/lm_head")
+            sampler_dtype = _module_weight_dtype(decoder.sampler_head, query_hidden.dtype)
+            output_dtype = _module_weight_dtype(output_embeddings, query_hidden.dtype)
+            for query_idx in range(query_count):
+                prev_ids = torch.tensor([previous_token_id], device=device, dtype=torch.long)
+                prev_embed = embeddings(prev_ids).to(dtype=sampler_dtype)
+                sampler_hidden = decoder.sampler_head(
+                    query_hidden[query_idx : query_idx + 1].to(dtype=sampler_dtype),
+                    prev_embed,
+                )
+                sampler_hidden = sampler_hidden.to(dtype=output_dtype)
+                sampler_logits = output_embeddings(sampler_hidden)[0]
+                sampler_bin_logits = sampler_logits.index_select(dim=-1, index=bin_token_ids)
+                sampler_bin = int(sampler_bin_logits.argmax(dim=-1).item())
+                bins.append(sampler_bin)
+                previous_token_id = int(action_codec.model_token_ids[sampler_bin])
+                token_ids.append(previous_token_id)
+                if collect_probabilities:
+                    distributions.append(
+                        [
+                            float(value)
+                            for value in torch.softmax(sampler_bin_logits.float(), dim=-1).cpu().tolist()
+                        ]
+                    )
+        return bins, token_ids, distributions
+
+    proposal_bins, proposal_token_ids, proposal_distributions = propose([])
+    if len(proposal_bins) < action_dim:
+        raise RuntimeError(
+            "mtp_bin decoding produced too few action bins: "
+            f"got {len(proposal_bins)}, expected {action_dim}."
+        )
+    if not use_quadratic_decoding:
+        selected_bins = proposal_bins[:action_dim]
+        selected_token_ids = proposal_token_ids[:action_dim]
+        selected_distributions = proposal_distributions[:action_dim] if collect_probabilities else []
+        return (
+            action_codec.display_text_for_bins(selected_bins),
+            selected_token_ids,
+            selected_distributions,
         )
 
-    action_logits = outputs.logits[placeholder_mask].reshape(action_dim, -1)
-    bin_token_ids = torch.tensor(action_codec.model_token_ids, device=device, dtype=torch.long)
-    bin_logits = action_logits.index_select(dim=-1, index=bin_token_ids)
-    selected_bins = _select_parallel_llm_bin_indices(
-        bin_logits,
-        action_generation_config,
-    )
-    generated_token_ids = action_codec.token_ids_for_bins(selected_bins)
-    generated = action_codec.display_text_for_bins(selected_bins)
-    distributions = []
-    if collect_probabilities:
-        bin_probs = torch.softmax(bin_logits.float(), dim=-1)
-        distributions = [
-            [float(value) for value in row.detach().cpu().tolist()]
-            for row in bin_probs
-        ]
-    return generated, generated_token_ids, distributions
+    verified_bins = [proposal_bins[0]]
+    verified_token_ids = [proposal_token_ids[0]]
+    speculative_bins = proposal_bins[1:]
+    speculative_token_ids = proposal_token_ids[1:]
+    speculative_distributions = proposal_distributions[1:]
+    final_distributions = proposal_distributions[:1] if collect_probabilities else []
+
+    while len(verified_bins) < action_dim:
+        verifier_bins, verifier_token_ids, verifier_distributions = propose(verified_token_ids)
+        verifier_bin = verifier_bins[0]
+        verifier_token_id = verifier_token_ids[0]
+        if speculative_bins and speculative_bins[0] == verifier_bin:
+            chosen_bin = speculative_bins.pop(0)
+            chosen_token_id = speculative_token_ids.pop(0)
+            chosen_distribution = speculative_distributions.pop(0) if speculative_distributions else []
+        else:
+            chosen_bin = verifier_bin
+            chosen_token_id = verifier_token_id
+            chosen_distribution = verifier_distributions[0] if verifier_distributions else []
+            speculative_bins = verifier_bins[1:]
+            speculative_token_ids = verifier_token_ids[1:]
+            speculative_distributions = verifier_distributions[1:]
+        verified_bins.append(chosen_bin)
+        verified_token_ids.append(chosen_token_id)
+        if collect_probabilities:
+            final_distributions.append(chosen_distribution)
+
+    generated_token_ids = action_codec.token_ids_for_bins(verified_bins)
+    generated = action_codec.display_text_for_bins(verified_bins)
+    return generated, generated_token_ids, final_distributions
 
 
 def format_action_bin_probability_log(distributions: list[list[float]], config: dict, action_codec) -> str:
@@ -562,9 +691,9 @@ def generate_valid_action(
             ),
         )
 
-    if uses_parallel_llm_bins(config):
+    if uses_mtp_bin(config):
         t0 = time.perf_counter()
-        generated, generated_token_ids, distributions = generate_parallel_llm_bin_action(
+        generated, generated_token_ids, distributions = generate_mtp_bin_action(
             model,
             tokenizer,
             prompt,

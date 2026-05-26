@@ -929,3 +929,33 @@ type: project
 - human-readable dataset cache `.jsonl` 为 `parallel_llm_bin` 额外记录 `place holder` PHT 显示文本
 - standalone eval 从 checkpoint config 读取 `parallel_llm_bin_pht_mode`；旧 checkpoint 未记录时按 `shared` 加载
 - `DESIGN.md`、`AGENTS.md` 和测试覆盖 shared/dimension 两种 PHT token schema、PointMaze tokenization 与 direct-forward eval
+
+---
+
+## mtp_bin AQT action-bin policy（2026-05-27）
+
+**从 PHT 模式切到 MTP/AQT 实现：**
+- 移除 `parallel_llm_bin` / `parallel_llm_bin_pht_mode` 路径，新增 `action_token_mode: mtp_bin`
+- 新增 AQT（Action Query Token）作为模型外的可训练 query embedding；AQT 不进入 tokenizer，也不叫 mask/PHT
+- `mtp_k` 控制 AQT 数量，默认 `action_dim - 1`；当前实现要求 `mtp_k == action_dim - 1`
+- AQT embedding、sampler head 等参数保存到独立 sidecar `mtp_bin_decoder.pt`
+
+**training / loss：**
+- PointMaze `mtp_bin` 样本 tokenize generation prompt、动作前缀 token 和 AQT metadata；`labels` 全部为 `-100`
+- `action_bin_labels` 在 NTP/AQT 预测位置记录目标 ABT bin，训练时使用 base CE、sampler CE 和 LCM
+- `mtp_lcm_weight` 控制 latent consistency matching 权重，默认 `1.0`
+- sampler head 使用 AQT hidden state 与前一个动作 token embedding 预测对应未来 ABT
+- 训练日志和 W&B 记录 `base_loss`、`sampler_loss`、`lcm_loss`，所有 action-bin 模式继续记录 `bin_l1`
+
+**eval / decoding：**
+- `mtp_bin` eval 不调用 `generate()`，直接走 forward + AQT sampler 路径
+- 新增 `mtp_quadratic_decoding`；为 `false` 时关闭 verifier loop，直接信任第一次 NTP + AQT proposal
+- eval / score 从 checkpoint config 继承 `mtp_k` 和 `mtp_quadratic_decoding`，`eval.yaml` / `score.yaml` 可覆盖 decoding 设置
+- step log 继续用 `<act_XX>` 展示 ABT，并可记录各动作维度 bin 概率
+
+**缓存 / 文档 / 测试：**
+- dataset cache signature 纳入 `mtp_k`、action-token schema 和 `mtp_bin` 相关源码 hash
+- 普通 `bin` / `gaussian_bin` 的 cache signature 不再受 `model/mtp_bin.py` 源码变化影响
+- human-readable dataset cache `.jsonl` 为 `mtp_bin` 额外记录 `<aqt_i>` action query 显示字段
+- `DESIGN.md`、`AGENTS.md`、`eval.yaml`、`score.yaml` 更新为 `mtp_bin` / AQT 命名
+- 测试覆盖 MTP attention mask、loss 对齐、AQT tokenization、sidecar 保存加载、direct-forward eval 和 bf16 base + fp32 sampler head dtype 兼容

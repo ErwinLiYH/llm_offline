@@ -36,17 +36,25 @@ from model.continuous_action import (
     student_t_negative_log_likelihood,
     unpatch_continuous_action_forward,
 )
+from model.mtp_bin import (
+    ensure_mtp_bin_decoder,
+    mtp_bin_action_loss,
+    mtp_bin_equivalent_l1,
+    resolve_mtp_k,
+    resolve_mtp_lcm_weight,
+    resolve_mtp_quadratic_decoding,
+    save_mtp_bin_decoder,
+    unpatch_mtp_bin_forward,
+    uses_mtp_bin,
+)
 from model.policy import load_model_and_tokenizer, get_model_slug
 from utils.action_bins import (
     action_bin_equivalent_l1,
-    build_parallel_llm_bin_attention_mask,
     gaussian_action_loss,
     get_action_bin_range,
     get_action_bin_token_ids,
     get_action_num_bins,
     get_action_token_mode,
-    get_parallel_llm_bin_pht_mode,
-    parallel_llm_bin_action_loss,
     uses_continuous_actions,
 )
 from utils.distributed import (
@@ -306,7 +314,7 @@ def build_dataset_request(config: dict, tokenizer, variant: str, split: str) -> 
         action_bin_max=config.get("action_bin_max", 1.0),
         new_token=config.get("new_token", False),
         action_dim=config.get("action_dim"),
-        parallel_llm_bin_pht_mode=config.get("parallel_llm_bin_pht_mode", "shared"),
+        mtp_k=config.get("mtp_k"),
         progress_interval_seconds=config.get("progress_interval_seconds", 5.0),
     )
 
@@ -506,7 +514,8 @@ def _build_training_eval_config(config: dict) -> dict:
         "action_bin_max": config.get("action_bin_max", 1.0),
         "new_token": config.get("new_token", False),
         "action_dim": config.get("action_dim"),
-        "parallel_llm_bin_pht_mode": config.get("parallel_llm_bin_pht_mode", "shared"),
+        "mtp_k": config.get("mtp_k"),
+        "mtp_quadratic_decoding": config.get("mtp_quadratic_decoding", True),
         "action_query_len": config.get("action_query_len"),
         "action_head_num_blocks": config.get("action_head_num_blocks"),
         "gaussian_log_std_min": config.get("gaussian_log_std_min"),
@@ -562,8 +571,10 @@ def _run_eval(
 
     model.eval()
     unpatch_continuous_action_forward(model)
+    unpatch_mtp_bin_forward(model)
     FastLanguageModel.for_inference(model)
     ensure_continuous_action_decoder(model, config)
+    ensure_mtp_bin_decoder(model, config)
 
     try:
         for variant in variants:
@@ -626,8 +637,10 @@ def _run_eval(
     finally:
         model.train()
         unpatch_continuous_action_forward(model)
+        unpatch_mtp_bin_forward(model)
         FastLanguageModel.for_training(model)
         ensure_continuous_action_decoder(model, config)
+        ensure_mtp_bin_decoder(model, config)
 
 
 def _compute_batch_loss(model, batch, device, loss_context: dict):
@@ -635,37 +648,35 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
     attention_mask = batch["attention_mask"].to(device)
     labels = batch["labels"].to(device)
 
-    if loss_context["action_token_mode"] == "parallel_llm_bin":
+    if loss_context["action_token_mode"] == "mtp_bin":
         action_bin_labels = batch["action_bin_labels"].to(device)
-        embedding_weight = getattr(model.get_input_embeddings(), "weight", None)
-        mask_dtype = (
-            embedding_weight.dtype
-            if embedding_weight is not None and torch.is_floating_point(embedding_weight)
-            else torch.float32
-        )
-        parallel_attention_mask = build_parallel_llm_bin_attention_mask(
-            attention_mask,
-            action_bin_labels >= 0,
-            dtype=mask_dtype,
-        )
+        action_query_mask = batch["action_query_mask"].to(device)
         outputs = model(
             input_ids=input_ids,
-            attention_mask=parallel_attention_mask,
-            use_cache=False,
+            attention_mask=attention_mask,
+            position_ids=batch["position_ids"].to(device),
+            action_query_mask=action_query_mask,
+            action_query_offsets=batch["action_query_offsets"].to(device),
+            action_query_source_positions=batch["action_query_source_positions"].to(device),
+            action_query_prev_token_ids=batch["action_query_prev_token_ids"].to(device),
+            mtp_bin=True,
         )
-        loss, metrics = parallel_llm_bin_action_loss(
-            outputs.logits,
+        loss, metrics = mtp_bin_action_loss(
+            outputs,
             action_bin_labels,
+            action_query_mask,
+            batch["action_query_anchor_positions"].to(device),
             loss_context["bin_token_ids"],
+            lcm_weight=loss_context["mtp_lcm_weight"],
         )
-        metrics["bin_l1"] = action_bin_equivalent_l1(
-            outputs.logits,
+        metrics["bin_l1"] = mtp_bin_equivalent_l1(
+            outputs,
             action_bin_labels,
+            action_query_mask,
             loss_context["bin_token_ids"],
             loss_context["action_num_bins"],
             loss_context["action_bin_min"],
             loss_context["action_bin_max"],
-            causal_shift=False,
         )
         return loss, metrics
 
@@ -806,6 +817,14 @@ def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -
             f"scale={loss_parts['student_t_mean_scale']:.6f} "
             f"df={loss_parts['student_t_df']:.2f}"
         )
+    if "base_loss" in loss_parts:
+        return _append_bin_l1(
+            f"loss={loss_value:.4f} base={loss_parts['base_loss']:.6f} "
+            f"sampler={loss_parts['sampler_loss']:.6f} "
+            f"lcm={loss_parts['lcm_loss']:.6f} "
+            f"tokens={int(loss_parts.get('action_tokens', 0))} "
+            f"aqt={int(loss_parts.get('action_query_tokens', 0))}"
+        )
     if int(loss_parts.get("stop_tokens", 0)) == 0:
         return _append_bin_l1(
             f"loss={loss_value:.4f} action={loss_parts['action_loss']:.6f} "
@@ -838,6 +857,10 @@ def _loss_parts_to_wandb_metrics(loss_parts, *, prefix: str) -> dict[str, float]
             f"{prefix}/df": float(loss_parts["student_t_df"]),
         }
     metrics = {}
+    if "base_loss" in loss_parts:
+        metrics[f"{prefix}/base_loss"] = float(loss_parts["base_loss"])
+        metrics[f"{prefix}/sampler_loss"] = float(loss_parts["sampler_loss"])
+        metrics[f"{prefix}/lcm_loss"] = float(loss_parts["lcm_loss"])
     if "action_loss" in loss_parts:
         metrics[f"{prefix}/action_loss"] = float(loss_parts["action_loss"])
     if "stop_loss" in loss_parts and int(loss_parts.get("stop_tokens", 1)) > 0:
@@ -1043,12 +1066,15 @@ def _run_training(
     action_loss_weight = None
     action_stop_loss_weight = None
     action_soft_label_radius = None
+    mtp_lcm_weight = None
     student_t_df = None
     continuous_mean_l1_weight = 0.0
-    if action_token_mode in {"bin", "gaussian_bin", "parallel_llm_bin"}:
+    if action_token_mode in {"bin", "gaussian_bin", "mtp_bin"}:
         bin_token_ids = get_action_bin_token_ids(tokenizer, config)
         action_num_bins = get_action_num_bins(config)
         action_bin_min, action_bin_max = get_action_bin_range(config)
+    if action_token_mode == "mtp_bin":
+        mtp_lcm_weight = resolve_mtp_lcm_weight(config)
     if action_token_mode == "gaussian_bin":
         action_sigma = float(config.get("action_soft_label_sigma", 1.0))
         action_loss_weight = float(config.get("action_loss_weight", 1.0))
@@ -1069,6 +1095,7 @@ def _run_training(
         "action_loss_weight": action_loss_weight,
         "action_stop_loss_weight": action_stop_loss_weight,
         "action_soft_label_radius": action_soft_label_radius,
+        "mtp_lcm_weight": mtp_lcm_weight,
         "student_t_df": student_t_df,
         "continuous_mean_l1_weight": continuous_mean_l1_weight,
     }
@@ -1088,8 +1115,10 @@ def _run_training(
                 print(f"[train] Epoch {epoch}/{num_epochs} progress in file: {progress.path.resolve()}")
             model.train()
             unpatch_continuous_action_forward(raw_model)
+            unpatch_mtp_bin_forward(raw_model)
             FastLanguageModel.for_training(raw_model)
             ensure_continuous_action_decoder(raw_model, config)
+            ensure_mtp_bin_decoder(raw_model, config)
             total_loss = 0.0
             num_batches = 0
             epoch_optimizer_step = 0
@@ -1252,8 +1281,10 @@ def _run_training(
                     barrier(dist_context)
                     model.train()
                     unpatch_continuous_action_forward(raw_model)
+                    unpatch_mtp_bin_forward(raw_model)
                     FastLanguageModel.for_training(raw_model)
                     ensure_continuous_action_decoder(raw_model, config)
+                    ensure_mtp_bin_decoder(raw_model, config)
 
             train_loss = total_loss / max(num_batches, 1)
 
@@ -1313,8 +1344,10 @@ def _run_training(
         barrier(dist_context)
         model.train()
         unpatch_continuous_action_forward(raw_model)
+        unpatch_mtp_bin_forward(raw_model)
         FastLanguageModel.for_training(raw_model)
         ensure_continuous_action_decoder(raw_model, config)
+        ensure_mtp_bin_decoder(raw_model, config)
 
 
 
@@ -1325,6 +1358,8 @@ def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
     tokenizer.save_pretrained(checkpoint_dir)
     if uses_continuous_actions(config):
         save_continuous_action_decoder(model, checkpoint_dir)
+    if uses_mtp_bin(config):
+        save_mtp_bin_decoder(model, checkpoint_dir)
     config_dst = os.path.join(checkpoint_dir, "config.yaml")
     with open(config_dst, "w") as f:
         yaml.dump(config, f)
@@ -1415,8 +1450,10 @@ def main():
         config.pop("variants", None)
         config["action_dim"] = action_dim
         action_token_mode = get_action_token_mode(config)
-        if action_token_mode == "parallel_llm_bin":
-            config["parallel_llm_bin_pht_mode"] = get_parallel_llm_bin_pht_mode(config)
+        if action_token_mode == "mtp_bin":
+            config["mtp_k"] = resolve_mtp_k(action_dim, config.get("mtp_k"))
+            config["mtp_lcm_weight"] = resolve_mtp_lcm_weight(config)
+            config["mtp_quadratic_decoding"] = resolve_mtp_quadratic_decoding(config)
         if uses_continuous_actions(config):
             config["action_query_len"] = resolve_action_query_len(
                 action_dim,
@@ -1462,6 +1499,13 @@ def main():
             rank_zero_print(
                 dist_context,
                 continuous_decoder_info,
+            )
+        if uses_mtp_bin(config):
+            rank_zero_print(
+                dist_context,
+                "[train] Resolved mtp_bin decoder: "
+                f"mtp_k={config['mtp_k']}, mtp_lcm_weight={config['mtp_lcm_weight']}, "
+                f"mtp_quadratic_decoding={config['mtp_quadratic_decoding']}",
             )
         rank_zero_print(
             dist_context,

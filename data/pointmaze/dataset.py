@@ -26,6 +26,8 @@ from data.pointmaze.variants import (
     get_pointmaze_variant_type,
     resolve_local_dataset_path,
 )
+from model import mtp_bin as mtp_bin_module
+from model.mtp_bin import resolve_mtp_k, uses_mtp_bin
 from utils import action_bins as action_bins_module
 from utils import chat_template as chat_template_module
 from utils import prompt_loader as prompt_loader_module
@@ -36,7 +38,6 @@ from utils.action_bins import (
     get_action_token_mode,
     uses_action_bins,
     uses_continuous_actions,
-    uses_parallel_llm_bins,
 )
 from utils.chat_template import build_generation_prompt, build_training_conversation
 from utils.file_progress import (
@@ -67,7 +68,7 @@ def _pointmaze_action_config(config: dict) -> dict:
         "action_bin_max": config["action_bin_max"],
         "new_token": config.get("new_token", False),
         "action_dim": config.get("action_dim", 2),
-        "parallel_llm_bin_pht_mode": config.get("parallel_llm_bin_pht_mode", "shared"),
+        "mtp_k": config.get("mtp_k"),
     }
 
 
@@ -163,6 +164,84 @@ def _find_subsequence(values: list[int], needle: list[int], start: int) -> int |
     return None
 
 
+def _build_mtp_bin_sample(
+    prompt_input_ids: list[int],
+    prompt_attention_mask: list[int],
+    action_token_ids: list[int],
+    action_bin_indices: list[int],
+    config: dict,
+) -> dict:
+    action_dim = int(config.get("action_dim", len(action_bin_indices)))
+    mtp_k = resolve_mtp_k(action_dim, config.get("mtp_k"))
+    if len(action_bin_indices) != action_dim:
+        raise ValueError(
+            "PointMaze mtp_bin action labels do not match action_dim: "
+            f"labels={len(action_bin_indices)}, action_dim={action_dim}."
+        )
+    if len(action_token_ids) != action_dim:
+        raise ValueError(
+            "PointMaze mtp_bin action token IDs do not match action_dim: "
+            f"token_ids={len(action_token_ids)}, action_dim={action_dim}."
+        )
+    if not prompt_input_ids:
+        raise ValueError("mtp_bin requires a non-empty generation prompt.")
+
+    action_prefix_ids = [int(token_id) for token_id in action_token_ids[:-1]]
+    base_input_ids = list(prompt_input_ids) + action_prefix_ids
+    base_attention = list(prompt_attention_mask) + [1] * len(action_prefix_ids)
+    base_len = len(base_input_ids)
+    prompt_last_pos = len(prompt_input_ids) - 1
+
+    input_ids = list(base_input_ids)
+    attention_mask = list(base_attention)
+    labels = [-100] * base_len
+    action_bin_labels = [-1] * base_len
+    action_query_mask = [False] * base_len
+    action_query_offsets = [-1] * base_len
+    action_query_source_positions = [-1] * base_len
+    action_query_anchor_positions = [-1] * base_len
+    action_query_prev_token_ids = [0] * base_len
+    position_ids = list(range(base_len))
+
+    def source_position_for_target(target_idx: int) -> int:
+        if int(target_idx) == 0:
+            return prompt_last_pos
+        return len(prompt_input_ids) + int(target_idx) - 1
+
+    for target_idx, bin_idx in enumerate(action_bin_indices):
+        action_bin_labels[source_position_for_target(target_idx)] = int(bin_idx)
+
+    for source_target_idx in range(action_dim):
+        source_pos = source_position_for_target(source_target_idx)
+        max_future_target = min(action_dim - 1, source_target_idx + mtp_k)
+        for future_target_idx in range(source_target_idx + 1, max_future_target + 1):
+            offset = future_target_idx - source_target_idx - 1
+            anchor_pos = source_position_for_target(future_target_idx)
+            input_ids.append(0)
+            attention_mask.append(1)
+            labels.append(-100)
+            action_bin_labels.append(int(action_bin_indices[future_target_idx]))
+            action_query_mask.append(True)
+            action_query_offsets.append(int(offset))
+            action_query_source_positions.append(int(source_pos))
+            action_query_anchor_positions.append(int(anchor_pos))
+            action_query_prev_token_ids.append(int(action_token_ids[future_target_idx - 1]))
+            position_ids.append(int(position_ids[anchor_pos]))
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+        "action_bin_labels": action_bin_labels,
+        "position_ids": position_ids,
+        "action_query_mask": action_query_mask,
+        "action_query_offsets": action_query_offsets,
+        "action_query_source_positions": action_query_source_positions,
+        "action_query_anchor_positions": action_query_anchor_positions,
+        "action_query_prev_token_ids": action_query_prev_token_ids,
+    }
+
+
 def _tokenize_pointmaze_sample(
     prompt: str,
     action_text: str,
@@ -195,22 +274,22 @@ def _tokenize_pointmaze_sample(
             "action_bin_labels": [-1] * len(prompt_input_ids),
         }
 
-    if uses_parallel_llm_bins(config):
+    if uses_mtp_bin(config):
         if _POINTMAZE_WORKER_ACTION_CODEC is None:
-            raise RuntimeError("PointMaze parallel_llm_bin codec was not initialized.")
+            raise RuntimeError("PointMaze mtp_bin codec was not initialized.")
         if expected_action_bin_indices is None:
-            raise RuntimeError("Missing expected action-bin labels for PointMaze parallel_llm_bin.")
+            raise RuntimeError("Missing expected action-bin labels for PointMaze mtp_bin.")
+        if expected_action_token_ids is None:
+            raise RuntimeError("Missing expected action-bin token IDs for PointMaze mtp_bin.")
         action_dim = int(config.get("action_dim", len(expected_action_bin_indices)))
-        if len(expected_action_bin_indices) != action_dim:
-            raise ValueError(
-                "PointMaze parallel_llm_bin action labels do not match action_dim: "
-                f"labels={len(expected_action_bin_indices)}, action_dim={action_dim}."
-            )
-        prompt_budget = int(config["max_length"]) - action_dim
+        mtp_k = resolve_mtp_k(action_dim, config.get("mtp_k"))
+        action_prefix_len = max(action_dim - 1, 0)
+        action_query_count = sum(min(mtp_k, action_dim - 1 - idx) for idx in range(action_dim))
+        prompt_budget = int(config["max_length"]) - action_prefix_len - action_query_count
         if prompt_budget <= 0:
             raise ValueError(
-                "parallel_llm_bin requires max_length > action_dim so PHT tokens fit: "
-                f"max_length={config['max_length']}, action_dim={action_dim}."
+                "mtp_bin requires max_length to fit prompt, action prefix, and AQT tokens: "
+                f"max_length={config['max_length']}, action_dim={action_dim}, mtp_k={mtp_k}."
             )
         prompt_enc = tok(
             text=prompt_text,
@@ -220,14 +299,13 @@ def _tokenize_pointmaze_sample(
         )
         prompt_input_ids = list(prompt_enc["input_ids"])
         prompt_attention_mask = list(prompt_enc["attention_mask"])
-        placeholder_ids = _POINTMAZE_WORKER_ACTION_CODEC.placeholder_token_ids(action_dim)
-        return {
-            "input_ids": prompt_input_ids + placeholder_ids,
-            "attention_mask": prompt_attention_mask + [1] * action_dim,
-            "labels": [-100] * (len(prompt_input_ids) + action_dim),
-            "action_bin_labels": [-1] * len(prompt_input_ids)
-            + [int(bin_idx) for bin_idx in expected_action_bin_indices],
-        }
+        return _build_mtp_bin_sample(
+            prompt_input_ids,
+            prompt_attention_mask,
+            expected_action_token_ids,
+            expected_action_bin_indices,
+            config,
+        )
 
     full_text = build_training_conversation(tok, prompt, action_text)
 
@@ -353,9 +431,13 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
                     "prompt": prompt,
                     "action": action_texts["display_text"],
                 }
-                if uses_parallel_llm_bins(config):
-                    text_record["place holder"] = _POINTMAZE_WORKER_ACTION_CODEC.placeholder_display_text(
-                        action_dim,
+                if uses_mtp_bin(config):
+                    query_offsets = token_sample.get("action_query_offsets", [])
+                    query_mask = token_sample.get("action_query_mask", [])
+                    text_record["action_query"] = "".join(
+                        f"<aqt_{offset}>"
+                        for offset, is_query in zip(query_offsets, query_mask)
+                        if is_query
                     )
                 if uses_continuous_actions(config):
                     text_record["action_values"] = token_sample["action_values"]
@@ -586,7 +668,7 @@ class PointMazeBuildConfig:
     action_bin_max: float
     new_token: bool
     action_dim: int
-    parallel_llm_bin_pht_mode: str = "shared"
+    mtp_k: int | None = None
     action_token_schema_hash: str = "text"
     progress_interval_seconds: float = 5.0
 
@@ -711,12 +793,14 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_max": request.action_bin_max,
             "new_token": request.new_token,
             "action_dim": request.action_dim if request.action_dim is not None else 2,
-            "parallel_llm_bin_pht_mode": request.parallel_llm_bin_pht_mode,
+            "mtp_k": request.mtp_k,
         }
         action_token_mode = get_action_token_mode(action_config)
         action_dim = int(action_config["action_dim"])
         if action_dim != 2:
             raise ValueError(f"PointMaze action_dim must be 2, got {action_dim}")
+        mtp_k = resolve_mtp_k(action_dim, request.mtp_k) if action_token_mode == "mtp_bin" else None
+        action_config["mtp_k"] = mtp_k
         new_token = bool(request.new_token) if uses_action_bins(action_config) else False
         action_config["new_token"] = new_token
         action_num_bins = get_action_num_bins(action_config)
@@ -752,7 +836,7 @@ class PointMazeDataset(BaseOfflineDataset):
             action_bin_max=action_bin_max,
             new_token=new_token,
             action_dim=action_dim,
-            parallel_llm_bin_pht_mode=action_config.get("parallel_llm_bin_pht_mode", "shared"),
+            mtp_k=mtp_k,
             action_token_schema_hash=action_token_schema_hash,
             progress_interval_seconds=float(request.progress_interval_seconds),
         )
@@ -820,6 +904,15 @@ class PointMazeDataset(BaseOfflineDataset):
         local_data_signature = None
         if variant_type == "local":
             local_data_signature = _local_dataset_step_signature(meta)
+        source_hashes = {
+            "data.pointmaze.dataset": cls._source_path_hash(__file__),
+            "data.pointmaze.formatting": cls._source_file_hash(formatting),
+            "utils.action_bins": cls._source_file_hash(action_bins_module),
+            "utils.chat_template": cls._source_file_hash(chat_template_module),
+            "utils.prompt_loader": cls._source_file_hash(prompt_loader_module),
+        }
+        if config.action_token_mode == "mtp_bin":
+            source_hashes["model.mtp_bin"] = cls._source_file_hash(mtp_bin_module)
         return {
             "env_family": "pointmaze",
             "cache_kind": "episode_tokenized_samples",
@@ -845,15 +938,9 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_max": config.action_bin_max,
             "new_token": config.new_token,
             "action_dim": config.action_dim,
-            "parallel_llm_bin_pht_mode": config.parallel_llm_bin_pht_mode,
+            "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
-            "source_hashes": {
-                "data.pointmaze.dataset": cls._source_path_hash(__file__),
-                "data.pointmaze.formatting": cls._source_file_hash(formatting),
-                "utils.action_bins": cls._source_file_hash(action_bins_module),
-                "utils.chat_template": cls._source_file_hash(chat_template_module),
-                "utils.prompt_loader": cls._source_file_hash(prompt_loader_module),
-            },
+            "source_hashes": source_hashes,
         }
 
     @staticmethod
@@ -955,7 +1042,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_max": config.action_bin_max,
             "new_token": config.new_token,
             "action_dim": config.action_dim,
-            "parallel_llm_bin_pht_mode": config.parallel_llm_bin_pht_mode,
+            "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
         }
         shared_config = {
@@ -966,7 +1053,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_max": config.action_bin_max,
             "new_token": config.new_token,
             "action_dim": config.action_dim,
-            "parallel_llm_bin_pht_mode": config.parallel_llm_bin_pht_mode,
+            "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
         }
         return PointMazeTokenizationJob(
@@ -1022,7 +1109,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 "action_bin_max",
                 "new_token",
                 "action_dim",
-                "parallel_llm_bin_pht_mode",
+                "mtp_k",
                 "action_token_schema_hash",
             )
             for field in fields:
@@ -1229,8 +1316,18 @@ class PointMazeDataset(BaseOfflineDataset):
             "labels": torch.tensor(sample["labels"], dtype=torch.long),
             "action_bin_labels": torch.tensor(action_bin_labels, dtype=torch.long),
         }
+        if "position_ids" in sample:
+            item["position_ids"] = torch.tensor(sample["position_ids"], dtype=torch.long)
         if "action_query_mask" in sample:
             item["action_query_mask"] = torch.tensor(sample["action_query_mask"], dtype=torch.bool)
+        for key in (
+            "action_query_offsets",
+            "action_query_source_positions",
+            "action_query_anchor_positions",
+            "action_query_prev_token_ids",
+        ):
+            if key in sample:
+                item[key] = torch.tensor(sample[key], dtype=torch.long)
         if "action_values" in sample:
             item["action_values"] = torch.tensor(sample["action_values"], dtype=torch.float32)
         return item
