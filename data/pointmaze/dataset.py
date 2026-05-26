@@ -67,6 +67,7 @@ def _pointmaze_action_config(config: dict) -> dict:
         "action_bin_max": config["action_bin_max"],
         "new_token": config.get("new_token", False),
         "action_dim": config.get("action_dim", 2),
+        "parallel_llm_bin_pht_mode": config.get("parallel_llm_bin_pht_mode", "shared"),
     }
 
 
@@ -352,6 +353,10 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
                     "prompt": prompt,
                     "action": action_texts["display_text"],
                 }
+                if uses_parallel_llm_bins(config):
+                    text_record["place holder"] = _POINTMAZE_WORKER_ACTION_CODEC.placeholder_display_text(
+                        action_dim,
+                    )
                 if uses_continuous_actions(config):
                     text_record["action_values"] = token_sample["action_values"]
             results.append((episode_idx, text_record, token_sample))
@@ -581,8 +586,9 @@ class PointMazeBuildConfig:
     action_bin_max: float
     new_token: bool
     action_dim: int
-    action_token_schema_hash: str
-    progress_interval_seconds: float
+    parallel_llm_bin_pht_mode: str = "shared"
+    action_token_schema_hash: str = "text"
+    progress_interval_seconds: float = 5.0
 
 
 @dataclass
@@ -705,6 +711,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_max": request.action_bin_max,
             "new_token": request.new_token,
             "action_dim": request.action_dim if request.action_dim is not None else 2,
+            "parallel_llm_bin_pht_mode": request.parallel_llm_bin_pht_mode,
         }
         action_token_mode = get_action_token_mode(action_config)
         action_dim = int(action_config["action_dim"])
@@ -745,6 +752,7 @@ class PointMazeDataset(BaseOfflineDataset):
             action_bin_max=action_bin_max,
             new_token=new_token,
             action_dim=action_dim,
+            parallel_llm_bin_pht_mode=action_config.get("parallel_llm_bin_pht_mode", "shared"),
             action_token_schema_hash=action_token_schema_hash,
             progress_interval_seconds=float(request.progress_interval_seconds),
         )
@@ -837,6 +845,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_max": config.action_bin_max,
             "new_token": config.new_token,
             "action_dim": config.action_dim,
+            "parallel_llm_bin_pht_mode": config.parallel_llm_bin_pht_mode,
             "action_token_schema_hash": config.action_token_schema_hash,
             "source_hashes": {
                 "data.pointmaze.dataset": cls._source_path_hash(__file__),
@@ -946,6 +955,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_max": config.action_bin_max,
             "new_token": config.new_token,
             "action_dim": config.action_dim,
+            "parallel_llm_bin_pht_mode": config.parallel_llm_bin_pht_mode,
             "action_token_schema_hash": config.action_token_schema_hash,
         }
         shared_config = {
@@ -956,6 +966,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_max": config.action_bin_max,
             "new_token": config.new_token,
             "action_dim": config.action_dim,
+            "parallel_llm_bin_pht_mode": config.parallel_llm_bin_pht_mode,
             "action_token_schema_hash": config.action_token_schema_hash,
         }
         return PointMazeTokenizationJob(
@@ -1011,6 +1022,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 "action_bin_max",
                 "new_token",
                 "action_dim",
+                "parallel_llm_bin_pht_mode",
                 "action_token_schema_hash",
             )
             for field in fields:

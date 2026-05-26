@@ -87,6 +87,7 @@ ACTION_CONFIG_KEYS = (
     "action_bin_min",
     "action_bin_max",
     "new_token",
+    "parallel_llm_bin_pht_mode",
     "action_soft_label_sigma",
     "action_loss_weight",
     "action_stop_loss_weight",
@@ -154,6 +155,7 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
         "action_bin_min": saved_config.get("action_bin_min", -1.0),
         "action_bin_max": saved_config.get("action_bin_max", 1.0),
         "new_token": saved_config.get("new_token", False),
+        "parallel_llm_bin_pht_mode": saved_config.get("parallel_llm_bin_pht_mode", "shared"),
     }
     for key in ("action_soft_label_sigma", "action_loss_weight", "action_stop_loss_weight"):
         if key in saved_config:

@@ -24,6 +24,7 @@ VALID_ACTION_TOKEN_MODES = {
 }
 
 ACTION_PLACEHOLDER_TOKEN = "<pht>"
+VALID_PARALLEL_LLM_BIN_PHT_MODES = {"shared", "dimension"}
 
 
 def get_tokenizer_backend(tokenizer_or_processor):
@@ -54,6 +55,16 @@ def uses_action_bins(config: dict) -> bool:
 
 def uses_parallel_llm_bins(config: dict) -> bool:
     return get_action_token_mode(config) == "parallel_llm_bin"
+
+
+def get_parallel_llm_bin_pht_mode(config: dict) -> str:
+    mode = str(config.get("parallel_llm_bin_pht_mode", "shared")).strip().lower()
+    if mode not in VALID_PARALLEL_LLM_BIN_PHT_MODES:
+        raise ValueError(
+            f"Invalid parallel_llm_bin_pht_mode={mode!r}; "
+            f"expected one of {sorted(VALID_PARALLEL_LLM_BIN_PHT_MODES)}"
+        )
+    return mode
 
 
 def uses_continuous_actions(config: dict) -> bool:
@@ -111,6 +122,21 @@ def get_action_bin_tokens(num_bins: int) -> list[str]:
 
 def get_action_placeholder_token() -> str:
     return ACTION_PLACEHOLDER_TOKEN
+
+
+def get_action_placeholder_tokens(config: dict) -> list[str]:
+    if not uses_parallel_llm_bins(config):
+        return []
+    mode = get_parallel_llm_bin_pht_mode(config)
+    if mode == "shared":
+        return [get_action_placeholder_token()]
+    action_dim = config.get("action_dim")
+    if action_dim is None:
+        raise ValueError("parallel_llm_bin_pht_mode='dimension' requires action_dim in config.")
+    action_dim = int(action_dim)
+    if action_dim < 1:
+        raise ValueError(f"action_dim must be >= 1 for dimension PHT mode, got {action_dim}")
+    return [f"<pht_{idx}>" for idx in range(action_dim)]
 
 
 def _decode_token_ids(tokenizer, token_ids: list[int] | tuple[int, ...]) -> str:
@@ -186,19 +212,25 @@ def _mapping_hash(
     new_token: bool,
     token_ids: list[int],
     display_tokens: list[str],
-    placeholder_token_id: int | None = None,
-    placeholder_token: str | None = None,
+    parallel_llm_bin_pht_mode: str = "shared",
+    placeholder_token_ids: list[int] | tuple[int, ...] | None = None,
+    placeholder_tokens: list[str] | tuple[str, ...] | None = None,
 ) -> str:
     payload = {
         "new_token": bool(new_token),
         "token_ids": [int(token_id) for token_id in token_ids],
         "display_tokens": list(display_tokens),
     }
-    if placeholder_token_id is not None or placeholder_token is not None:
-        payload["placeholder_token_id"] = (
-            None if placeholder_token_id is None else int(placeholder_token_id)
+    if placeholder_token_ids is not None or placeholder_tokens is not None:
+        payload["parallel_llm_bin_pht_mode"] = parallel_llm_bin_pht_mode
+        payload["placeholder_token_ids"] = (
+            None
+            if placeholder_token_ids is None
+            else [int(token_id) for token_id in placeholder_token_ids]
         )
-        payload["placeholder_token"] = placeholder_token
+        payload["placeholder_tokens"] = (
+            None if placeholder_tokens is None else list(placeholder_tokens)
+        )
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]
 
@@ -214,6 +246,9 @@ class ActionBinCodec:
     mapping_hash: str
     placeholder_token_id: int | None = None
     placeholder_token: str | None = None
+    parallel_llm_bin_pht_mode: str = "shared"
+    placeholder_token_ids_by_dim: tuple[int, ...] = ()
+    placeholder_tokens_by_dim: tuple[str, ...] = ()
 
     def token_id_to_bin(self) -> dict[int, int]:
         return {int(token_id): bin_idx for bin_idx, token_id in enumerate(self.model_token_ids)}
@@ -221,13 +256,63 @@ class ActionBinCodec:
     def require_placeholder_token_id(self) -> int:
         if self.placeholder_token_id is None:
             raise RuntimeError("This action-bin codec does not define a placeholder token ID.")
+        if len(self.placeholder_token_ids_by_dim) > 1:
+            raise RuntimeError(
+                "This action-bin codec defines multiple placeholder token IDs; "
+                "use placeholder_token_ids(action_dim) instead."
+            )
         return int(self.placeholder_token_id)
 
     def placeholder_token_ids(self, count: int) -> list[int]:
         count = int(count)
         if count < 0:
             raise ValueError(f"Placeholder token count must be >= 0, got {count}")
-        return [self.require_placeholder_token_id()] * count
+        if count == 0:
+            return []
+        placeholder_ids = tuple(int(token_id) for token_id in self.placeholder_token_ids_by_dim)
+        if not placeholder_ids:
+            return [self.require_placeholder_token_id()] * count
+        if self.parallel_llm_bin_pht_mode == "shared":
+            if len(placeholder_ids) != 1:
+                raise RuntimeError(
+                    "Shared PHT mode expected exactly one placeholder token ID, "
+                    f"got {placeholder_ids}."
+                )
+            return [placeholder_ids[0]] * count
+        if count != len(placeholder_ids):
+            raise ValueError(
+                "Dimension PHT mode requires one placeholder token ID per action dimension: "
+                f"requested count={count}, configured ids={len(placeholder_ids)}."
+            )
+        return list(placeholder_ids)
+
+    def placeholder_display_tokens(self, count: int) -> list[str]:
+        count = int(count)
+        if count < 0:
+            raise ValueError(f"Placeholder token count must be >= 0, got {count}")
+        if count == 0:
+            return []
+        placeholder_tokens = tuple(str(token) for token in self.placeholder_tokens_by_dim)
+        if not placeholder_tokens:
+            if self.placeholder_token is None:
+                raise RuntimeError("This action-bin codec does not define placeholder tokens.")
+            return [str(self.placeholder_token)] * count
+        if self.parallel_llm_bin_pht_mode == "shared":
+            if len(placeholder_tokens) != 1:
+                raise RuntimeError(
+                    "Shared PHT mode expected exactly one placeholder token, "
+                    f"got {placeholder_tokens}."
+                )
+            return [placeholder_tokens[0]] * count
+        if count != len(placeholder_tokens):
+            raise ValueError(
+                "Dimension PHT mode requires one placeholder token per action dimension: "
+                f"requested count={count}, configured tokens={len(placeholder_tokens)}."
+            )
+        return list(placeholder_tokens)
+
+    def placeholder_display_text(self, count: int, *, separator: str = "") -> str:
+        return separator.join(self.placeholder_display_tokens(count))
 
     def token_ids_for_bins(self, bin_indices: list[int] | tuple[int, ...]) -> list[int]:
         ids = []
@@ -336,7 +421,7 @@ def register_action_tokens(tokenizer, config: dict) -> int:
     tok = get_tokenizer_backend(tokenizer)
     tokens = get_action_bin_tokens(get_action_num_bins(config))
     if uses_parallel_llm_bins(config):
-        tokens.append(get_action_placeholder_token())
+        tokens.extend(get_action_placeholder_tokens(config))
     existing = list(getattr(tok, "additional_special_tokens", []) or [])
     merged = existing + [token for token in tokens if token not in existing]
     return tok.add_special_tokens({"additional_special_tokens": merged})
@@ -348,15 +433,18 @@ def get_action_bin_codec(tokenizer, config: dict, *, ensure_registered: bool = F
     display_tokens = get_action_bin_tokens(num_bins)
     new_token = action_bins_use_new_tokens(config)
     use_placeholder = uses_parallel_llm_bins(config)
-    placeholder_token = get_action_placeholder_token() if use_placeholder else None
+    pht_mode = get_parallel_llm_bin_pht_mode(config) if use_placeholder else "shared"
+    placeholder_tokens = get_action_placeholder_tokens(config) if use_placeholder else []
+    placeholder_token = placeholder_tokens[0] if placeholder_tokens else None
     placeholder_token_id = None
+    placeholder_token_ids: list[int] = []
 
     if new_token:
         if ensure_registered:
             register_action_tokens(tok, config)
         lookup_tokens = list(display_tokens)
         if use_placeholder:
-            lookup_tokens.append(placeholder_token)
+            lookup_tokens.extend(placeholder_tokens)
         raw_token_ids = tok.convert_tokens_to_ids(lookup_tokens)
         if not isinstance(raw_token_ids, list):
             raw_token_ids = [raw_token_ids]
@@ -366,9 +454,10 @@ def get_action_bin_codec(tokenizer, config: dict, *, ensure_registered: bool = F
                 f"tokens={lookup_tokens}, token_ids={raw_token_ids}"
             )
         token_ids = raw_token_ids[:num_bins]
-        raw_placeholder_token_id = raw_token_ids[num_bins] if use_placeholder else None
+        raw_placeholder_token_ids = raw_token_ids[num_bins:] if use_placeholder else []
         if use_placeholder:
-            placeholder_token_id = raw_placeholder_token_id
+            placeholder_token_ids = [int(token_id) for token_id in raw_placeholder_token_ids]
+            placeholder_token_id = placeholder_token_ids[0]
         missing = [
             token
             for token, token_id in zip(lookup_tokens, raw_token_ids)
@@ -387,15 +476,16 @@ def get_action_bin_codec(tokenizer, config: dict, *, ensure_registered: bool = F
                 raise ValueError(f"Tokenizer maps action-bin tokens to unk_token_id: {missing}")
         token_ids = [int(token_id) for token_id in token_ids]
         if use_placeholder:
-            placeholder_token_id = int(raw_placeholder_token_id)
-        all_token_ids = token_ids + ([placeholder_token_id] if use_placeholder else [])
+            placeholder_token_id = int(placeholder_token_id)
+        all_token_ids = token_ids + placeholder_token_ids
     else:
-        selected_count = num_bins + (1 if use_placeholder else 0)
+        selected_count = num_bins + (len(placeholder_tokens) if use_placeholder else 0)
         selected_ids, _ = _select_existing_action_token_ids(tok, selected_count)
         token_ids = selected_ids[:num_bins]
         if use_placeholder:
-            placeholder_token_id = int(selected_ids[num_bins])
-        all_token_ids = token_ids + ([placeholder_token_id] if use_placeholder else [])
+            placeholder_token_ids = [int(token_id) for token_id in selected_ids[num_bins:]]
+            placeholder_token_id = placeholder_token_ids[0]
+        all_token_ids = token_ids + placeholder_token_ids
 
     if len(set(int(token_id) for token_id in all_token_ids)) != len(all_token_ids):
         raise ValueError(
@@ -410,12 +500,16 @@ def get_action_bin_codec(tokenizer, config: dict, *, ensure_registered: bool = F
         display_tokens=tuple(display_tokens),
         placeholder_token_id=placeholder_token_id,
         placeholder_token=placeholder_token,
+        parallel_llm_bin_pht_mode=pht_mode,
+        placeholder_token_ids_by_dim=tuple(placeholder_token_ids),
+        placeholder_tokens_by_dim=tuple(placeholder_tokens),
         mapping_hash=_mapping_hash(
             new_token=new_token,
             token_ids=token_ids,
             display_tokens=display_tokens,
-            placeholder_token_id=placeholder_token_id,
-            placeholder_token=placeholder_token,
+            parallel_llm_bin_pht_mode=pht_mode,
+            placeholder_token_ids=placeholder_token_ids if use_placeholder else None,
+            placeholder_tokens=placeholder_tokens if use_placeholder else None,
         ),
     )
 

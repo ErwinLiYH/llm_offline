@@ -45,6 +45,7 @@ from utils.action_bins import (
     get_action_bin_token_ids,
     get_action_num_bins,
     get_action_token_mode,
+    get_parallel_llm_bin_pht_mode,
     parallel_llm_bin_action_loss,
     uses_continuous_actions,
 )
@@ -305,6 +306,7 @@ def build_dataset_request(config: dict, tokenizer, variant: str, split: str) -> 
         action_bin_max=config.get("action_bin_max", 1.0),
         new_token=config.get("new_token", False),
         action_dim=config.get("action_dim"),
+        parallel_llm_bin_pht_mode=config.get("parallel_llm_bin_pht_mode", "shared"),
         progress_interval_seconds=config.get("progress_interval_seconds", 5.0),
     )
 
@@ -504,6 +506,7 @@ def _build_training_eval_config(config: dict) -> dict:
         "action_bin_max": config.get("action_bin_max", 1.0),
         "new_token": config.get("new_token", False),
         "action_dim": config.get("action_dim"),
+        "parallel_llm_bin_pht_mode": config.get("parallel_llm_bin_pht_mode", "shared"),
         "action_query_len": config.get("action_query_len"),
         "action_head_num_blocks": config.get("action_head_num_blocks"),
         "gaussian_log_std_min": config.get("gaussian_log_std_min"),
@@ -1412,6 +1415,8 @@ def main():
         config.pop("variants", None)
         config["action_dim"] = action_dim
         action_token_mode = get_action_token_mode(config)
+        if action_token_mode == "parallel_llm_bin":
+            config["parallel_llm_bin_pht_mode"] = get_parallel_llm_bin_pht_mode(config)
         if uses_continuous_actions(config):
             config["action_query_len"] = resolve_action_query_len(
                 action_dim,

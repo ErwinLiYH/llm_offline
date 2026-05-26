@@ -84,6 +84,7 @@ class DatasetBuildRequest:
     action_bin_max: float = 1.0
     new_token: bool = False
     action_dim: int | None = None
+    parallel_llm_bin_pht_mode: str = "shared"
 
     # File progress update cadence for expensive dataset construction.
     progress_interval_seconds: float = 5.0

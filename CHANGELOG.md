@@ -914,3 +914,18 @@ type: project
 - `config.yaml`、`DESIGN.md`、`AGENTS.md`、`eval.yaml`、`score.yaml` 标注 `parallel_llm_bin`
 - `config.yaml` 默认示例切到 `action_token_mode: parallel_llm_bin`，并将训练 prompt 切到 `bin_full_sensing`
 - `tests/test_continuous_action.py` 扩展覆盖 token schema、PHT attention mask、loss 对齐、PointMaze tokenization 和 direct-forward eval
+
+---
+
+## dimension-specific PHT for parallel_llm_bin（2026-05-26）
+
+**逐动作维度 PHT：**
+- 新增 `parallel_llm_bin_pht_mode: shared | dimension`；缺省 `shared` 兼容旧配置，当前 `config.yaml` 示例切到 `dimension`
+- `dimension` 模式下 `new_token: false` 为 ABT 之外额外保留 `action_dim` 个低频 tokenizer id；`new_token: true` 注册 `<pht_0>...<pht_{D-1}>`
+- `ActionBinCodec.placeholder_token_ids(action_dim)` 统一返回 shared 重复 PHT 或 dimension 逐维 PHT，dataset/eval 直接追加该列表
+
+**缓存 / eval / 文档：**
+- dataset cache signature 和 `action_token_schema_hash` 纳入 PHT mode 与 PHT token ids，避免 shared/dimension tokenized samples 混用
+- human-readable dataset cache `.jsonl` 为 `parallel_llm_bin` 额外记录 `place holder` PHT 显示文本
+- standalone eval 从 checkpoint config 读取 `parallel_llm_bin_pht_mode`；旧 checkpoint 未记录时按 `shared` 加载
+- `DESIGN.md`、`AGENTS.md` 和测试覆盖 shared/dimension 两种 PHT token schema、PointMaze tokenization 与 direct-forward eval

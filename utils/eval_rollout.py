@@ -314,12 +314,11 @@ def generate_parallel_llm_bin_action(
     encoded = tokenizer(**tokenizer_kwargs)
     input_ids = encoded.input_ids.to(device)
     attention_mask = encoded.attention_mask.to(device)
-    placeholder_ids = torch.full(
-        (input_ids.shape[0], action_dim),
-        action_codec.require_placeholder_token_id(),
+    placeholder_ids = torch.tensor(
+        [action_codec.placeholder_token_ids(action_dim)],
         device=device,
         dtype=input_ids.dtype,
-    )
+    ).expand(input_ids.shape[0], -1)
     placeholder_attention = torch.ones_like(placeholder_ids, dtype=attention_mask.dtype)
     input_ids = torch.cat([input_ids, placeholder_ids], dim=1)
     attention_mask = torch.cat([attention_mask, placeholder_attention], dim=1)

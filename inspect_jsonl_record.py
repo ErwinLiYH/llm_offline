@@ -31,7 +31,11 @@ def main():
             record = json.loads(line)
             prompt = record.get("prompt", "")
             action = record.get("action", "")
-            print(format_prompt_action_text(prompt, action))
+            text = format_prompt_action_text(prompt, action)
+            pht_text = record.get("place holder")
+            if pht_text:
+                text = f"{text}\n\nPlace Holder:\n{pht_text}"
+            print(text)
             return
 
     raise IndexError(
