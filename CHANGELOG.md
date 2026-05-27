@@ -959,3 +959,14 @@ type: project
 - human-readable dataset cache `.jsonl` 为 `mtp_bin` 额外记录 `<aqt_i>` action query 显示字段
 - `DESIGN.md`、`AGENTS.md`、`eval.yaml`、`score.yaml` 更新为 `mtp_bin` / AQT 命名
 - 测试覆盖 MTP attention mask、loss 对齐、AQT tokenization、sidecar 保存加载、direct-forward eval 和 bf16 base + fp32 sampler head dtype 兼容
+
+---
+
+## experiment Git snapshots（2026-05-27）
+
+**训练启动时记录源码状态：**
+- `save_experiment_config_snapshot()` 现在在 `exp_configs/<experiment_id>/` 同时写入 `config.yaml`、`git.yaml` 和 `dirty.patch`
+- `git.yaml` 记录 repo root、branch、HEAD commit/subject/date、`git status --porcelain`、dirty 状态、patch 大小和 sha256
+- `dirty.patch` 记录当前工作区相对 HEAD 的文本 patch，覆盖 tracked 文本改动和 untracked 文本文件；ignored 文件不记录，二进制文件跳过并写入 `skipped_files`
+- Git 不可用或当前目录不是 Git repo 时不中断训练，写入 `available: false` metadata 和空 patch
+- `train.py` 在 rank0 打印 config、git metadata 和 dirty patch 三个快照路径

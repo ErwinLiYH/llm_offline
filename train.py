@@ -1514,8 +1514,10 @@ def main():
             f"rank={dist_context.rank}, local_rank={dist_context.local_rank}",
         )
         if dist_context.is_main_process:
-            exp_config_path = save_experiment_config_snapshot(config)
-            print(f"[train] Experiment config saved: {exp_config_path}")
+            exp_snapshot_paths = save_experiment_config_snapshot(config)
+            print(f"[train] Experiment config saved: {exp_snapshot_paths['config']}")
+            print(f"[train] Experiment git metadata saved: {exp_snapshot_paths['git']}")
+            print(f"[train] Experiment dirty patch saved: {exp_snapshot_paths['patch']}")
         barrier(dist_context)
 
         model, tokenizer = load_model_and_tokenizer(config)

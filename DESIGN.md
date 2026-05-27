@@ -310,10 +310,12 @@ checkpoints/
 ```
 exp_configs/
 └── <experiment_id>/
-    └── config.yaml
+    ├── config.yaml
+    ├── git.yaml
+    └── dirty.patch
 ```
 
-该快照在原始 `config.yaml` 基础上包含运行时解析字段，例如 `experiment_id`、`train_config_source`、`resolved_train_variants`、`train_selection_tag`、`resolved_eval_variants`、`action_dim`、continuous action head 参数、`world_size` 和 `global_effective_batch_size`。DDP 下只有 rank0 写入，其他 rank 在 barrier 后继续。
+`config.yaml` 在原始配置基础上包含运行时解析字段，例如 `experiment_id`、`train_config_source`、`resolved_train_variants`、`train_selection_tag`、`resolved_eval_variants`、`action_dim`、continuous action head 参数、`world_size` 和 `global_effective_batch_size`。`git.yaml` 记录当前 repo root、branch、HEAD commit/subject/date、`git status --porcelain`、dirty 状态、patch 大小和 sha256，以及未写入 patch 的二进制文件。`dirty.patch` 是当前工作区相对 HEAD 的文本 patch，包含 tracked 文本改动和 untracked 文本文件；ignored 文件和二进制文件不写入 patch。恢复实验源码状态的固定流程是先 `git checkout <head_commit>`，再 `git apply exp_configs/<experiment_id>/dirty.patch`。DDP 下只有 rank0 写入，其他 rank 在 barrier 后继续。
 
 ---
 
