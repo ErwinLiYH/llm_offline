@@ -25,19 +25,17 @@ distributed_timeout_seconds: 1800 # process-group timeout for DDP startup/barrie
 # Train-related settings
 
 ## Variant selection
-train_mode: single        # single | all | except
-train_varients: [large]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
-# train_mode: single
-# train_varients: local-layout-07
+train_mode: except        # single | all | except
+train_varients: [open-dense, umaze-dense, medium-dense, large-dense, local-layout-07]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
 
 ## Prompt templates
-prompt_templete_index: ["parallel_full_sensing"]  # prompt file names without .txt used for each training split
+prompt_templete_index: ["bin_full_sensing"]  # prompt file names without .txt used for each training split
 
 ## Data
 dataset_workers: 3            # processes for parallel episode tokenization
 dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable
 train_data_ratio: 0.95         # train split ratio inside the sampled episode pool; val gets the remainder
-episode_keep_num: 1500           # max episodes sampled before train/val splitting; if dataset has fewer, use all
+episode_keep_num: 1000           # max episodes sampled before train/val splitting; if dataset has fewer, use all
 balance_variant_episode_count: false  # true = align each selected variant's sampled episode pool to the smallest target
 sampling_seed: 42              # reproducible seed for episode-level train/val sampling
 # max_data_num: 320            # debug only: cap samples per dataset split; comment out for formal training
@@ -47,19 +45,36 @@ history_num: 0                 # number of sampled history transitions to includ
 history_stride: 1              # sample every n past transitions when building history
 
 ## Action mode
-action_token_mode: parallel_gaussian  # text | bin | gaussian_bin | parallel_l1 | parallel_gaussian
-action_query_len: 2            # continuous modes only; learned query/workspace length, defaults to action_dim
-action_head_num_blocks: 2      # continuous modes only; MLPResNet residual block count, defaults to 2
-gaussian_log_std_min: -5.0      # parallel_gaussian only; lower clamp for policy log std
-gaussian_log_std_max: 1.0       # parallel_gaussian only; upper clamp for policy log std
-action_num_bins: 50              # shared action-bin tokens: <act_00> ... <act_49>
-new_token: false                 # false = reuse stable low-frequency tokenizer IDs internally; true = add <act_XX> special tokens
+action_token_mode: bin  # text | bin | gaussian_bin | mtp_bin | parallel_l1 | parallel_gaussian | parallel_t
+
+### Shared by bin / gaussian_bin / mtp_bin
+action_num_bins: 50             # shared action-bin tokens: <act_00> ... <act_49>
+new_token: false                # false = reuse stable low-frequency tokenizer IDs internally; true = add <act_XX> special tokens
 action_bin_min: -1.0
 action_bin_max: 1.0
-action_soft_label_sigma: 1.0     # gaussian_bin only, in bin-index units
-# action_soft_label_radius: 3      # gaussian_bin only; train center bin plus n neighboring bins on each side
-action_loss_weight: 1.0          # gaussian_bin action-token loss
-action_stop_loss_weight: 1.0     # gaussian_bin chat-end token loss
+
+### gaussian_bin only
+# action_soft_label_sigma: 1.0    # soft-label width in bin-index units
+# # action_soft_label_radius: 3     # train center bin plus n neighboring bins on each side
+# action_loss_weight: 1.0         # action-token loss weight
+# action_stop_loss_weight: 1.0    # chat-end token loss weight
+
+### mtp_bin only
+# mtp_k: null                     # null defaults to action_dim - 1
+# mtp_lcm_weight: 1.0             # latent consistency matching weight
+# mtp_quadratic_decoding: false   # eval; false trusts the first MTP NTP+AQT proposal directly
+
+### Shared by parallel_l1 / parallel_gaussian / parallel_t
+# action_query_len: 2             # learned query/workspace length, defaults to action_dim
+# action_head_num_blocks: 2       # MLPResNet residual block count, defaults to 2
+
+### Shared by parallel_gaussian / parallel_t
+# gaussian_log_std_min: -5.0      # lower clamp for policy log std/log scale
+# gaussian_log_std_max: 1.0       # upper clamp for policy log std/log scale
+
+### parallel_t only
+# student_t_df: 3.0               # Student-t degrees of freedom
+# continuous_mean_l1_weight: 0.2  # add alpha * L1(mean, action) to Student-t NLL
 
 ## Optimization
 learning_rate: 0.0001
@@ -71,8 +86,8 @@ learning_rate: 0.0001
 # warmup_steps: 200             # optional fixed optimizer-step warmup override
 # lr_decay_steps: 30000         # optional fixed optimizer-step decay duration after warmup
 num_epochs: 5
-batch_size: 16
-gradient_accumulation_steps: 1
+batch_size: 8
+gradient_accumulation_steps: 4
 
 # LoRA
 lora_r: 16
@@ -87,11 +102,9 @@ lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 ## Epoch-level and optional step-level environment evaluation
 eval_num_episodes: 20    # rollout episodes per variant per training eval; 0 = disable rollout eval
-eval_step_interval: 449802    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
-eval_mode: single           # optional; defaults to following train_mode
-eval_variants: [large]  # single: one variant; all: selected variants or omit for all; except: excluded variants
-# eval_mode: single
-# eval_variants: local-layout-07
+eval_step_interval: 0    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
+eval_mode: except           # optional; defaults to following train_mode
+eval_variants: [open-dense, umaze-dense, medium-dense, large-dense]  # single: one variant; all: selected variants or omit for all; except: excluded variants
 eval_env_kwargs:
   continuing_task: false
 
