@@ -644,6 +644,64 @@ def select_variant_episode_indices(
     }
 
 
+def _partition_episode_indices(
+    indices: list[int],
+    *,
+    variant: str,
+    split: str,
+    sampling_seed: int,
+    partition_count: int,
+    partition_index: int | None,
+) -> list[int]:
+    if partition_count <= 1:
+        return list(indices)
+    if partition_index is None:
+        raise ValueError("partition_index is required when partition_count > 1")
+    shuffled = list(indices)
+    rng = np.random.default_rng(
+        _variant_sampling_seed(f"{variant}:{split}:partition", sampling_seed)
+    )
+    rng.shuffle(shuffled)
+    return sorted(shuffled[partition_index::partition_count])
+
+
+def _apply_selection_partition(selection: dict, config) -> dict:
+    partition_count = int(config.dataset_partition_count)
+    if partition_count <= 1:
+        return selection
+    partition_index = config.dataset_partition_index
+    partitioned = dict(selection)
+    train_indices = _partition_episode_indices(
+        list(selection["train_indices"]),
+        variant=config.variant,
+        split="train",
+        sampling_seed=config.sampling_seed,
+        partition_count=partition_count,
+        partition_index=partition_index,
+    )
+    val_indices = _partition_episode_indices(
+        list(selection["val_indices"]),
+        variant=config.variant,
+        split="val",
+        sampling_seed=config.sampling_seed,
+        partition_count=partition_count,
+        partition_index=partition_index,
+    )
+    episodes = selection["episodes"]
+    partitioned["unpartitioned_train_episode_count"] = selection["train_episode_count"]
+    partitioned["unpartitioned_val_episode_count"] = selection["val_episode_count"]
+    partitioned["unpartitioned_train_steps"] = selection["train_steps"]
+    partitioned["unpartitioned_val_steps"] = selection["val_steps"]
+    partitioned["train_indices"] = train_indices
+    partitioned["val_indices"] = val_indices
+    partitioned["train_episode_count"] = len(train_indices)
+    partitioned["val_episode_count"] = len(val_indices)
+    partitioned["sampled_episode_count"] = len(set(train_indices) | set(val_indices))
+    partitioned["train_steps"] = sum(len(episodes[idx].actions) for idx in train_indices)
+    partitioned["val_steps"] = sum(len(episodes[idx].actions) for idx in val_indices)
+    return partitioned
+
+
 @dataclass(frozen=True)
 class PointMazeBuildConfig:
     variant: str
@@ -653,6 +711,8 @@ class PointMazeBuildConfig:
     num_workers: int
     cache_dir: str | None
     max_data_num: int | None
+    dataset_partition_count: int
+    dataset_partition_index: int | None
     prompt_template_count: int
     prompt_templete_index: list[str] | None
     train_data_ratio: float
@@ -683,6 +743,7 @@ class PointMazeTokenizationJob:
     episode_payloads: list[dict]
     worker_config: dict
     shared_config: dict
+    request_indices: list[int]
 
 
 class PointMazeDataset(BaseOfflineDataset):
@@ -712,6 +773,7 @@ class PointMazeDataset(BaseOfflineDataset):
         jobs: list[PointMazeTokenizationJob] = []
         pending_variant_indices: dict[str, list[int]] = {}
         selections_by_variant: dict[str, dict] = {}
+        selections_by_job: dict[str, dict] = {}
 
         for idx, config in enumerate(configs):
             cls._validate_config(config)
@@ -728,24 +790,42 @@ class PointMazeDataset(BaseOfflineDataset):
                 sampling_seed=base_config.sampling_seed,
                 balanced_train_target=base_config.balanced_train_episode_count,
             )
-            selections_by_variant[variant] = selection
+            selection = _apply_selection_partition(selection, base_config)
+            selection_for_summary = dict(selection)
+            selection_for_summary.pop("episodes", None)
+            selections_by_variant[variant] = selection_for_summary
             cls._print_selection_summary(base_config, selection)
-            cache_path = cls._cache_path(base_config)
-            cached_episodes = cls._load_cached_episodes(base_config, cache_path, selection)
-            if cached_episodes is not None:
-                cls._fill_datasets_from_episode_cache(
-                    datasets=datasets,
-                    request_indices=request_indices,
-                    configs=configs,
-                    selection=selection,
-                    episode_samples=cached_episodes,
-                )
-                selection.pop("episodes", None)
-                continue
 
-            job = cls._create_tokenization_job(base_config, cache_path, selection)
+            if base_config.dataset_partition_count > 1:
+                cache_groups = [[request_idx] for request_idx in request_indices]
+            else:
+                cache_groups = [request_indices]
+
+            for cache_request_indices in cache_groups:
+                cache_config = configs[cache_request_indices[0]]
+                cache_path = cls._cache_path(cache_config)
+                cached_episodes = cls._load_cached_episodes(cache_config, cache_path, selection)
+                if cached_episodes is not None:
+                    cls._fill_datasets_from_episode_cache(
+                        datasets=datasets,
+                        request_indices=cache_request_indices,
+                        configs=configs,
+                        selection=selection,
+                        episode_samples=cached_episodes,
+                    )
+                    continue
+
+                job = cls._create_tokenization_job(
+                    cache_config,
+                    cache_path,
+                    selection,
+                    request_indices=cache_request_indices,
+                )
+                selection_for_job = dict(selection)
+                selection_for_job.pop("episodes", None)
+                selections_by_job[job.job_id] = selection_for_job
+                jobs.append(job)
             selection.pop("episodes", None)
-            jobs.append(job)
 
         cls._print_total_selection_summary(list(selections_by_variant.values()))
 
@@ -760,12 +840,11 @@ class PointMazeDataset(BaseOfflineDataset):
             for job in jobs:
                 episode_samples = cls._finalize_tokenization_job(job, results_by_job[job.job_id])
                 results_by_job.pop(job.job_id, None)
-                request_indices = pending_variant_indices[job.config.variant]
                 cls._fill_datasets_from_episode_cache(
                     datasets=datasets,
-                    request_indices=request_indices,
+                    request_indices=job.request_indices,
                     configs=configs,
-                    selection=selections_by_variant[job.config.variant],
+                    selection=selections_by_job[job.job_id],
                     episode_samples=episode_samples,
                 )
                 job.episode_payloads.clear()
@@ -799,6 +878,25 @@ class PointMazeDataset(BaseOfflineDataset):
         action_dim = int(action_config["action_dim"])
         if action_dim != 2:
             raise ValueError(f"PointMaze action_dim must be 2, got {action_dim}")
+        dataset_partition_count = int(request.dataset_partition_count)
+        if dataset_partition_count < 1:
+            raise ValueError(
+                f"dataset_partition_count must be >= 1, got {dataset_partition_count}"
+            )
+        dataset_partition_index = request.dataset_partition_index
+        if dataset_partition_count == 1:
+            dataset_partition_index = None
+        else:
+            if dataset_partition_index is None:
+                raise ValueError(
+                    "dataset_partition_index is required when dataset_partition_count > 1"
+                )
+            dataset_partition_index = int(dataset_partition_index)
+            if dataset_partition_index < 0 or dataset_partition_index >= dataset_partition_count:
+                raise ValueError(
+                    "dataset_partition_index must be in "
+                    f"[0, {dataset_partition_count}), got {dataset_partition_index}"
+                )
         mtp_k = resolve_mtp_k(action_dim, request.mtp_k) if action_token_mode == "mtp_bin" else None
         action_config["mtp_k"] = mtp_k
         new_token = bool(request.new_token) if uses_action_bins(action_config) else False
@@ -821,6 +919,8 @@ class PointMazeDataset(BaseOfflineDataset):
             num_workers=max(int(request.num_workers), 1),
             cache_dir=request.cache_dir,
             max_data_num=request.max_data_num,
+            dataset_partition_count=dataset_partition_count,
+            dataset_partition_index=dataset_partition_index,
             prompt_template_count=request.prompt_template_count,
             prompt_templete_index=cls._normalize_prompt_templete_index(request.prompt_templete_index),
             train_data_ratio=request.train_data_ratio,
@@ -913,7 +1013,7 @@ class PointMazeDataset(BaseOfflineDataset):
         }
         if config.action_token_mode == "mtp_bin":
             source_hashes["model.mtp_bin"] = cls._source_file_hash(mtp_bin_module)
-        return {
+        payload = {
             "env_family": "pointmaze",
             "cache_kind": "episode_tokenized_samples",
             "variant": config.variant,
@@ -942,6 +1042,11 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_token_schema_hash": config.action_token_schema_hash,
             "source_hashes": source_hashes,
         }
+        if config.dataset_partition_count > 1:
+            payload["split"] = config.split
+            payload["dataset_partition_count"] = config.dataset_partition_count
+            payload["dataset_partition_index"] = config.dataset_partition_index
+        return payload
 
     @staticmethod
     def _hash_json_payload(payload: dict, *, length: int = 32) -> str:
@@ -957,6 +1062,16 @@ class PointMazeDataset(BaseOfflineDataset):
         if config.cache_dir is None:
             return None
         return os.path.join(config.cache_dir, f"{cls._cache_signature_hash(config)}.pkl")
+
+    @staticmethod
+    def _selected_indices_for_config(config: PointMazeBuildConfig, selection: dict) -> list[int]:
+        if config.dataset_partition_count > 1:
+            if config.split == "train":
+                return list(selection["train_indices"])
+            if config.split == "val":
+                return list(selection["val_indices"])
+            raise ValueError(f"Unknown split: {config.split!r}. Expected 'train' or 'val'.")
+        return sorted(set(selection["train_indices"]) | set(selection["val_indices"]))
 
     @classmethod
     def _load_cached_episodes(
@@ -982,7 +1097,7 @@ class PointMazeDataset(BaseOfflineDataset):
             int(episode_idx): samples
             for episode_idx, samples in cache.get("episodes", {}).items()
         }
-        required_indices = set(selection["train_indices"]) | set(selection["val_indices"])
+        required_indices = set(cls._selected_indices_for_config(config, selection))
         cached_indices = set(episode_samples)
         if not required_indices.issubset(cached_indices):
             missing_count = len(required_indices - cached_indices)
@@ -1003,6 +1118,7 @@ class PointMazeDataset(BaseOfflineDataset):
         config: PointMazeBuildConfig,
         cache_path: str | None,
         selection: dict,
+        request_indices: list[int],
     ) -> PointMazeTokenizationJob:
         meta = POINTMAZE_VARIANTS[config.variant]
         prompt_names = cls._resolve_prompt_names(config)
@@ -1010,7 +1126,7 @@ class PointMazeDataset(BaseOfflineDataset):
         prompt_vars = meta["prompt_vars"]
 
         all_episodes = selection["episodes"]
-        episode_indices = sorted(set(selection["train_indices"]) | set(selection["val_indices"]))
+        episode_indices = cls._selected_indices_for_config(config, selection)
 
         job_id = f"{config.variant}:episodes:{len(episode_indices)}:{id(config)}"
         human_readable_episode_indices = set(
@@ -1065,6 +1181,7 @@ class PointMazeDataset(BaseOfflineDataset):
             episode_payloads=episode_payloads,
             worker_config=worker_config,
             shared_config=shared_config,
+            request_indices=list(request_indices),
         )
 
     @staticmethod
@@ -1082,6 +1199,18 @@ class PointMazeDataset(BaseOfflineDataset):
             raise ValueError(f"history_stride must be >= 1, got {config.history_stride}")
         if config.action_dim != 2:
             raise ValueError(f"PointMaze action_dim must be 2, got {config.action_dim}")
+        if config.dataset_partition_count < 1:
+            raise ValueError(
+                f"dataset_partition_count must be >= 1, got {config.dataset_partition_count}"
+            )
+        if config.dataset_partition_count > 1:
+            if config.dataset_partition_index is None:
+                raise ValueError("dataset_partition_index is required when dataset_partition_count > 1")
+            if not (0 <= config.dataset_partition_index < config.dataset_partition_count):
+                raise ValueError(
+                    "dataset_partition_index must be in "
+                    f"[0, {config.dataset_partition_count}), got {config.dataset_partition_index}"
+                )
 
     @staticmethod
     def _validate_variant_request_group(configs: list[PointMazeBuildConfig]):
@@ -1094,6 +1223,8 @@ class PointMazeDataset(BaseOfflineDataset):
                 "max_length",
                 "num_workers",
                 "cache_dir",
+                "dataset_partition_count",
+                "dataset_partition_index",
                 "prompt_template_count",
                 "prompt_templete_index",
                 "train_data_ratio",
@@ -1160,13 +1291,20 @@ class PointMazeDataset(BaseOfflineDataset):
             )
         )
         if config.split == "train":
+            partition_text = ""
+            if config.dataset_partition_count > 1:
+                partition_text = (
+                    f", partition={config.dataset_partition_index + 1}/{config.dataset_partition_count}, "
+                    f"unpartitioned_train_episodes={selection.get('unpartitioned_train_episode_count')}, "
+                    f"unpartitioned_val_episodes={selection.get('unpartitioned_val_episode_count')}"
+                )
             print(
                 f"[dataset] Variant {config.variant}: total_episodes={selection['total_episodes']}, "
                 f"total_steps={selection['total_steps']}, initial_sampled_target={selection['initial_sampled_target']}, "
                 f"balance={balance_text}, sampled_episodes={selection['sampled_episode_count']}, "
                 f"final_train_episodes={selection['train_episode_count']}, "
                 f"train_steps={selection['train_steps']}, final_val_episodes={selection['val_episode_count']}, "
-                f"val_steps={selection['val_steps']}"
+                f"val_steps={selection['val_steps']}{partition_text}"
             )
         if config.split == "val" and selection["val_episode_count"] == 0:
             print(
@@ -1288,6 +1426,9 @@ class PointMazeDataset(BaseOfflineDataset):
                     "cache_signature_payload": cache_signature_payload,
                     "total_episodes": job.total_episodes,
                     "episode_indices": job.episode_indices,
+                    "split": job.config.split if job.config.dataset_partition_count > 1 else "all",
+                    "dataset_partition_count": job.config.dataset_partition_count,
+                    "dataset_partition_index": job.config.dataset_partition_index,
                 },
                 "episodes": episode_samples,
             }

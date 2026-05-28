@@ -62,6 +62,8 @@ class DatasetBuildRequest:
     num_workers: int = 8
     cache_dir: str | None = None
     max_data_num: int | None = None
+    dataset_partition_count: int = 1
+    dataset_partition_index: int | None = None
 
     # Prompt selection. `prompt_templete_index` is the historical config spelling.
     prompt_template_count: int = 1

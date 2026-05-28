@@ -979,3 +979,14 @@ type: project
 - `train.py` 的 `_run_eval()` 在记录 `eval/<variant>/success_rate` 时，同步向 W&B 写入 `eval/<variant>/mean_episode_steps`
 - 新指标直接复用 `evaluate_variant()` 产出的 `result["mean_episode_steps"]`，与 `result.json` 和控制台 `mean_steps=` 保持一致
 - 对训练过程中的 step eval 和 epoch eval 生效，并覆盖所有 `action_token_mode`；standalone `evaluate.py` 仍不初始化 W&B logging
+
+---
+
+## tokenized dataset partition loading（2026-05-28）
+
+**低内存 tokenized 数据分区训练：**
+- 新增 `dataset_load_partitions`，默认 `1` 保持原有一次性 tokenized dataset 加载；`>1` 时要求配置 `dataset_cache_dir`
+- 原始轨迹仍按现有逻辑一次性加载并完成 episode-level train/val selection，随后每个 variant/split 的 episode 按 `sampling_seed` 确定性打乱并切成固定 shard
+- 分区模式下每次只 tokenize/load 一个 tokenized shard，写入独立 cache 后释放；训练时一个 epoch 仍跑完所有 shard，epoch 间只打乱 shard 访问顺序
+- 分区 cache signature 额外包含 split、partition count 和 partition index；`dataset_load_partitions: 1` 保持旧 cache hash payload 兼容
+- 训练循环新增分区预热、分区训练和分区验证路径，W&B/global batch/optimizer step 继续全局累计
