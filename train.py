@@ -632,6 +632,7 @@ def _run_eval(
                             epoch=epoch,
                         ),
                         f"eval/{variant}/success_rate": float(result["success_rate"]),
+                        f"eval/{variant}/mean_episode_steps": float(result["mean_episode_steps"]),
                     }
                 )
     finally:

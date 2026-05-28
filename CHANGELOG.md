@@ -970,3 +970,12 @@ type: project
 - `dirty.patch` 记录当前工作区相对 HEAD 的文本 patch，覆盖 tracked 文本改动和 untracked 文本文件；ignored 文件不记录，二进制文件跳过并写入 `skipped_files`
 - Git 不可用或当前目录不是 Git repo 时不中断训练，写入 `available: false` metadata 和空 patch
 - `train.py` 在 rank0 打印 config、git metadata 和 dirty patch 三个快照路径
+
+---
+
+## training eval W&B metrics（2026-05-28）
+
+**训练时 eval 记录平均步数：**
+- `train.py` 的 `_run_eval()` 在记录 `eval/<variant>/success_rate` 时，同步向 W&B 写入 `eval/<variant>/mean_episode_steps`
+- 新指标直接复用 `evaluate_variant()` 产出的 `result["mean_episode_steps"]`，与 `result.json` 和控制台 `mean_steps=` 保持一致
+- 对训练过程中的 step eval 和 epoch eval 生效，并覆盖所有 `action_token_mode`；standalone `evaluate.py` 仍不初始化 W&B logging
