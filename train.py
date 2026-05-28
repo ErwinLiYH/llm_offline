@@ -118,7 +118,7 @@ def resolve_dataset_load_partitions(config: dict) -> int:
         raise ValueError(f"dataset_load_partitions must be >= 1, got {partitions}")
     if partitions > 1 and not config.get("dataset_cache_dir"):
         raise ValueError(
-            "dataset_load_partitions > 1 requires dataset_cache_dir so tokenized shards "
+            "dataset_load_partitions > 1 requires dataset_cache_dir so train tokenized shards "
             "can be written and reloaded without keeping all samples in memory."
         )
     return partitions
@@ -585,42 +585,56 @@ def _prewarm_partition_caches(
     dist_context: DistributedContext,
     *,
     partition_count: int,
-) -> list[dict]:
+) -> tuple[object, list[dict]]:
+    rank_zero_print(dist_context, "[train] Preparing full validation dataset")
+    _, val_loader = _build_partition_data_loaders(
+        config,
+        tokenizer,
+        selected_variants,
+        dist_context,
+        partition_count=partition_count,
+        partition_index=0,
+        splits=("val",),
+    )
+    val_batches = len(val_loader) if val_loader is not None else 0
+    val_samples = _loader_sample_count(val_loader)
+    rank_zero_print(
+        dist_context,
+        f"[train] Prepared full validation dataset: "
+        f"val_samples={val_samples}, val_batches={val_batches}",
+    )
+
     stats = []
     for partition_index in range(partition_count):
         rank_zero_print(
             dist_context,
-            f"[train] Preparing dataset partition {partition_index + 1}/{partition_count}",
+            f"[train] Preparing train dataset partition {partition_index + 1}/{partition_count}",
         )
-        train_loader, val_loader = _build_partition_data_loaders(
+        train_loader, _ = _build_partition_data_loaders(
             config,
             tokenizer,
             selected_variants,
             dist_context,
             partition_count=partition_count,
             partition_index=partition_index,
-            splits=("train", "val"),
+            splits=("train",),
         )
         stat = {
             "partition_index": partition_index,
             "train_batches": len(train_loader) if train_loader is not None else 0,
-            "val_batches": len(val_loader) if val_loader is not None else 0,
             "train_samples": _loader_sample_count(train_loader),
-            "val_samples": _loader_sample_count(val_loader),
         }
         rank_zero_print(
             dist_context,
-            "[train] Prepared partition "
+            "[train] Prepared train partition "
             f"{partition_index + 1}/{partition_count}: "
-            f"train_samples={stat['train_samples']}, train_batches={stat['train_batches']}, "
-            f"val_samples={stat['val_samples']}, val_batches={stat['val_batches']}",
+            f"train_samples={stat['train_samples']}, train_batches={stat['train_batches']}",
         )
         stats.append(stat)
         train_loader = None
-        val_loader = None
         _release_loaders()
         barrier(dist_context)
-    return stats
+    return val_loader, stats
 
 
 def _partition_order(partition_count: int, epoch: int, sampling_seed: int) -> list[int]:
@@ -1061,59 +1075,6 @@ def _run_validation(
     return val_loss / max(val_batches, 1)
 
 
-def _run_partitioned_validation(
-    config,
-    model,
-    tokenizer,
-    selected_variants: list[str],
-    dist_context: DistributedContext,
-    *,
-    partition_count: int,
-    total_val_batches: int,
-    device,
-    loss_context: dict,
-    progress: FileProgress | None,
-    desc: str,
-    warning_label: str,
-):
-    model.eval()
-    val_loss = 0.0
-    val_batches = 0
-    val_start = time.monotonic()
-    for partition_index in range(partition_count):
-        _, val_loader = _build_partition_data_loaders(
-            config,
-            tokenizer,
-            selected_variants,
-            dist_context,
-            partition_count=partition_count,
-            partition_index=partition_index,
-            splits=("val",),
-        )
-        if dist_context.is_main_process and val_loader is not None:
-            with torch.no_grad():
-                for batch in val_loader:
-                    loss, loss_parts = _compute_batch_loss(model, batch, device, loss_context)
-                    val_loss += loss.item()
-                    val_batches += 1
-                    if progress is not None:
-                        progress.update(
-                            desc,
-                            val_batches,
-                            total_val_batches,
-                            val_start,
-                            extra=_format_loss_extra(loss, loss_parts),
-                        )
-        val_loader = None
-        _release_loaders()
-        barrier(dist_context)
-
-    if dist_context.is_main_process and val_batches == 0:
-        print(f"[{warning_label}] WARNING: val_loader is empty; val_loss will be reported as NaN.")
-        return math.nan
-    return val_loss / max(val_batches, 1) if dist_context.is_main_process else math.nan
-
-
 def _maybe_prompt_eval_step_interval(
     config: dict,
     train_loader_or_batches,
@@ -1221,6 +1182,7 @@ def _run_training_partitioned(
     model,
     tokenizer,
     selected_variants: list[str],
+    val_loader,
     device,
     selection_tag: str,
     progress_interval_seconds: float,
@@ -1248,7 +1210,7 @@ def _run_training_partitioned(
             f"got {gradient_accumulation_steps}"
         )
     train_batches_per_epoch = sum(int(stat["train_batches"]) for stat in partition_stats)
-    val_batches_per_epoch = sum(int(stat["val_batches"]) for stat in partition_stats)
+    val_batches_per_epoch = len(val_loader) if val_loader is not None else 0
     if train_batches_per_epoch < 1:
         raise ValueError("Partitioned training has zero train batches.")
     updates_per_epoch = math.ceil(train_batches_per_epoch / gradient_accumulation_steps)
@@ -1444,110 +1406,98 @@ def _run_training_partitioned(
                             }
                         )
 
+                    if (
+                        should_step
+                        and next_step_eval_at is not None
+                        and global_batch_step >= next_step_eval_at
+                    ):
+                        scheduled_step = next_step_eval_at
+                        while next_step_eval_at <= global_batch_step:
+                            next_step_eval_at += eval_step_interval
+                        if epoch_batch_step == train_batches_per_epoch:
+                            rank_zero_print(
+                                dist_context,
+                                f"[step {global_batch_step}] step eval skipped because it coincides "
+                                f"with epoch {epoch} end; epoch eval will run instead."
+                            )
+                            continue
+
+                        step_train_loss = total_loss / max(num_batches, 1)
+                        step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
+                        if dist_context.is_main_process:
+                            step_val_loss = _run_validation(
+                                raw_model,
+                                val_loader,
+                                device,
+                                loss_context,
+                                progress,
+                                desc=f"Step {global_batch_step} [val]",
+                                warning_label=f"step {global_batch_step}",
+                            )
+                            print(
+                                f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
+                                f"val_loss={_format_loss_value(step_val_loss)}  "
+                                f"optimizer_step={optimizer_step}"
+                            )
+                            if wandb_logger.enabled:
+                                wandb_logger.log(
+                                    {
+                                        **wandb_step_metrics(
+                                            env_steps=current_env_steps,
+                                            batch_step=global_batch_step,
+                                            optimizer_step=optimizer_step,
+                                            epoch=epoch,
+                                        ),
+                                        "train/step_loss": step_train_loss,
+                                        "val/loss": step_val_loss,
+                                        "train/learning_rate": get_optimizer_lr(optimizer),
+                                    }
+                                )
+                            _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
+                            if should_run_eval:
+                                _run_eval(
+                                    config,
+                                    raw_model,
+                                    tokenizer,
+                                    device,
+                                    selection_tag,
+                                    eval_variants,
+                                    eval_type="step",
+                                    train_loss=step_train_loss,
+                                    val_loss=step_val_loss,
+                                    checkpoint_dir=step_ckpt_dir,
+                                    epoch=epoch,
+                                    batch_step=global_batch_step,
+                                    optimizer_step=optimizer_step,
+                                    scheduled_step=scheduled_step,
+                                    wandb_logger=wandb_logger,
+                                    train_env_steps=current_env_steps,
+                                    wandb_batch_step=global_batch_step,
+                                )
+                        barrier(dist_context)
+                        model.train()
+                        unpatch_continuous_action_forward(raw_model)
+                        unpatch_mtp_bin_forward(raw_model)
+                        FastLanguageModel.for_training(raw_model)
+                        ensure_continuous_action_decoder(raw_model, config)
+                        ensure_mtp_bin_decoder(raw_model, config)
+
                 train_loader = None
                 _release_loaders()
                 barrier(dist_context)
 
-                ready_for_step_eval = (
-                    epoch_batch_step % gradient_accumulation_steps == 0
-                    or epoch_batch_step == train_batches_per_epoch
-                )
-                if (
-                    ready_for_step_eval
-                    and next_step_eval_at is not None
-                    and global_batch_step >= next_step_eval_at
-                ):
-                    scheduled_step = next_step_eval_at
-                    while next_step_eval_at <= global_batch_step:
-                        next_step_eval_at += eval_step_interval
-                    if epoch_batch_step == train_batches_per_epoch:
-                        rank_zero_print(
-                            dist_context,
-                            f"[step {global_batch_step}] step eval skipped because it coincides "
-                            f"with epoch {epoch} end; epoch eval will run instead."
-                        )
-                        continue
-
-                    step_train_loss = total_loss / max(num_batches, 1)
-                    step_val_loss = _run_partitioned_validation(
-                        config,
-                        raw_model,
-                        tokenizer,
-                        selected_variants,
-                        dist_context,
-                        partition_count=partition_count,
-                        total_val_batches=val_batches_per_epoch,
-                        device=device,
-                        loss_context=loss_context,
-                        progress=progress,
-                        desc=f"Step {global_batch_step} [val]",
-                        warning_label=f"step {global_batch_step}",
-                    )
-                    step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
-                    if dist_context.is_main_process:
-                        print(
-                            f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
-                            f"val_loss={_format_loss_value(step_val_loss)}  "
-                            f"optimizer_step={optimizer_step}"
-                        )
-                        if wandb_logger.enabled:
-                            wandb_logger.log(
-                                {
-                                    **wandb_step_metrics(
-                                        env_steps=current_env_steps,
-                                        batch_step=global_batch_step,
-                                        optimizer_step=optimizer_step,
-                                        epoch=epoch,
-                                    ),
-                                    "train/step_loss": step_train_loss,
-                                    "val/loss": step_val_loss,
-                                    "train/learning_rate": get_optimizer_lr(optimizer),
-                                }
-                            )
-                        _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
-                        if should_run_eval:
-                            _run_eval(
-                                config,
-                                raw_model,
-                                tokenizer,
-                                device,
-                                selection_tag,
-                                eval_variants,
-                                eval_type="step",
-                                train_loss=step_train_loss,
-                                val_loss=step_val_loss,
-                                checkpoint_dir=step_ckpt_dir,
-                                epoch=epoch,
-                                batch_step=global_batch_step,
-                                optimizer_step=optimizer_step,
-                                scheduled_step=scheduled_step,
-                                wandb_logger=wandb_logger,
-                                train_env_steps=current_env_steps,
-                                wandb_batch_step=global_batch_step,
-                            )
-                    barrier(dist_context)
-                    model.train()
-                    unpatch_continuous_action_forward(raw_model)
-                    unpatch_mtp_bin_forward(raw_model)
-                    FastLanguageModel.for_training(raw_model)
-                    ensure_continuous_action_decoder(raw_model, config)
-                    ensure_mtp_bin_decoder(raw_model, config)
-
             train_loss = total_loss / max(num_batches, 1)
-            val_loss = _run_partitioned_validation(
-                config,
-                raw_model,
-                tokenizer,
-                selected_variants,
-                dist_context,
-                partition_count=partition_count,
-                total_val_batches=val_batches_per_epoch,
-                device=device,
-                loss_context=loss_context,
-                progress=progress,
-                desc=f"Epoch {epoch}/{num_epochs} [val]",
-                warning_label=f"epoch {epoch}/{num_epochs}",
-            )
+            val_loss = math.nan
+            if dist_context.is_main_process:
+                val_loss = _run_validation(
+                    raw_model,
+                    val_loader,
+                    device,
+                    loss_context,
+                    progress,
+                    desc=f"Epoch {epoch}/{num_epochs} [val]",
+                    warning_label=f"epoch {epoch}/{num_epochs}",
+                )
 
         if dist_context.is_main_process:
             print(
@@ -1976,7 +1926,7 @@ def train_with_selection(
     dataset_load_partitions = resolve_dataset_load_partitions(config)
     progress_interval = float(config.get("progress_interval_seconds", 5.0))
     if dataset_load_partitions > 1:
-        partition_stats = _prewarm_partition_caches(
+        val_loader, partition_stats = _prewarm_partition_caches(
             config,
             tokenizer,
             train_selection.selected_variants,
@@ -1992,6 +1942,7 @@ def train_with_selection(
                 model,
                 tokenizer,
                 train_selection.selected_variants,
+                val_loader,
                 device,
                 selection_tag=train_selection.selection_tag,
                 progress_interval_seconds=progress_interval,

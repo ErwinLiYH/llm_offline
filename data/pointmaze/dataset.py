@@ -665,6 +665,8 @@ def _apply_selection_partition(selection: dict, config) -> dict:
     partition_count = int(config.dataset_partition_count)
     if partition_count <= 1:
         return selection
+    if config.split != "train":
+        return selection
     partition_index = config.dataset_partition_index
     partitioned = dict(selection)
     train_indices = _partition_episode_indices(
@@ -675,14 +677,7 @@ def _apply_selection_partition(selection: dict, config) -> dict:
         partition_count=partition_count,
         partition_index=partition_index,
     )
-    val_indices = _partition_episode_indices(
-        list(selection["val_indices"]),
-        variant=config.variant,
-        split="val",
-        sampling_seed=config.sampling_seed,
-        partition_count=partition_count,
-        partition_index=partition_index,
-    )
+    val_indices = list(selection["val_indices"])
     episodes = selection["episodes"]
     partitioned["unpartitioned_train_episode_count"] = selection["train_episode_count"]
     partitioned["unpartitioned_val_episode_count"] = selection["val_episode_count"]
@@ -1017,10 +1012,12 @@ class PointMazeDataset(BaseOfflineDataset):
             "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
         }
-        if config.dataset_partition_count > 1:
+        if config.dataset_partition_count > 1 and config.split == "train":
             payload["split"] = config.split
             payload["dataset_partition_count"] = config.dataset_partition_count
             payload["dataset_partition_index"] = config.dataset_partition_index
+        elif config.dataset_partition_count > 1 and config.split == "val":
+            payload["split"] = config.split
         return payload
 
     @staticmethod
@@ -1394,6 +1391,14 @@ class PointMazeDataset(BaseOfflineDataset):
             os.makedirs(job.config.cache_dir, exist_ok=True)
             cache_signature_payload = cls._cache_signature_payload(job.config)
             cache_signature_hash = cls._hash_json_payload(cache_signature_payload)
+            cache_split = "all"
+            cache_partition_count = 1
+            cache_partition_index = None
+            if job.config.dataset_partition_count > 1:
+                cache_split = job.config.split
+                if job.config.split == "train":
+                    cache_partition_count = job.config.dataset_partition_count
+                    cache_partition_index = job.config.dataset_partition_index
             cache = {
                 "metadata": {
                     "cache_format": "pointmaze_hash_signature_v1",
@@ -1401,9 +1406,9 @@ class PointMazeDataset(BaseOfflineDataset):
                     "cache_signature_payload": cache_signature_payload,
                     "total_episodes": job.total_episodes,
                     "episode_indices": job.episode_indices,
-                    "split": job.config.split if job.config.dataset_partition_count > 1 else "all",
-                    "dataset_partition_count": job.config.dataset_partition_count,
-                    "dataset_partition_index": job.config.dataset_partition_index,
+                    "split": cache_split,
+                    "dataset_partition_count": cache_partition_count,
+                    "dataset_partition_index": cache_partition_index,
                 },
                 "episodes": episode_samples,
             }

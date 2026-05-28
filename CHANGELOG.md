@@ -986,10 +986,11 @@ type: project
 
 **低内存 tokenized 数据分区训练：**
 - 新增 `dataset_load_partitions`，默认 `1` 保持原有一次性 tokenized dataset 加载；`>1` 时要求配置 `dataset_cache_dir`
-- 原始轨迹仍按现有逻辑一次性加载并完成 episode-level train/val selection，随后每个 variant/split 的 episode 按 `sampling_seed` 确定性打乱并切成固定 shard
-- 分区模式下每次只 tokenize/load 一个 tokenized shard，写入独立 cache 后释放；训练时一个 epoch 仍跑完所有 shard，epoch 间只打乱 shard 访问顺序
-- 分区 cache signature 额外包含 split、partition count 和 partition index；`dataset_load_partitions: 1` 保持旧 cache hash payload 兼容
-- 训练循环新增分区预热、分区训练和分区验证路径，W&B/global batch/optimizer step 继续全局累计
+- 原始轨迹仍按现有逻辑一次性加载并完成 episode-level train/val selection，随后每个 variant 的 train episode 按 `sampling_seed` 确定性打乱并切成固定 shard
+- 分区模式下每次只 tokenize/load 一个 train tokenized shard，写入独立 cache 后释放；val split 不分区，启动时构建一次完整 val loader 并在训练、validation 和 step eval 中复用
+- train shard cache signature 额外包含 split、partition count 和 partition index；完整 val cache 只记录 `split: val`，不记录 partition count/index；`dataset_load_partitions: 1` 保持旧 cache hash payload 兼容
+- 分区训练的 step eval 恢复原有全局 batch 语义：触发点在梯度累积窗口内时等到 `optimizer.step()`，触发点在 train shard 中间时立即执行，只跳过与 epoch end 重合的重复 step eval
+- 训练循环新增分区预热和分区训练路径，W&B/global batch/optimizer step 继续全局累计
 
 ---
 
