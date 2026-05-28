@@ -340,7 +340,7 @@ dataset_cache/
 - `episode_keep_num`、`train_data_ratio`、`sampling_seed` 和 `balance_variant_episode_count` 不写入 cache 文件名；cache 命中后会重新按当前配置选择 episode 并切分 train/val
 - 如果现有 cache 不覆盖当前 sampled episodes，则忽略旧 cache，重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
 - `max_data_num` 截断发生在最终 dataset 组装之后，只影响本次训练返回的数据，不影响 cache 内容和 cache 命中判断
-- cache 文件名是 32 位 sha256 前缀；hash payload 包含 variant/data signature、tokenizer/max length、`prompt_templete_index` 解析后的 prompt 名称、prompt 模板内容、variant prompt vars、dataset/formatter/chat-template/action-bin/prompt-loader 源文件 hash、`history_num/history_stride` 和 action 编码配置，避免不同 tokenization 或 prompt 配置误复用同一份 tokenized 数据
+- cache 文件名是 32 位 sha256 前缀；hash payload 包含 variant/data signature、tokenizer/max length、`prompt_templete_index` 解析后的 prompt 名称、prompt 模板内容、variant prompt vars、`history_num/history_stride` 和 action 编码配置，避免不同 tokenization 或 prompt 配置误复用同一份 tokenized 数据。源码文件 hash 不进入 payload；若代码改动影响 tokenization 语义，需要手动删除旧 cache。
 - 分区模式下，cache hash payload 额外包含 split、`dataset_partition_count` 和 `dataset_partition_index`；`dataset_load_partitions: 1` 保持旧 hash payload 兼容
 - action-bin 模式下，cache signature payload 和 metadata 额外记录 `new_token`、`mtp_k` 与 `action_token_schema_hash`。该 hash 由 `new_token`、真实 ABT token ids 和 display tokens 计算得到；若 cache metadata 与当前 signature 不一致，加载阶段直接报错，避免把旧 action-token 映射下的 tokenized samples 用到新训练里
 - `.jsonl` 中的 `action` 永远使用 display text，例如 `<act_24><act_37>`；`mtp_bin` 还会记录 `action_query`，用于查看 AQT 显示标记。`.pkl` 中保存的 `input_ids` 和 AQT metadata 才是模型实际训练使用的数据。`new_token: false` 时 display text 与真实 token ids 不是同一组文本 token

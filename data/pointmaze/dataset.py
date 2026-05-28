@@ -26,11 +26,7 @@ from data.pointmaze.variants import (
     get_pointmaze_variant_type,
     resolve_local_dataset_path,
 )
-from model import mtp_bin as mtp_bin_module
 from model.mtp_bin import resolve_mtp_k, uses_mtp_bin
-from utils import action_bins as action_bins_module
-from utils import chat_template as chat_template_module
-from utils import prompt_loader as prompt_loader_module
 from utils.action_bins import (
     get_action_bin_range,
     get_action_bin_codec,
@@ -984,17 +980,6 @@ class PointMazeDataset(BaseOfflineDataset):
             )
         return available_names[: config.prompt_template_count]
 
-    @staticmethod
-    def _source_path_hash(path) -> str:
-        if not path or not os.path.exists(path):
-            return "missing"
-        with open(path, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()
-
-    @classmethod
-    def _source_file_hash(cls, module) -> str:
-        return cls._source_path_hash(getattr(module, "__file__", None))
-
     @classmethod
     def _cache_signature_payload(cls, config: PointMazeBuildConfig) -> dict:
         meta = POINTMAZE_VARIANTS[config.variant]
@@ -1004,15 +989,6 @@ class PointMazeDataset(BaseOfflineDataset):
         local_data_signature = None
         if variant_type == "local":
             local_data_signature = _local_dataset_step_signature(meta)
-        source_hashes = {
-            "data.pointmaze.dataset": cls._source_path_hash(__file__),
-            "data.pointmaze.formatting": cls._source_file_hash(formatting),
-            "utils.action_bins": cls._source_file_hash(action_bins_module),
-            "utils.chat_template": cls._source_file_hash(chat_template_module),
-            "utils.prompt_loader": cls._source_file_hash(prompt_loader_module),
-        }
-        if config.action_token_mode == "mtp_bin":
-            source_hashes["model.mtp_bin"] = cls._source_file_hash(mtp_bin_module)
         payload = {
             "env_family": "pointmaze",
             "cache_kind": "episode_tokenized_samples",
@@ -1040,7 +1016,6 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_dim": config.action_dim,
             "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
-            "source_hashes": source_hashes,
         }
         if config.dataset_partition_count > 1:
             payload["split"] = config.split

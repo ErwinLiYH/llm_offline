@@ -990,3 +990,12 @@ type: project
 - 分区模式下每次只 tokenize/load 一个 tokenized shard，写入独立 cache 后释放；训练时一个 epoch 仍跑完所有 shard，epoch 间只打乱 shard 访问顺序
 - 分区 cache signature 额外包含 split、partition count 和 partition index；`dataset_load_partitions: 1` 保持旧 cache hash payload 兼容
 - 训练循环新增分区预热、分区训练和分区验证路径，W&B/global batch/optimizer step 继续全局累计
+
+---
+
+## dataset cache signature simplification（2026-05-28）
+
+**cache hash 不再记录源码版本：**
+- PointMaze dataset cache signature 移除 dataset/formatter/action-bin/chat-template/prompt-loader/mtp_bin 等源码文件 hash
+- cache hash 现在只区分同一代码版本下的配置、数据、tokenizer、prompt、history 和 action schema 差异
+- 代码改动影响 tokenization 语义时，旧 cache 由用户手动删除
