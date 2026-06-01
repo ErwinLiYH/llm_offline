@@ -3,6 +3,7 @@ import contextlib
 import io
 
 import yaml
+from transformers import AutoTokenizer
 
 with contextlib.redirect_stdout(io.StringIO()):
     from unsloth import FastLanguageModel
@@ -31,6 +32,68 @@ from utils.action_bins import (
 
 
 ACTION_BIN_LORA_MODULES = ("embed_tokens", "lm_head")
+
+
+def _chat_template_targets(tokenizer):
+    """Return outer and inner tokenizer-like objects that may need chat_template."""
+    targets = [tokenizer]
+    inner = getattr(tokenizer, "tokenizer", None)
+    if inner is not None and not any(inner is item for item in targets):
+        targets.append(inner)
+    try:
+        backend = get_tokenizer_backend(tokenizer)
+    except AttributeError:
+        backend = None
+    if backend is not None and not any(backend is item for item in targets):
+        targets.append(backend)
+    return targets
+
+
+def _existing_chat_template(tokenizer) -> str | None:
+    for target in _chat_template_targets(tokenizer):
+        template = getattr(target, "chat_template", None)
+        if template:
+            return template
+    return None
+
+
+def _restore_chat_template(tokenizer, *source_names: str | None):
+    """Copy a missing chat_template from the original HF tokenizer when Unsloth drops it."""
+    template = _existing_chat_template(tokenizer)
+    source_name = None
+    for candidate in source_names:
+        if not candidate:
+            continue
+        source_name = candidate
+        if template:
+            break
+        try:
+            source_tokenizer = AutoTokenizer.from_pretrained(
+                candidate,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
+        except Exception:
+            try:
+                source_tokenizer = AutoTokenizer.from_pretrained(
+                    candidate,
+                    trust_remote_code=True,
+                )
+            except Exception:
+                continue
+        template = _existing_chat_template(source_tokenizer)
+        if template:
+            break
+    if not template:
+        return
+    for target in _chat_template_targets(tokenizer):
+        if not getattr(target, "chat_template", None):
+            try:
+                target.chat_template = template
+            except Exception:
+                pass
+    if source_name and source_name != getattr(tokenizer, "name_or_path", None):
+        print(f"[model] Restored tokenizer chat_template from {source_name}")
 
 
 def get_model_slug(model_name: str) -> str:
@@ -141,6 +204,7 @@ def load_model_and_tokenizer(config: dict):
         load_in_4bit=load_in_4bit,
         trust_remote_code=True,
     )
+    _restore_chat_template(tokenizer, model_name)
     _prepare_action_tokens(model, tokenizer, config, resize_embeddings=True)
     target_modules = _resolve_lora_target_modules(config)
     print(f"[model] LoRA target modules: {target_modules}")
@@ -192,6 +256,7 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
         load_in_4bit=load_in_4bit,
         trust_remote_code=True,
     )
+    _restore_chat_template(tokenizer, model_path, saved_config.get("model_name"))
     if os.path.exists(adapter_cfg_path):
         _prepare_action_tokens(model, tokenizer, saved_config, resize_embeddings=False)
     else:
