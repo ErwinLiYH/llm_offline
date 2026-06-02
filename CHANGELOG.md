@@ -1000,3 +1000,13 @@ type: project
 - PointMaze dataset cache signature 移除 dataset/formatter/action-bin/chat-template/prompt-loader/mtp_bin 等源码文件 hash
 - cache hash 现在只区分同一代码版本下的配置、数据、tokenizer、prompt、history 和 action schema 差异
 - 代码改动影响 tokenization 语义时，旧 cache 由用户手动删除
+
+---
+
+## epoch-local step eval cadence（2026-06-01）
+
+**step eval 触发节奏改为每个 epoch 重置：**
+- `eval_step_interval` 的触发计数从全局 batch step 改为 epoch-local batch step；每个 epoch 的第一次 step eval 触发点都是 epoch-local batch `eval_step_interval`
+- step checkpoint/result 目录仍使用实际完成梯度更新后的全局 batch step `step<N>`，避免不同 epoch 的 step eval 输出互相覆盖
+- 如果触发点落在 gradient accumulation 窗口内，仍会等到当前窗口 `optimizer.step()` 完成后再保存 checkpoint 和运行 eval
+- 如果实际 step eval 位置落在 epoch eval 前后 `0.25 * eval_step_interval` 的 train batch 窗口内，自动跳过该 step eval，只保留 epoch checkpoint/eval

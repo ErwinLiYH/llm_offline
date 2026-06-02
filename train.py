@@ -705,8 +705,10 @@ def _run_eval(
     checkpoint_dir: str,
     epoch: int | None = None,
     batch_step: int | None = None,
+    epoch_step: int | None = None,
     optimizer_step: int | None = None,
     scheduled_step: int | None = None,
+    scheduled_epoch_step: int | None = None,
     wandb_logger: WandbLogger | None = None,
     train_env_steps: float | None = None,
     wandb_batch_step: int | None = None,
@@ -723,6 +725,10 @@ def _run_eval(
     label = f"Step {batch_step}" if eval_type == "step" else f"Epoch {epoch}"
     if eval_type == "step" and scheduled_step is not None and scheduled_step != batch_step:
         label = f"{label} (scheduled at batch step {scheduled_step})"
+    if eval_type == "step" and epoch_step is not None:
+        label = f"{label}, epoch step {epoch_step}"
+        if scheduled_epoch_step is not None and scheduled_epoch_step != epoch_step:
+            label = f"{label} (scheduled at epoch step {scheduled_epoch_step})"
 
     model.eval()
     unpatch_continuous_action_forward(model)
@@ -762,8 +768,10 @@ def _run_eval(
             result["eval_tag"] = eval_tag
             result["epoch"] = epoch
             result["batch_step"] = batch_step
+            result["epoch_step"] = epoch_step
             result["optimizer_step"] = optimizer_step
             result["scheduled_step"] = scheduled_step
+            result["scheduled_epoch_step"] = scheduled_epoch_step
             result["checkpoint_path"] = checkpoint_dir
 
             print(
@@ -1132,6 +1140,64 @@ def _maybe_prompt_eval_step_interval(
     config["eval_step_interval"] = broadcast_object(selected_interval, dist_context)
 
 
+_STEP_EVAL_EPOCH_SKIP_RATIO = 0.25
+
+
+def _initial_epoch_step_eval_at(eval_step_interval: int) -> int | None:
+    return eval_step_interval if eval_step_interval > 0 else None
+
+
+def _consume_epoch_step_eval_trigger(
+    *,
+    next_step_eval_at: int | None,
+    epoch_batch_step: int,
+    eval_step_interval: int,
+) -> tuple[int | None, int | None]:
+    if (
+        next_step_eval_at is None
+        or eval_step_interval <= 0
+        or epoch_batch_step < next_step_eval_at
+    ):
+        return None, next_step_eval_at
+
+    scheduled_epoch_step = next_step_eval_at
+    while next_step_eval_at <= epoch_batch_step:
+        next_step_eval_at += eval_step_interval
+    return scheduled_epoch_step, next_step_eval_at
+
+
+def _step_eval_epoch_skip_reason(
+    *,
+    epoch: int,
+    epoch_batch_step: int,
+    train_batches_per_epoch: int,
+    eval_step_interval: int,
+) -> str | None:
+    if eval_step_interval <= 0:
+        return None
+
+    skip_window = eval_step_interval * _STEP_EVAL_EPOCH_SKIP_RATIO
+    distance_before_epoch_eval = train_batches_per_epoch - epoch_batch_step
+    if 0 <= distance_before_epoch_eval <= skip_window:
+        if distance_before_epoch_eval == 0:
+            return (
+                f"coincides with epoch {epoch} end; epoch eval will run instead."
+            )
+        return (
+            f"runs {distance_before_epoch_eval} train batches before epoch {epoch} end, "
+            f"within {skip_window:g}=0.25*eval_step_interval; epoch eval will run instead."
+        )
+
+    distance_after_previous_epoch_eval = epoch_batch_step
+    if epoch > 1 and distance_after_previous_epoch_eval <= skip_window:
+        return (
+            f"runs {distance_after_previous_epoch_eval} train batches after epoch {epoch - 1} end, "
+            f"within {skip_window:g}=0.25*eval_step_interval; previous epoch eval already ran."
+        )
+
+    return None
+
+
 def _build_loss_context(config: dict, tokenizer) -> dict:
     action_token_mode = get_action_token_mode(config)
     bin_token_ids = None
@@ -1245,7 +1311,6 @@ def _run_training_partitioned(
     eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
     if eval_step_interval < 0:
         raise ValueError(f"eval_step_interval must be >= 0, got {eval_step_interval}")
-    next_step_eval_at = eval_step_interval if eval_step_interval > 0 else None
     wandb_tracking_enabled = wandb_enabled(config)
     wandb_log_every = wandb_log_interval(config) if wandb_tracking_enabled else 10
     env_step_prompt_multiplier = prompt_template_multiplier(config)
@@ -1291,6 +1356,7 @@ def _run_training_partitioned(
             num_batches = 0
             epoch_optimizer_step = 0
             epoch_batch_step = 0
+            next_step_eval_at = _initial_epoch_step_eval_at(eval_step_interval)
             train_start = time.monotonic()
             train_desc = f"Epoch {epoch}/{num_epochs} [train]"
             optimizer.zero_grad(set_to_none=True)
@@ -1406,19 +1472,27 @@ def _run_training_partitioned(
                             }
                         )
 
-                    if (
-                        should_step
-                        and next_step_eval_at is not None
-                        and global_batch_step >= next_step_eval_at
-                    ):
-                        scheduled_step = next_step_eval_at
-                        while next_step_eval_at <= global_batch_step:
-                            next_step_eval_at += eval_step_interval
-                        if epoch_batch_step == train_batches_per_epoch:
+                    scheduled_epoch_step = None
+                    if should_step:
+                        scheduled_epoch_step, next_step_eval_at = _consume_epoch_step_eval_trigger(
+                            next_step_eval_at=next_step_eval_at,
+                            epoch_batch_step=epoch_batch_step,
+                            eval_step_interval=eval_step_interval,
+                        )
+                    if scheduled_epoch_step is not None:
+                        scheduled_step = global_batch_step - epoch_batch_step + scheduled_epoch_step
+                        skip_reason = _step_eval_epoch_skip_reason(
+                            epoch=epoch,
+                            epoch_batch_step=epoch_batch_step,
+                            train_batches_per_epoch=train_batches_per_epoch,
+                            eval_step_interval=eval_step_interval,
+                        )
+                        if skip_reason is not None:
                             rank_zero_print(
                                 dist_context,
-                                f"[step {global_batch_step}] step eval skipped because it coincides "
-                                f"with epoch {epoch} end; epoch eval will run instead."
+                                f"[step {global_batch_step} epoch_step "
+                                f"{epoch_batch_step}/{train_batches_per_epoch}] "
+                                f"step eval skipped because it {skip_reason}"
                             )
                             continue
 
@@ -1436,6 +1510,7 @@ def _run_training_partitioned(
                             )
                             print(
                                 f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
+                                f"epoch_step={epoch_batch_step}/{train_batches_per_epoch}  "
                                 f"val_loss={_format_loss_value(step_val_loss)}  "
                                 f"optimizer_step={optimizer_step}"
                             )
@@ -1468,8 +1543,10 @@ def _run_training_partitioned(
                                     checkpoint_dir=step_ckpt_dir,
                                     epoch=epoch,
                                     batch_step=global_batch_step,
+                                    epoch_step=epoch_batch_step,
                                     optimizer_step=optimizer_step,
                                     scheduled_step=scheduled_step,
+                                    scheduled_epoch_step=scheduled_epoch_step,
                                     wandb_logger=wandb_logger,
                                     train_env_steps=current_env_steps,
                                     wandb_batch_step=global_batch_step,
@@ -1610,7 +1687,6 @@ def _run_training(
     eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
     if eval_step_interval < 0:
         raise ValueError(f"eval_step_interval must be >= 0, got {eval_step_interval}")
-    next_step_eval_at = eval_step_interval if eval_step_interval > 0 else None
     wandb_tracking_enabled = wandb_enabled(config)
     wandb_log_every = wandb_log_interval(config) if wandb_tracking_enabled else 10
     env_step_prompt_multiplier = prompt_template_multiplier(config)
@@ -1657,6 +1733,7 @@ def _run_training(
             num_batches = 0
             epoch_optimizer_step = 0
             train_total = len(train_loader)
+            next_step_eval_at = _initial_epoch_step_eval_at(eval_step_interval)
             train_start = time.monotonic()
             train_desc = f"Epoch {epoch}/{num_epochs} [train]"
             optimizer.zero_grad(set_to_none=True)
@@ -1744,19 +1821,26 @@ def _run_training(
                         }
                     )
 
-                if (
-                    should_step
-                    and next_step_eval_at is not None
-                    and global_batch_step >= next_step_eval_at
-                ):
-                    scheduled_step = next_step_eval_at
-                    while next_step_eval_at <= global_batch_step:
-                        next_step_eval_at += eval_step_interval
-                    if step == train_total:
+                scheduled_epoch_step = None
+                if should_step:
+                    scheduled_epoch_step, next_step_eval_at = _consume_epoch_step_eval_trigger(
+                        next_step_eval_at=next_step_eval_at,
+                        epoch_batch_step=step,
+                        eval_step_interval=eval_step_interval,
+                    )
+                if scheduled_epoch_step is not None:
+                    scheduled_step = global_batch_step - step + scheduled_epoch_step
+                    skip_reason = _step_eval_epoch_skip_reason(
+                        epoch=epoch,
+                        epoch_batch_step=step,
+                        train_batches_per_epoch=train_total,
+                        eval_step_interval=eval_step_interval,
+                    )
+                    if skip_reason is not None:
                         rank_zero_print(
                             dist_context,
-                            f"[step {global_batch_step}] step eval skipped because it coincides "
-                            f"with epoch {epoch} end; epoch eval will run instead."
+                            f"[step {global_batch_step} epoch_step {step}/{train_total}] "
+                            f"step eval skipped because it {skip_reason}"
                         )
                         continue
 
@@ -1774,6 +1858,7 @@ def _run_training(
                         )
                         print(
                             f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
+                            f"epoch_step={step}/{train_total}  "
                             f"val_loss={_format_loss_value(step_val_loss)}  "
                             f"optimizer_step={optimizer_step}"
                         )
@@ -1806,8 +1891,10 @@ def _run_training(
                                 checkpoint_dir=step_ckpt_dir,
                                 epoch=epoch,
                                 batch_step=global_batch_step,
+                                epoch_step=step,
                                 optimizer_step=optimizer_step,
                                 scheduled_step=scheduled_step,
+                                scheduled_epoch_step=scheduled_epoch_step,
                                 wandb_logger=wandb_logger,
                                 train_env_steps=current_env_steps,
                                 wandb_batch_step=global_batch_step,
