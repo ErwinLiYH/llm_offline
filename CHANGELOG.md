@@ -1021,3 +1021,14 @@ type: project
 - LLM/LoRA 参数、continuous `action_queries`、bias 和 LayerNorm 参数不使用该 weight decay，保持只正则 MLP action head 的范围
 - `continuous_action_decoder.pt` 记录 `action_head_dropout`，checkpoint 加载和 standalone eval 会从 checkpoint config 继承并校验该结构参数；旧 sidecar 缺省按 `0.0` 兼容
 - 当前 `config.yaml` 示例为 `parallel_l1` 增加 `action_head_dropout: 0.05` 和 `action_head_weight_decay: 0.0001`
+
+---
+
+## LoRA decoder-layer filtering（2026-06-02）
+
+**可按 decoder layer index 限制 LoRA 注入范围：**
+- `model/policy.py` 新增读取可选 `lora_layers_to_transform`，并透传给 Unsloth / PEFT 的 `get_peft_model(..., layers_to_transform=...)`
+- 未配置、注释掉或配置为 `null` 时保持旧行为：所有匹配 `lora_target_modules` 的模块都会挂 LoRA
+- `config.yaml` 可通过取消注释 `lora_layers_to_transform` 示例来限制 Qwen3-0.6B 的 LoRA 层覆盖；配合 `lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]` 时，只训练指定 decoder layers 的 attention q/k/v/o
+- dry-run 验证 Qwen3-0.6B 在该配置下命中 24 个 LoRA module，trainable params 为 `983,040`，用于和 Qwen3.5-0.8B 当前 6 层 full-attention LoRA 覆盖做更干净的对照
+- `DESIGN.md` 和 `AGENTS.md` 同步记录该配置项及“注释掉即回到全匹配层训练”的语义

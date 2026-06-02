@@ -192,6 +192,30 @@ def _resolve_lora_target_modules(config: dict) -> list[str]:
     return resolved
 
 
+def _resolve_lora_layers_to_transform(config: dict):
+    """Return optional layer indices for PEFT LoRA injection."""
+    layers = config.get("lora_layers_to_transform")
+    if layers is None:
+        return None
+    if isinstance(layers, int):
+        return layers
+    if not isinstance(layers, (list, tuple)):
+        raise ValueError(
+            "lora_layers_to_transform must be an int, a list of ints, or null/omitted"
+        )
+
+    resolved = []
+    for layer in layers:
+        if not isinstance(layer, int):
+            raise ValueError(
+                f"lora_layers_to_transform must contain ints, got {layer!r}"
+            )
+        resolved.append(layer)
+    if not resolved:
+        raise ValueError("lora_layers_to_transform must not be an empty list")
+    return resolved
+
+
 def load_model_and_tokenizer(config: dict):
     """Load base model + LoRA adapters and tokenizer from config using Unsloth."""
     model_name = config["model_name"]
@@ -207,7 +231,13 @@ def load_model_and_tokenizer(config: dict):
     _restore_chat_template(tokenizer, model_name)
     _prepare_action_tokens(model, tokenizer, config, resize_embeddings=True)
     target_modules = _resolve_lora_target_modules(config)
+    layers_to_transform = _resolve_lora_layers_to_transform(config)
+    layers_pattern = config.get("lora_layers_pattern")
     print(f"[model] LoRA target modules: {target_modules}")
+    if layers_to_transform is not None:
+        print(f"[model] LoRA layers to transform: {layers_to_transform}")
+        if layers_pattern:
+            print(f"[model] LoRA layers pattern: {layers_pattern}")
 
     model = FastLanguageModel.get_peft_model(
         model,
@@ -215,6 +245,8 @@ def load_model_and_tokenizer(config: dict):
         lora_alpha=config["lora_alpha"],
         lora_dropout=config["lora_dropout"],
         target_modules=target_modules,
+        layers_to_transform=layers_to_transform,
+        layers_pattern=layers_pattern,
         bias="none",
         use_gradient_checkpointing="unsloth",  # 30% less VRAM vs standard checkpointing
         random_state=42,
