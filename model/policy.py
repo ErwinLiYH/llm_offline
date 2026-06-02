@@ -276,6 +276,7 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
             expected_action_dim=int(saved_config["action_dim"]),
             expected_action_query_len=saved_config.get("action_query_len"),
             expected_action_head_num_blocks=saved_config.get("action_head_num_blocks"),
+            expected_action_head_dropout=saved_config.get("action_head_dropout"),
             expected_policy_type=resolve_continuous_policy_type(saved_config),
             expected_gaussian_log_std_min=gaussian_log_std_min,
             expected_gaussian_log_std_max=gaussian_log_std_max,

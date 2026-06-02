@@ -29,6 +29,7 @@ from data.base_dataset import DatasetBuildRequest
 from data.registry import get_action_dim, get_dataset
 from model.continuous_action import (
     ensure_continuous_action_decoder,
+    resolve_action_head_dropout,
     resolve_gaussian_log_std_bounds,
     resolve_student_t_df,
     resolve_action_head_num_blocks,
@@ -130,6 +131,16 @@ def resolve_continuous_mean_l1_weight(config: dict) -> float:
     if weight < 0:
         raise ValueError(f"continuous_mean_l1_weight must be >= 0, got {weight}")
     return weight
+
+
+def resolve_action_head_weight_decay(config: dict) -> float | None:
+    if "action_head_weight_decay" not in config:
+        return None
+    raw_weight_decay = config.get("action_head_weight_decay")
+    weight_decay = 0.0 if raw_weight_decay is None else float(raw_weight_decay)
+    if weight_decay < 0:
+        raise ValueError(f"action_head_weight_decay must be >= 0, got {weight_decay}")
+    return weight_decay
 
 
 def ensure_experiment_id(config: dict) -> str:
@@ -673,6 +684,8 @@ def _build_training_eval_config(config: dict) -> dict:
         "mtp_quadratic_decoding": config.get("mtp_quadratic_decoding", True),
         "action_query_len": config.get("action_query_len"),
         "action_head_num_blocks": config.get("action_head_num_blocks"),
+        "action_head_dropout": config.get("action_head_dropout"),
+        "action_head_weight_decay": config.get("action_head_weight_decay"),
         "gaussian_log_std_min": config.get("gaussian_log_std_min"),
         "gaussian_log_std_max": config.get("gaussian_log_std_max"),
         "student_t_df": config.get("student_t_df"),
@@ -1243,6 +1256,43 @@ def _build_loss_context(config: dict, tokenizer) -> dict:
     }
 
 
+def _build_optimizer_params(model, raw_model, config: dict):
+    action_head_weight_decay = resolve_action_head_weight_decay(config)
+    if action_head_weight_decay is None or not uses_continuous_actions(config):
+        return filter(lambda p: p.requires_grad, model.parameters()), None
+
+    decoder = getattr(raw_model, "continuous_action_decoder", None)
+    if decoder is None:
+        raise ValueError("action_head_weight_decay requires an attached continuous_action_decoder")
+
+    decay_param_ids = {
+        id(param)
+        for _, param in decoder.action_head.named_parameters()
+        if param.requires_grad and param.ndim >= 2
+    }
+    decay_params = []
+    no_decay_params = []
+    for _, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if id(param) in decay_param_ids:
+            decay_params.append(param)
+        else:
+            no_decay_params.append(param)
+
+    param_groups = []
+    if no_decay_params:
+        param_groups.append({"params": no_decay_params, "weight_decay": 0.0})
+    if decay_params:
+        param_groups.append({"params": decay_params, "weight_decay": action_head_weight_decay})
+    optimizer_info = {
+        "action_head_weight_decay": action_head_weight_decay,
+        "action_head_decay_param_count": len(decay_params),
+        "non_decay_param_count": len(no_decay_params),
+    }
+    return param_groups, optimizer_info
+
+
 def _run_training_partitioned(
     config,
     model,
@@ -1263,10 +1313,19 @@ def _run_training_partitioned(
         wandb_logger = WandbLogger()
     raw_model = unwrap_model(model)
     base_learning_rate = float(config["learning_rate"])
+    optimizer_params, optimizer_info = _build_optimizer_params(model, raw_model, config)
     optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
+        optimizer_params,
         lr=base_learning_rate,
     )
+    if optimizer_info is not None:
+        rank_zero_print(
+            dist_context,
+            "[train] Continuous action MLP optimizer: "
+            f"action_head_weight_decay={optimizer_info['action_head_weight_decay']}, "
+            f"decay_params={optimizer_info['action_head_decay_param_count']}, "
+            f"non_decay_params={optimizer_info['non_decay_param_count']}",
+        )
 
     num_epochs = config["num_epochs"]
     gradient_accumulation_steps = int(config.get("gradient_accumulation_steps", 1))
@@ -1643,10 +1702,19 @@ def _run_training(
         wandb_logger = WandbLogger()
     raw_model = unwrap_model(model)
     base_learning_rate = float(config["learning_rate"])
+    optimizer_params, optimizer_info = _build_optimizer_params(model, raw_model, config)
     optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
+        optimizer_params,
         lr=base_learning_rate,
     )
+    if optimizer_info is not None:
+        rank_zero_print(
+            dist_context,
+            "[train] Continuous action MLP optimizer: "
+            f"action_head_weight_decay={optimizer_info['action_head_weight_decay']}, "
+            f"decay_params={optimizer_info['action_head_decay_param_count']}, "
+            f"non_decay_params={optimizer_info['non_decay_param_count']}",
+        )
 
     num_epochs = config["num_epochs"]
     gradient_accumulation_steps = int(config.get("gradient_accumulation_steps", 1))
@@ -2121,6 +2189,12 @@ def main():
             config["action_head_num_blocks"] = resolve_action_head_num_blocks(
                 config.get("action_head_num_blocks")
             )
+            config["action_head_dropout"] = resolve_action_head_dropout(
+                config.get("action_head_dropout")
+            )
+            action_head_weight_decay = resolve_action_head_weight_decay(config)
+            if action_head_weight_decay is not None:
+                config["action_head_weight_decay"] = action_head_weight_decay
             if action_token_mode in {"parallel_gaussian", "parallel_t"}:
                 gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(config)
                 config["gaussian_log_std_min"] = gaussian_log_std_min
@@ -2148,8 +2222,14 @@ def main():
                 "[train] Resolved continuous decoder: "
                 f"mode={action_token_mode}, "
                 f"action_query_len={config['action_query_len']}, "
-                f"action_head_num_blocks={config['action_head_num_blocks']}"
+                f"action_head_num_blocks={config['action_head_num_blocks']}, "
+                f"action_head_dropout={config['action_head_dropout']}"
             )
+            if "action_head_weight_decay" in config:
+                continuous_decoder_info = (
+                    f"{continuous_decoder_info}, "
+                    f"action_head_weight_decay={config['action_head_weight_decay']}"
+                )
             if action_token_mode == "parallel_t":
                 continuous_decoder_info = (
                     f"{continuous_decoder_info}, student_t_df={config['student_t_df']}, "

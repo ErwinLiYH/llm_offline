@@ -149,13 +149,24 @@ def resolve_action_head_num_blocks(action_head_num_blocks: Any | None = None) ->
     return action_head_num_blocks
 
 
+def resolve_action_head_dropout(action_head_dropout: Any | None = None) -> float:
+    if action_head_dropout is None:
+        return 0.0
+    dropout = float(action_head_dropout)
+    if not 0.0 <= dropout < 1.0:
+        raise ValueError(f"action_head_dropout must be in [0, 1), got {dropout}")
+    return dropout
+
+
 class MLPResNetBlock(nn.Module):
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, dropout: float = 0.0):
         super().__init__()
+        dropout = resolve_action_head_dropout(dropout)
         self.ffn = nn.Sequential(
             nn.LayerNorm(dim),
             nn.Linear(dim, dim),
             nn.SiLU(),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -171,12 +182,14 @@ class MLPResNetActionHead(nn.Module):
         num_blocks: int = 2,
         output_dim: int | None = None,
         output_tanh: bool = True,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.action_dim = int(action_dim)
         self.hidden_size = int(hidden_size)
         self.action_query_len = resolve_action_query_len(self.action_dim, action_query_len)
         self.num_blocks = resolve_action_head_num_blocks(num_blocks)
+        self.dropout = resolve_action_head_dropout(dropout)
         self.output_dim = self.action_dim if output_dim is None else int(output_dim)
         if self.output_dim < 1:
             raise ValueError(f"output_dim must be >= 1, got {self.output_dim}")
@@ -184,8 +197,9 @@ class MLPResNetActionHead(nn.Module):
         self.input_norm = nn.LayerNorm(input_dim)
         self.input_proj = nn.Linear(input_dim, self.hidden_size)
         self.input_activation = nn.SiLU()
+        self.input_dropout = nn.Dropout(self.dropout)
         self.blocks = nn.ModuleList(
-            [MLPResNetBlock(self.hidden_size) for _ in range(self.num_blocks)]
+            [MLPResNetBlock(self.hidden_size, dropout=self.dropout) for _ in range(self.num_blocks)]
         )
         self.output_norm = nn.LayerNorm(self.hidden_size)
         self.output_proj = nn.Linear(self.hidden_size, self.output_dim)
@@ -204,7 +218,7 @@ class MLPResNetActionHead(nn.Module):
                 f"expected {(self.action_query_len, self.hidden_size)}"
             )
         x = action_hidden.reshape(action_hidden.shape[0], self.action_query_len * self.hidden_size)
-        x = self.input_activation(self.input_proj(self.input_norm(x)))
+        x = self.input_dropout(self.input_activation(self.input_proj(self.input_norm(x))))
         for block in self.blocks:
             x = block(x)
         return self.output_activation(self.output_proj(self.output_norm(x)))
@@ -222,12 +236,14 @@ class ContinuousActionDecoder(nn.Module):
         policy_type: str = CONTINUOUS_POLICY_DETERMINISTIC,
         gaussian_log_std_min: float = GAUSSIAN_LOG_STD_MIN,
         gaussian_log_std_max: float = GAUSSIAN_LOG_STD_MAX,
+        action_head_dropout: float = 0.0,
     ):
         super().__init__()
         action_dim = int(action_dim)
         hidden_size = int(hidden_size)
         action_query_len = resolve_action_query_len(action_dim, action_query_len)
         action_head_num_blocks = resolve_action_head_num_blocks(action_head_num_blocks)
+        action_head_dropout = resolve_action_head_dropout(action_head_dropout)
         policy_type = str(policy_type)
         valid_policy_types = {
             CONTINUOUS_POLICY_DETERMINISTIC,
@@ -257,6 +273,7 @@ class ContinuousActionDecoder(nn.Module):
         self.policy_type = policy_type
         self.gaussian_log_std_min = gaussian_log_std_min
         self.gaussian_log_std_max = gaussian_log_std_max
+        self.action_head_dropout = action_head_dropout
         self.action_queries = nn.Parameter(torch.empty(action_query_len, hidden_size))
         output_dim = action_dim
         output_tanh = True
@@ -270,6 +287,7 @@ class ContinuousActionDecoder(nn.Module):
             num_blocks=action_head_num_blocks,
             output_dim=output_dim,
             output_tanh=output_tanh,
+            dropout=action_head_dropout,
         )
         self.reset_parameters()
 
@@ -393,11 +411,13 @@ def attach_continuous_action_decoder(
     policy_type: str = CONTINUOUS_POLICY_DETERMINISTIC,
     gaussian_log_std_min: float = GAUSSIAN_LOG_STD_MIN,
     gaussian_log_std_max: float = GAUSSIAN_LOG_STD_MAX,
+    action_head_dropout: float = 0.0,
 ) -> ContinuousActionDecoder:
     """Attach and register a continuous decoder, then patch model.forward."""
     action_dim = int(action_dim)
     action_query_len = resolve_action_query_len(action_dim, action_query_len)
     action_head_num_blocks = resolve_action_head_num_blocks(action_head_num_blocks)
+    action_head_dropout = resolve_action_head_dropout(action_head_dropout)
     hidden_size = _resolve_hidden_size(model) if hidden_size is None else int(hidden_size)
     policy_type = str(policy_type)
     gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(
@@ -417,6 +437,7 @@ def attach_continuous_action_decoder(
             policy_type=policy_type,
             gaussian_log_std_min=gaussian_log_std_min,
             gaussian_log_std_max=gaussian_log_std_max,
+            action_head_dropout=action_head_dropout,
         )
         model.add_module("continuous_action_decoder", decoder)
     else:
@@ -439,6 +460,11 @@ def attach_continuous_action_decoder(
             raise ValueError(
                 "Existing continuous_action_decoder action_head_num_blocks does not match config: "
                 f"decoder={decoder.action_head_num_blocks}, config={action_head_num_blocks}"
+            )
+        if float(decoder.action_head_dropout) != action_head_dropout:
+            raise ValueError(
+                "Existing continuous_action_decoder action_head_dropout does not match config: "
+                f"decoder={decoder.action_head_dropout}, config={action_head_dropout}"
             )
         if str(decoder.policy_type) != policy_type:
             raise ValueError(
@@ -490,6 +516,7 @@ def ensure_continuous_action_decoder(model, config: dict) -> ContinuousActionDec
         policy_type=resolve_continuous_policy_type(config),
         gaussian_log_std_min=gaussian_log_std_min,
         gaussian_log_std_max=gaussian_log_std_max,
+        action_head_dropout=resolve_action_head_dropout(config.get("action_head_dropout")),
     )
 
 
@@ -501,6 +528,7 @@ def save_continuous_action_decoder(model, checkpoint_dir: str):
         "action_dim": int(decoder.action_dim),
         "action_query_len": int(decoder.action_query_len),
         "action_head_num_blocks": int(decoder.action_head_num_blocks),
+        "action_head_dropout": float(decoder.action_head_dropout),
         "hidden_size": int(decoder.hidden_size),
         "policy_type": str(decoder.policy_type),
         "gaussian_log_std_min": float(decoder.gaussian_log_std_min),
@@ -517,6 +545,7 @@ def load_continuous_action_decoder(
     expected_action_dim: int | None = None,
     expected_action_query_len: int | None = None,
     expected_action_head_num_blocks: int | None = None,
+    expected_action_head_dropout: float | None = None,
     expected_policy_type: str | None = None,
     expected_gaussian_log_std_min: float | None = None,
     expected_gaussian_log_std_max: float | None = None,
@@ -531,6 +560,7 @@ def load_continuous_action_decoder(
     action_dim = int(payload["action_dim"])
     action_query_len = resolve_action_query_len(action_dim, payload.get("action_query_len"))
     action_head_num_blocks = resolve_action_head_num_blocks(payload.get("action_head_num_blocks"))
+    action_head_dropout = resolve_action_head_dropout(payload.get("action_head_dropout"))
     hidden_size = int(payload["hidden_size"])
     policy_type = str(payload.get("policy_type", CONTINUOUS_POLICY_DETERMINISTIC))
     gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(
@@ -560,6 +590,14 @@ def load_continuous_action_decoder(
         raise ValueError(
             "continuous_action_decoder.pt action_head_num_blocks does not match config.yaml: "
             f"decoder={action_head_num_blocks}, config={expected_action_head_num_blocks}"
+        )
+    if (
+        expected_action_head_dropout is not None
+        and action_head_dropout != resolve_action_head_dropout(expected_action_head_dropout)
+    ):
+        raise ValueError(
+            "continuous_action_decoder.pt action_head_dropout does not match config.yaml: "
+            f"decoder={action_head_dropout}, config={expected_action_head_dropout}"
         )
     if expected_policy_type is not None and policy_type != str(expected_policy_type):
         raise ValueError(
@@ -597,6 +635,7 @@ def load_continuous_action_decoder(
         policy_type=policy_type,
         gaussian_log_std_min=gaussian_log_std_min,
         gaussian_log_std_max=gaussian_log_std_max,
+        action_head_dropout=action_head_dropout,
     )
     decoder.load_state_dict(payload["state_dict"])
     return decoder

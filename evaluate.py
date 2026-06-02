@@ -21,6 +21,7 @@ import yaml
 from data.registry import get_formatter
 from data.pointmaze.variants import POINTMAZE_VARIANTS, get_pointmaze_variant_type
 from model.continuous_action import (
+    resolve_action_head_dropout,
     resolve_action_head_num_blocks,
     resolve_action_query_len,
     resolve_gaussian_log_std_bounds,
@@ -96,6 +97,7 @@ ACTION_CONFIG_KEYS = (
     "action_dim",
     "action_query_len",
     "action_head_num_blocks",
+    "action_head_dropout",
     "gaussian_log_std_min",
     "gaussian_log_std_max",
     "student_t_df",
@@ -189,6 +191,9 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
         )
         action_config["action_head_num_blocks"] = resolve_action_head_num_blocks(
             saved_config.get("action_head_num_blocks")
+        )
+        action_config["action_head_dropout"] = resolve_action_head_dropout(
+            saved_config.get("action_head_dropout")
         )
         if action_config["action_token_mode"] in {"parallel_gaussian", "parallel_t"}:
             gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(

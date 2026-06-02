@@ -1010,3 +1010,14 @@ type: project
 - step checkpoint/result 目录仍使用实际完成梯度更新后的全局 batch step `step<N>`，避免不同 epoch 的 step eval 输出互相覆盖
 - 如果触发点落在 gradient accumulation 窗口内，仍会等到当前窗口 `optimizer.step()` 完成后再保存 checkpoint 和运行 eval
 - 如果实际 step eval 位置落在 epoch eval 前后 `0.25 * eval_step_interval` 的 train batch 窗口内，自动跳过该 step eval，只保留 epoch checkpoint/eval
+
+---
+
+## continuous action MLP regularization（2026-06-02）
+
+**只作用于连续动作 MLP head 的正则项：**
+- 新增 `action_head_dropout`，默认 `0.0`；在 `parallel_l1` / `parallel_gaussian` / `parallel_t` 的 `MLPResNetActionHead` hidden path 中启用 `nn.Dropout`，仅训练模式生效，eval/rollout 下由 `model.eval()` 自动关闭
+- 新增 `action_head_weight_decay`；显式配置时训练 optimizer 会拆分 param groups，只给 continuous action head 内 `ndim >= 2` 的 Linear weight 设置 AdamW weight decay
+- LLM/LoRA 参数、continuous `action_queries`、bias 和 LayerNorm 参数不使用该 weight decay，保持只正则 MLP action head 的范围
+- `continuous_action_decoder.pt` 记录 `action_head_dropout`，checkpoint 加载和 standalone eval 会从 checkpoint config 继承并校验该结构参数；旧 sidecar 缺省按 `0.0` 兼容
+- 当前 `config.yaml` 示例为 `parallel_l1` 增加 `action_head_dropout: 0.05` 和 `action_head_weight_decay: 0.0001`
