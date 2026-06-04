@@ -1048,3 +1048,44 @@ type: project
 - rollout 中 `action_sampling: true` 改为执行 `tanh(Normal(latent_mean, std))`，`false` 执行 `tanh(latent_mean)`
 - standalone eval 从 checkpoint config 继承并规范化 `gaussian_log_std_init`
 - `DESIGN.md` 和 `AGENTS.md` 同步更新 `parallel_gaussian` 的 squashed Gaussian、state-independent std、loss 和日志语义
+
+---
+
+## score rollout videos and configs（2026-06-04）
+
+**score.py 支持录制 rollout：**
+- `score.py mode: score` 新增 `record_video`、`record_all`、`video_episode_index`、`video_fps`、`video_format` 和 `mujoco_gl`
+- 录制时 score env 会以 `render_mode="rgb_array"` 创建，并把视频保存到 `score_results/score_<id>/score=pointmaze-<variant>/episode_<n>/rollout.<gif|mp4>`
+- 每个 variant 的 `result.json` 新增 `video_path`、`video_paths`、`video_episode_indices`、`episode_artifact_dirs` 和 `episode_artifacts_dir`
+- `utils/pointmaze_score.make_pointmaze_score_env()` 支持传入 `render_mode`，供 score 录像复用同一套 official/local score env spec
+
+**reference / score 配置拆分：**
+- 新增 `reference.yaml`，专门用于 `mode: reference`，一次性生成所有 local layout 的 reference score
+- `score.yaml` 保持为模型 scoring 配置，包含 checkpoint、variant、seed、local reference root、local goal cell 和可选录像配置
+- `score.py --config <yaml>` 仍是唯一 CLI 覆盖入口，运行参数继续由 YAML 承载
+
+---
+
+## local PointMaze post-success hold data（2026-06-04）
+
+**本地数据生成器支持到达后保持段：**
+- `local_varient_gen.py` 新增 `--post-success-hold-steps` 和 `--post-success-hold-noise-std`
+- 默认 `--post-success-hold-steps 0` 保持官方式行为：first success 那一步截断 episode
+- 启用 hold 后，采集环境临时使用 `reset_target=False`，first success 后继续记录固定目标下的 N 个 hold transition
+- hold 阶段默认使用确定性 PD action：`10 * (desired_goal - achieved_goal) - velocity`，再 clip 到动作空间
+- 启用 hold 且目标 local dataset 已存在时要求 `--overwrite`，避免把 goal-arrival-only episode 和 hold episode 混在一个数据集中
+- 本地 callback 改为直接继承 Minari `StepDataCallback`，只从官方脚本复用 `WaypointController` / `QIteration`，不再 import 官方 `create_pointmaze_dataset.py` 的 check 依赖
+
+**文档：**
+- `docs/official_pointmaze_generation.md` 增加 post-success hold 生成示例，并说明启用 hold 时应覆盖重生成旧数据
+
+---
+
+## fixed eval episode seeds（2026-06-04）
+
+**训练期和 standalone eval 使用固定 episode seeds：**
+- `evaluate_variant()` 每个 episode 现在显式使用 `seed + ep_idx` 调用 `env.reset(seed=...)`
+- 每个 episode 开始时同步重置 Python、NumPy、Torch 和 CUDA RNG，并 seed `env.action_space`，让 `action_sampling: true` 的 rollout 也更可复现
+- training-time eval 从 `config.yaml` 的 `eval_seed` 读取 base seed，默认 `1`
+- standalone `evaluate.py` 从 `eval.yaml` 的 `seed` 读取 base seed，默认 `1`
+- eval `result.json` 新增 `seed` 和 `episode_seeds`，用于确认不同 step/epoch eval 使用同一组 episode 初始条件

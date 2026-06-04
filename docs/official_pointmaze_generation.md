@@ -35,7 +35,10 @@ Local PointMaze generation uses official core code:
 
 - `scripts/pointmaze/controller.py::WaypointController`
 - `scripts/pointmaze/maze_solver.py::QIteration`
-- `scripts/pointmaze/create_pointmaze_dataset.py::PointMazeStepDataCallback`
+
+The Minari step callback lives in `local_varient_gen.py` so local generation
+does not import the official `create_pointmaze_dataset.py` check path or its
+extra diagnostics dependencies.
 
 Generate a local variant:
 
@@ -56,6 +59,7 @@ micromamba run -n d4rl_datagen python local_varient_gen.py \
   --num-workers 4 \
   --target-episodes 1000 \
   --post-success-hold-steps 100 \
+  --post-success-hold-noise-std 0.0 \
   --overwrite \
   --seed 42
 ```
@@ -63,7 +67,9 @@ micromamba run -n d4rl_datagen python local_varient_gen.py \
 `--post-success-hold-steps` keeps recording after the first goal reach in each
 episode. During this phase the generator uses a deterministic PD hold action by
 default, so the data teaches the policy to stay near the fixed goal. Use
-`--overwrite` when enabling hold data for an existing local dataset to avoid
-mixing old goal-arrival-only episodes with hold episodes.
+`--post-success-hold-noise-std` to add optional Gaussian action noise only
+during the hold phase. Use `--overwrite` when enabling hold data for an
+existing local dataset to avoid mixing old goal-arrival-only episodes with hold
+episodes.
 
 Generated datasets live under `local_datasets/` and are ignored by Git.
