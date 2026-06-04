@@ -107,6 +107,7 @@ lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
 
 ## Epoch-level and optional step-level environment evaluation
 eval_num_episodes: 20    # rollout episodes per variant per training eval; 0 = disable rollout eval
+eval_seed: 64             # episode reset seeds are eval_seed, eval_seed+1, ... for every eval
 eval_step_interval: 50000    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
 eval_mode: except           # optional; defaults to following train_mode
 eval_variants: [open-dense, umaze-dense, medium-dense, large-dense]  # single: one variant; all: selected variants or omit for all; except: excluded variants

@@ -661,6 +661,7 @@ def _build_training_eval_config(config: dict) -> dict:
     return {
         "env_family": config["env_family"],
         "num_episodes": config["eval_num_episodes"],
+        "seed": config.get("eval_seed", 1),
         "parse_retry_limit": config.get("parse_retry_limit", 3),
         "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
         "history_num": config.get("history_num", 0),

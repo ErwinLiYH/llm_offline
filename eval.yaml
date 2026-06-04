@@ -9,6 +9,7 @@ history_stride: 2        # sample every n past executed transitions when buildin
 eval_mode: single       # single | all | except
 variants: local-layout-07       # single: exactly one; all: selected variants or omit for all; except: excluded variants
 num_episodes: 20
+seed: 1                  # episode reset seeds are seed, seed+1, ... for every standalone eval
 parse_retry_limit: 3
 record_step_logs: true   # whether to save one txt per eval step under the eval result artifacts directory
 # prompt_templete_index: bin  # optional standalone eval prompt override; default = checkpoint's first training prompt

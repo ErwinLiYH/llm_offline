@@ -7,6 +7,7 @@ Usage:
 import argparse
 import json
 import os
+import random
 import time
 import uuid
 import warnings
@@ -620,6 +621,33 @@ def _resolve_video_episode_indices(config: dict, num_episodes: int) -> list[int]
     return unique_indices
 
 
+def _resolve_eval_seed(config: dict) -> int:
+    seed = int(config.get("seed", 1))
+    if seed < 0:
+        raise ValueError(f"seed must be >= 0, got {seed}")
+    return seed
+
+
+def _resolve_episode_seeds(config: dict, num_episodes: int) -> tuple[int, list[int]]:
+    eval_seed = _resolve_eval_seed(config)
+    episode_seeds = [eval_seed + ep_idx for ep_idx in range(num_episodes)]
+    max_seed = 2**32 - 1
+    if episode_seeds and episode_seeds[-1] > max_seed:
+        raise ValueError(
+            "episode seeds must fit numpy/gymnasium seed range; "
+            f"got last seed {episode_seeds[-1]} > {max_seed}"
+        )
+    return eval_seed, episode_seeds
+
+
+def _set_episode_rng_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 def configure_mujoco_gl(config: dict):
     mujoco_gl = config.get("mujoco_gl")
     if mujoco_gl:
@@ -652,6 +680,7 @@ def evaluate_variant(
     num_episodes = config["num_episodes"]
     parse_retry_limit = config["parse_retry_limit"]
     history_num, history_stride = validate_history_config(config)
+    eval_seed, episode_seeds = _resolve_episode_seeds(config, num_episodes)
 
     env_kwargs.update(dict(config.get("env_kwargs") or {}))
     record_video = bool(config.get("record_video", False))
@@ -697,7 +726,11 @@ def evaluate_variant(
     episode_artifact_dirs = []
 
     for ep_idx in range(num_episodes):
-        obs, info = env.reset()
+        episode_seed = episode_seeds[ep_idx]
+        _set_episode_rng_seed(episode_seed)
+        if hasattr(env.action_space, "seed"):
+            env.action_space.seed(episode_seed)
+        obs, info = env.reset(seed=episode_seed)
         history_buffer = []
         record_this_episode = record_video and ep_idx in video_episode_index_set
         episode_frames = [] if record_this_episode else None
@@ -816,6 +849,8 @@ def evaluate_variant(
     return {
         "variant": variant,
         "num_episodes": num_episodes,
+        "seed": eval_seed,
+        "episode_seeds": episode_seeds,
         "mean_return": float(np.mean(episode_returns)),
         "std_return": float(np.std(episode_returns)),
         "success_rate": float(np.mean(episode_successes)),
@@ -838,6 +873,7 @@ def main():
         config = yaml.safe_load(f)
     config = apply_checkpoint_action_config(config)
     config = apply_checkpoint_prompt_config(config, assume_yes=args.yes)
+    config.setdefault("seed", 1)
 
     eval_selection = resolve_standalone_eval_selection(config)
     configure_mujoco_gl(config)
