@@ -608,11 +608,14 @@ def generate_valid_action(
         student_t_scale = None
         if uses_gaussian_continuous_actions(config):
             mean = predicted.mean.float()
+            if predicted.latent_mean is None:
+                raise RuntimeError("parallel_gaussian requires latent_mean from the continuous decoder")
+            latent_mean = predicted.latent_mean.float()
             std = predicted.std.float()
             gaussian_mean = mean[0].detach().cpu().numpy().astype(np.float32)
             gaussian_std = std[0].detach().cpu().numpy().astype(np.float32)
             if action_context.action_generation_config["action_sampling"]:
-                selected = torch.normal(mean=mean, std=std)
+                selected = torch.tanh(torch.normal(mean=latent_mean, std=std))
             else:
                 selected = mean
         elif uses_student_t_continuous_actions(config):

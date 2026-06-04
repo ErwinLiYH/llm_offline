@@ -31,10 +31,12 @@ from model.continuous_action import (
     ensure_continuous_action_decoder,
     resolve_action_head_dropout,
     resolve_gaussian_log_std_bounds,
+    resolve_gaussian_log_std_init,
     resolve_student_t_df,
     resolve_action_head_num_blocks,
     resolve_action_query_len,
     save_continuous_action_decoder,
+    squashed_gaussian_negative_log_likelihood,
     student_t_negative_log_likelihood,
     unpatch_continuous_action_forward,
 )
@@ -688,6 +690,7 @@ def _build_training_eval_config(config: dict) -> dict:
         "action_head_weight_decay": config.get("action_head_weight_decay"),
         "gaussian_log_std_min": config.get("gaussian_log_std_min"),
         "gaussian_log_std_max": config.get("gaussian_log_std_max"),
+        "gaussian_log_std_init": config.get("gaussian_log_std_init"),
         "student_t_df": config.get("student_t_df"),
         "continuous_mean_l1_weight": config.get("continuous_mean_l1_weight"),
         "max_length": config.get("max_length"),
@@ -903,13 +906,15 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
             continuous_action=True,
         )
         mean = action_output.mean.float()
+        if action_output.latent_mean is None:
+            raise RuntimeError("parallel_gaussian requires latent_mean from the continuous decoder")
+        latent_mean = action_output.latent_mean.float()
         log_std = action_output.log_std.float()
         std = action_output.std.float()
-        normalized_error = (action_values - mean) / std
-        nll = 0.5 * (
-            normalized_error.square()
-            + 2.0 * log_std
-            + math.log(2.0 * math.pi)
+        nll = squashed_gaussian_negative_log_likelihood(
+            action_values,
+            latent_mean,
+            log_std,
         )
         loss = nll.mean()
         mae = F.l1_loss(mean, action_values, reduction="mean")
@@ -2199,6 +2204,12 @@ def main():
                 gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(config)
                 config["gaussian_log_std_min"] = gaussian_log_std_min
                 config["gaussian_log_std_max"] = gaussian_log_std_max
+            if action_token_mode == "parallel_gaussian":
+                gaussian_log_std_init = resolve_gaussian_log_std_init(config)
+                config["gaussian_log_std_init"] = max(
+                    gaussian_log_std_min,
+                    min(gaussian_log_std_init, gaussian_log_std_max),
+                )
             if action_token_mode == "parallel_t":
                 config["student_t_df"] = resolve_student_t_df(config)
                 config["continuous_mean_l1_weight"] = resolve_continuous_mean_l1_weight(config)
@@ -2229,6 +2240,13 @@ def main():
                 continuous_decoder_info = (
                     f"{continuous_decoder_info}, "
                     f"action_head_weight_decay={config['action_head_weight_decay']}"
+                )
+            if action_token_mode == "parallel_gaussian":
+                continuous_decoder_info = (
+                    f"{continuous_decoder_info}, "
+                    f"gaussian_log_std_init={config['gaussian_log_std_init']}, "
+                    f"gaussian_log_std_bounds=("
+                    f"{config['gaussian_log_std_min']}, {config['gaussian_log_std_max']})"
                 )
             if action_token_mode == "parallel_t":
                 continuous_decoder_info = (

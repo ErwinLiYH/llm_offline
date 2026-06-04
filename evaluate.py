@@ -25,6 +25,7 @@ from model.continuous_action import (
     resolve_action_head_num_blocks,
     resolve_action_query_len,
     resolve_gaussian_log_std_bounds,
+    resolve_gaussian_log_std_init,
     resolve_student_t_df,
 )
 from model.mtp_bin import resolve_mtp_k
@@ -100,6 +101,7 @@ ACTION_CONFIG_KEYS = (
     "action_head_dropout",
     "gaussian_log_std_min",
     "gaussian_log_std_max",
+    "gaussian_log_std_init",
     "student_t_df",
     "max_length",
 )
@@ -201,6 +203,12 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
             )
             action_config["gaussian_log_std_min"] = gaussian_log_std_min
             action_config["gaussian_log_std_max"] = gaussian_log_std_max
+        if action_config["action_token_mode"] == "parallel_gaussian":
+            gaussian_log_std_init = resolve_gaussian_log_std_init(saved_config)
+            action_config["gaussian_log_std_init"] = max(
+                action_config["gaussian_log_std_min"],
+                min(gaussian_log_std_init, action_config["gaussian_log_std_max"]),
+            )
         if action_config["action_token_mode"] == "parallel_t":
             action_config["student_t_df"] = resolve_student_t_df(saved_config)
     return action_config

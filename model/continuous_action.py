@@ -18,6 +18,8 @@ CONTINUOUS_POLICY_GAUSSIAN = "gaussian"
 CONTINUOUS_POLICY_STUDENT_T = "student_t"
 GAUSSIAN_LOG_STD_MIN = -5.0
 GAUSSIAN_LOG_STD_MAX = 1.0
+GAUSSIAN_LOG_STD_INIT = -1.0
+SQUASHED_GAUSSIAN_EPS = 1e-6
 STUDENT_T_DF = 3.0
 
 
@@ -26,6 +28,7 @@ class GaussianActionOutput:
     mean: torch.Tensor
     log_std: torch.Tensor
     std: torch.Tensor
+    latent_mean: torch.Tensor | None = None
 
     @property
     def log_scale(self) -> torch.Tensor:
@@ -61,6 +64,12 @@ def resolve_gaussian_log_std_bounds(config: dict | None = None) -> tuple[float, 
     return log_std_min, log_std_max
 
 
+def resolve_gaussian_log_std_init(config: dict | None = None) -> float:
+    config = config or {}
+    raw_init = config.get("gaussian_log_std_init", GAUSSIAN_LOG_STD_INIT)
+    return GAUSSIAN_LOG_STD_INIT if raw_init is None else float(raw_init)
+
+
 def resolve_student_t_df(config: dict | None = None) -> float:
     config = config or {}
     raw_df = config.get("student_t_df", STUDENT_T_DF)
@@ -86,6 +95,39 @@ def student_t_negative_log_likelihood(
         - torch.lgamma(0.5 * (df_tensor + 1.0))
     )
     return log_normalizer + 0.5 * (df_tensor + 1.0) * torch.log1p(z.square() / df_tensor)
+
+
+def atanh_clamped_action(
+    action: torch.Tensor,
+    *,
+    eps: float = SQUASHED_GAUSSIAN_EPS,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return action clipped into tanh support and its inverse-tanh value."""
+    eps = float(eps)
+    if not 0.0 < eps < 1.0:
+        raise ValueError(f"eps must satisfy 0 < eps < 1, got {eps}")
+    clipped_action = torch.clamp(action, min=-1.0 + eps, max=1.0 - eps)
+    return clipped_action, torch.atanh(clipped_action)
+
+
+def squashed_gaussian_negative_log_likelihood(
+    action: torch.Tensor,
+    latent_mean: torch.Tensor,
+    log_std: torch.Tensor,
+    *,
+    eps: float = SQUASHED_GAUSSIAN_EPS,
+) -> torch.Tensor:
+    """Return per-dimension NLL for tanh-squashed diagonal Gaussian targets."""
+    clipped_action, latent_action = atanh_clamped_action(action, eps=eps)
+    std = torch.exp(log_std)
+    normalized_error = (latent_action - latent_mean) / std
+    base_nll = 0.5 * (
+        normalized_error.square()
+        + 2.0 * log_std
+        + math.log(2.0 * math.pi)
+    )
+    squash_correction = torch.log1p(-clipped_action.square() + eps)
+    return base_nll + squash_correction
 
 
 def build_parallel_action_attention_mask(
@@ -236,6 +278,7 @@ class ContinuousActionDecoder(nn.Module):
         policy_type: str = CONTINUOUS_POLICY_DETERMINISTIC,
         gaussian_log_std_min: float = GAUSSIAN_LOG_STD_MIN,
         gaussian_log_std_max: float = GAUSSIAN_LOG_STD_MAX,
+        gaussian_log_std_init: float = GAUSSIAN_LOG_STD_INIT,
         action_head_dropout: float = 0.0,
     ):
         super().__init__()
@@ -261,6 +304,13 @@ class ContinuousActionDecoder(nn.Module):
                 "gaussian_log_std_max": gaussian_log_std_max,
             }
         )
+        gaussian_log_std_init = resolve_gaussian_log_std_init(
+            {"gaussian_log_std_init": gaussian_log_std_init}
+        )
+        gaussian_log_std_init = max(
+            gaussian_log_std_min,
+            min(gaussian_log_std_init, gaussian_log_std_max),
+        )
         if action_dim < 1:
             raise ValueError(f"action_dim must be >= 1, got {action_dim}")
         if hidden_size < 1:
@@ -273,11 +323,19 @@ class ContinuousActionDecoder(nn.Module):
         self.policy_type = policy_type
         self.gaussian_log_std_min = gaussian_log_std_min
         self.gaussian_log_std_max = gaussian_log_std_max
+        self.gaussian_log_std_init = gaussian_log_std_init
         self.action_head_dropout = action_head_dropout
         self.action_queries = nn.Parameter(torch.empty(action_query_len, hidden_size))
         output_dim = action_dim
         output_tanh = True
-        if self.policy_type in {CONTINUOUS_POLICY_GAUSSIAN, CONTINUOUS_POLICY_STUDENT_T}:
+        if self.policy_type == CONTINUOUS_POLICY_GAUSSIAN:
+            output_tanh = False
+            self.gaussian_log_std = nn.Parameter(
+                torch.full((action_dim,), gaussian_log_std_init)
+            )
+        else:
+            self.register_parameter("gaussian_log_std", None)
+        if self.policy_type == CONTINUOUS_POLICY_STUDENT_T:
             output_dim = action_dim * 2
             output_tanh = False
         self.action_head = MLPResNetActionHead(
@@ -293,7 +351,10 @@ class ContinuousActionDecoder(nn.Module):
 
     def reset_parameters(self):
         nn.init.normal_(self.action_queries, mean=0.0, std=0.02)
-        if self.policy_type in {CONTINUOUS_POLICY_GAUSSIAN, CONTINUOUS_POLICY_STUDENT_T}:
+        if self.policy_type == CONTINUOUS_POLICY_GAUSSIAN:
+            with torch.no_grad():
+                self.gaussian_log_std.fill_(self.gaussian_log_std_init)
+        if self.policy_type == CONTINUOUS_POLICY_STUDENT_T:
             bias = self.action_head.output_proj.bias
             if bias is not None:
                 with torch.no_grad():
@@ -302,6 +363,21 @@ class ContinuousActionDecoder(nn.Module):
     def _format_action_output(self, raw_output: torch.Tensor) -> torch.Tensor | GaussianActionOutput:
         if self.policy_type == CONTINUOUS_POLICY_DETERMINISTIC:
             return raw_output
+        if self.policy_type == CONTINUOUS_POLICY_GAUSSIAN:
+            latent_mean = raw_output
+            bounded_mean = torch.tanh(latent_mean)
+            log_std = torch.clamp(
+                self.gaussian_log_std,
+                min=self.gaussian_log_std_min,
+                max=self.gaussian_log_std_max,
+            )
+            log_std = log_std.unsqueeze(0).expand_as(latent_mean)
+            return GaussianActionOutput(
+                mean=bounded_mean,
+                log_std=log_std,
+                std=torch.exp(log_std),
+                latent_mean=latent_mean,
+            )
         mean_raw, log_std_raw = raw_output.split(self.action_dim, dim=-1)
         mean = torch.tanh(mean_raw)
         log_std = torch.clamp(
@@ -411,6 +487,7 @@ def attach_continuous_action_decoder(
     policy_type: str = CONTINUOUS_POLICY_DETERMINISTIC,
     gaussian_log_std_min: float = GAUSSIAN_LOG_STD_MIN,
     gaussian_log_std_max: float = GAUSSIAN_LOG_STD_MAX,
+    gaussian_log_std_init: float = GAUSSIAN_LOG_STD_INIT,
     action_head_dropout: float = 0.0,
 ) -> ContinuousActionDecoder:
     """Attach and register a continuous decoder, then patch model.forward."""
@@ -426,6 +503,9 @@ def attach_continuous_action_decoder(
             "gaussian_log_std_max": gaussian_log_std_max,
         }
     )
+    gaussian_log_std_init = resolve_gaussian_log_std_init(
+        {"gaussian_log_std_init": gaussian_log_std_init}
+    )
 
     decoder = getattr(model, "continuous_action_decoder", None)
     if decoder is None:
@@ -437,6 +517,7 @@ def attach_continuous_action_decoder(
             policy_type=policy_type,
             gaussian_log_std_min=gaussian_log_std_min,
             gaussian_log_std_max=gaussian_log_std_max,
+            gaussian_log_std_init=gaussian_log_std_init,
             action_head_dropout=action_head_dropout,
         )
         model.add_module("continuous_action_decoder", decoder)
@@ -506,6 +587,7 @@ def ensure_continuous_action_decoder(model, config: dict) -> ContinuousActionDec
         )
     action_dim = int(config["action_dim"])
     gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(config)
+    gaussian_log_std_init = resolve_gaussian_log_std_init(config)
     return attach_continuous_action_decoder(
         model,
         action_dim,
@@ -516,6 +598,7 @@ def ensure_continuous_action_decoder(model, config: dict) -> ContinuousActionDec
         policy_type=resolve_continuous_policy_type(config),
         gaussian_log_std_min=gaussian_log_std_min,
         gaussian_log_std_max=gaussian_log_std_max,
+        gaussian_log_std_init=gaussian_log_std_init,
         action_head_dropout=resolve_action_head_dropout(config.get("action_head_dropout")),
     )
 
@@ -533,6 +616,7 @@ def save_continuous_action_decoder(model, checkpoint_dir: str):
         "policy_type": str(decoder.policy_type),
         "gaussian_log_std_min": float(decoder.gaussian_log_std_min),
         "gaussian_log_std_max": float(decoder.gaussian_log_std_max),
+        "gaussian_log_std_init": float(decoder.gaussian_log_std_init),
         "state_dict": decoder.state_dict(),
     }
     torch.save(payload, os.path.join(checkpoint_dir, CONTINUOUS_ACTION_DECODER_FILENAME))
@@ -568,6 +652,9 @@ def load_continuous_action_decoder(
             "gaussian_log_std_min": payload.get("gaussian_log_std_min", GAUSSIAN_LOG_STD_MIN),
             "gaussian_log_std_max": payload.get("gaussian_log_std_max", GAUSSIAN_LOG_STD_MAX),
         }
+    )
+    gaussian_log_std_init = resolve_gaussian_log_std_init(
+        {"gaussian_log_std_init": payload.get("gaussian_log_std_init", GAUSSIAN_LOG_STD_INIT)}
     )
     if expected_action_dim is not None and action_dim != int(expected_action_dim):
         raise ValueError(
@@ -635,7 +722,18 @@ def load_continuous_action_decoder(
         policy_type=policy_type,
         gaussian_log_std_min=gaussian_log_std_min,
         gaussian_log_std_max=gaussian_log_std_max,
+        gaussian_log_std_init=gaussian_log_std_init,
         action_head_dropout=action_head_dropout,
     )
-    decoder.load_state_dict(payload["state_dict"])
+    try:
+        decoder.load_state_dict(payload["state_dict"])
+    except RuntimeError as exc:
+        if policy_type == CONTINUOUS_POLICY_GAUSSIAN:
+            raise RuntimeError(
+                "Failed to load parallel_gaussian continuous_action_decoder.pt. "
+                "This checkpoint may use the old state-dependent Gaussian std head; "
+                "new parallel_gaussian checkpoints use a squashed Gaussian with "
+                "state-independent gaussian_log_std."
+            ) from exc
+        raise
     return decoder

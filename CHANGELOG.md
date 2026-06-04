@@ -1032,3 +1032,19 @@ type: project
 - `config.yaml` 可通过取消注释 `lora_layers_to_transform` 示例来限制 Qwen3-0.6B 的 LoRA 层覆盖；配合 `lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]` 时，只训练指定 decoder layers 的 attention q/k/v/o
 - dry-run 验证 Qwen3-0.6B 在该配置下命中 24 个 LoRA module，trainable params 为 `983,040`，用于和 Qwen3.5-0.8B 当前 6 层 full-attention LoRA 覆盖做更干净的对照
 - `DESIGN.md` 和 `AGENTS.md` 同步记录该配置项及“注释掉即回到全匹配层训练”的语义
+
+---
+
+## parallel_gaussian squashed policy（2026-06-04）
+
+**bounded Gaussian BC：**
+- `parallel_gaussian` 从直接在 bounded action 上建模 `Normal(tanh(mean_raw), state_dependent_std)` 改为 latent-space tanh-squashed Gaussian：action head 输出 `latent_mean`，执行均值为 `tanh(latent_mean)`
+- Gaussian `log_std` 改为 PPO-style state-independent `nn.Parameter[action_dim]`，由 `gaussian_log_std_init` 初始化，并在 forward/loss/eval 中按 `gaussian_log_std_min/max` clamp 后取 `exp`
+- `_compute_batch_loss()` 在 `parallel_gaussian` 下先 clamp target action 到 `(-1, 1)`，再用 `atanh(action)` 作为 latent target；loss 使用 Gaussian NLL 加 tanh change-of-variables correction
+- `train/nll` / `train/loss` 表示 squashed-Gaussian NLL，`train/mae` 仍为 `tanh(latent_mean)` 与 target action 的 action-space MAE，`train/std` 是 state-independent policy std 的均值
+
+**checkpoint / eval / docs：**
+- `continuous_action_decoder.pt` 保存 `gaussian_log_std_init` 和实际学到的 `gaussian_log_std` 参数；旧 state-dependent Gaussian sidecar 会给出明确不兼容提示
+- rollout 中 `action_sampling: true` 改为执行 `tanh(Normal(latent_mean, std))`，`false` 执行 `tanh(latent_mean)`
+- standalone eval 从 checkpoint config 继承并规范化 `gaussian_log_std_init`
+- `DESIGN.md` 和 `AGENTS.md` 同步更新 `parallel_gaussian` 的 squashed Gaussian、state-independent std、loss 和日志语义
