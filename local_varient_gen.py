@@ -17,8 +17,7 @@ import gymnasium as gym
 import gymnasium_robotics  # noqa: F401  registers PointMaze envs
 import minari
 import numpy as np
-from minari import DataCollector, MinariDataset
-from minari.dataset.minari_dataset import parse_dataset_id
+from minari import DataCollector, MinariDataset, StepDataCallback
 from minari.storage.local import get_dataset_path
 
 from data.pointmaze.variants import (
@@ -46,44 +45,43 @@ def _load_official_pointmaze_modules():
     if official_path not in sys.path:
         sys.path.insert(0, official_path)
     controller_module = importlib.import_module("controller")
-    creator_module = importlib.import_module("create_pointmaze_dataset")
-    return controller_module, creator_module
+    return controller_module
 
 
-_OFFICIAL_CONTROLLER, _OFFICIAL_CREATOR = _load_official_pointmaze_modules()
+_OFFICIAL_CONTROLLER = _load_official_pointmaze_modules()
 WaypointController = _OFFICIAL_CONTROLLER.WaypointController
-_OfficialPointMazeStepDataCallback = _OFFICIAL_CREATOR.PointMazeStepDataCallback
 
 
-class PointMazeStepDataCallback(_OfficialPointMazeStepDataCallback):
-    """Compatibility wrapper around Farama's official PointMaze callback."""
+class PointMazeStepDataCallback(StepDataCallback):
+    """Record PointMaze state and optionally split episodes at first success."""
 
-    def __call__(self, env, obs, info, action=None, rew=None, terminated=None, truncated=None):
-        try:
-            step_data = super().__call__(env, obs, info, action, rew, terminated, truncated)
-        except KeyError as exc:
-            if exc.args != ("info",):
-                raise
-            qpos = obs["observation"][:2]
-            qvel = obs["observation"][2:]
-            goal = obs["desired_goal"]
-            step_data = {
-                "actions": action,
-                "observations": obs,
-                "rewards": rew,
-                "terminations": terminated,
-                "truncations": truncated,
-                "infos": info,
-            }
-            if step_data["infos"].get("success", False):
-                step_data["truncations"] = True
-            step_data["infos"]["qpos"] = qpos
-            step_data["infos"]["qvel"] = qvel
-            step_data["infos"]["goal"] = goal
-            return step_data
-        if step_data["info"].get("success", False):
-            step_data["truncated"] = True
+    truncate_on_success = True
+
+    def __call__(
+        self,
+        env,
+        obs,
+        info,
+        action=None,
+        rew=None,
+        terminated=None,
+        truncated=None,
+    ):
+        step_data = super().__call__(env, obs, info, action, rew, terminated, truncated)
+        info_key = "info" if "info" in step_data else "infos"
+        truncated_key = "truncated" if "truncated" in step_data else "truncations"
+        if self.truncate_on_success and step_data[info_key].get("success", False):
+            step_data[truncated_key] = True
+        step_data[info_key]["qpos"] = obs["observation"][:2]
+        step_data[info_key]["qvel"] = obs["observation"][2:]
+        step_data[info_key]["goal"] = obs["desired_goal"]
         return step_data
+
+
+class PointMazeHoldStepDataCallback(PointMazeStepDataCallback):
+    """PointMaze callback that lets the collector keep recording after success."""
+
+    truncate_on_success = False
 
 
 def parse_args():
@@ -94,6 +92,18 @@ def parse_args():
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-episode-steps", type=int, default=1000000)
+    parser.add_argument(
+        "--post-success-hold-steps",
+        type=int,
+        default=0,
+        help="Extra steps to record after first reaching the goal in each local episode.",
+    )
+    parser.add_argument(
+        "--post-success-hold-noise-std",
+        type=float,
+        default=0.0,
+        help="Gaussian action noise std used only during the post-success hold phase.",
+    )
     return parser.parse_args()
 
 
@@ -139,6 +149,23 @@ def _create_dataset(collector: DataCollector, **kwargs):
     )
 
 
+def _clip_action(action: np.ndarray) -> np.ndarray:
+    return np.clip(action, -1, 1).astype(np.float32)
+
+
+def _waypoint_action(controller: WaypointController, obs: dict) -> np.ndarray:
+    action = controller.compute_action(obs)
+    action += np.random.randn(*action.shape) * 0.5
+    return _clip_action(action)
+
+
+def _hold_action(obs: dict, noise_std: float) -> np.ndarray:
+    action = 10.0 * (obs["desired_goal"] - obs["achieved_goal"]) - obs["observation"][2:]
+    if noise_std > 0:
+        action += np.random.randn(*action.shape) * noise_std
+    return _clip_action(action)
+
+
 def _collect_shard(
     *,
     variant: str,
@@ -147,12 +174,21 @@ def _collect_shard(
     seed: int,
     worker_index: int,
     max_episode_steps: int,
+    post_success_hold_steps: int,
+    post_success_hold_noise_std: float,
 ) -> tuple[str, str]:
     dataset_id = f"local/pointmaze-{variant}-shard-{uuid.uuid4().hex[:12]}-v0"
-    env = _make_env(env_paras, max_episode_steps=max_episode_steps)
+    collect_env_paras = dict(env_paras)
+    if post_success_hold_steps > 0:
+        collect_env_paras["reset_target"] = False
+    env = _make_env(collect_env_paras, max_episode_steps=max_episode_steps)
     collector = DataCollector(
         env,
-        step_data_callback=PointMazeStepDataCallback,
+        step_data_callback=(
+            PointMazeHoldStepDataCallback
+            if post_success_hold_steps > 0
+            else PointMazeStepDataCallback
+        ),
         record_infos=True,
     )
     np.random.seed(seed)
@@ -160,17 +196,49 @@ def _collect_shard(
     obs, _ = collector.reset(seed=seed)
     steps = 0
     episodes = 0
+    successful_episodes = 0
+    holding = False
+    hold_steps_remaining = 0
 
     while episodes < target_episodes:
-        action = controller.compute_action(obs)
-        action += np.random.randn(*action.shape) * 0.5
-        action = np.clip(action, -1, 1)
+        action = (
+            _hold_action(obs, post_success_hold_noise_std)
+            if holding
+            else _waypoint_action(controller, obs)
+        )
         obs, _, terminated, truncated, info = collector.step(action)
         steps += 1
-        if info.get("success", False):
-            episodes += 1
-        elif terminated or truncated:
+
+        if post_success_hold_steps <= 0:
+            if info.get("success", False):
+                episodes += 1
+                successful_episodes += 1
+            elif terminated or truncated:
+                obs, _ = collector.reset()
+            continue
+
+        if terminated or truncated:
+            if holding or info.get("success", False):
+                episodes += 1
+                successful_episodes += 1
             obs, _ = collector.reset()
+            holding = False
+            hold_steps_remaining = 0
+            continue
+
+        if holding:
+            hold_steps_remaining -= 1
+            if hold_steps_remaining <= 0:
+                episodes += 1
+                successful_episodes += 1
+                obs, _ = collector.reset()
+                holding = False
+                hold_steps_remaining = 0
+            continue
+
+        if info.get("success", False):
+            holding = True
+            hold_steps_remaining = post_success_hold_steps
 
     eval_env_paras = dict(env_paras)
     eval_env_id = eval_env_paras.pop("id")
@@ -193,7 +261,9 @@ def _collect_shard(
         description=(
             _official_description(eval_env_id)
             + f"\n\nLocal wrapper variant={variant}, worker={worker_index}, "
-            f"target_episodes={target_episodes}, collected_steps={steps}, seed={seed}."
+            f"target_episodes={target_episodes}, collected_steps={steps}, seed={seed}, "
+            f"post_success_hold_steps={post_success_hold_steps}, "
+            f"post_success_hold_noise_std={post_success_hold_noise_std}."
         ),
         requirements=_official_requirements(),
         minari_version=_minari_version_specifier(),
@@ -202,7 +272,10 @@ def _collect_shard(
     collector.close()
     print(
         f"[local-gen] {variant} worker={worker_index}: shard={dataset_id}, "
-        f"target_episodes={target_episodes}, collected_steps={steps}, seed={seed}."
+        f"target_episodes={target_episodes}, successful_episodes={successful_episodes}, "
+        f"collected_steps={steps}, seed={seed}, "
+        f"post_success_hold_steps={post_success_hold_steps}, "
+        f"post_success_hold_noise_std={post_success_hold_noise_std}."
     )
     return dataset_id, str(get_dataset_path(dataset_id))
 
@@ -242,6 +315,8 @@ def generate_variant(
     overwrite: bool,
     seed: int,
     max_episode_steps: int,
+    post_success_hold_steps: int,
+    post_success_hold_noise_std: float,
 ):
     if variant not in POINTMAZE_VARIANTS:
         raise ValueError(f"Unknown PointMaze variant: {variant!r}")
@@ -250,6 +325,12 @@ def generate_variant(
         raise ValueError(f"Variant {variant!r} is not local and cannot be generated")
 
     dataset_root = resolve_local_dataset_path(meta["dataset_path"])
+    if post_success_hold_steps > 0 and dataset_root.exists() and not overwrite:
+        raise ValueError(
+            f"{variant} already has a local dataset at {dataset_root}. "
+            "Use --overwrite when generating post-success hold data, so old "
+            "goal-arrival-only episodes are not mixed with hold episodes."
+        )
     if overwrite and dataset_root.exists():
         shutil.rmtree(dataset_root)
 
@@ -268,8 +349,10 @@ def generate_variant(
         shard_targets[idx] += 1
 
     print(
-        f"[local-gen] {variant}: existing_episodes={existing_episodes}, target_episodes={target_episodes}, "
-        f"deficit={deficit}, workers={worker_count}"
+        f"[local-gen] {variant}: existing_episodes={existing_episodes}, "
+        f"target_episodes={target_episodes}, deficit={deficit}, workers={worker_count}, "
+        f"post_success_hold_steps={post_success_hold_steps}, "
+        f"post_success_hold_noise_std={post_success_hold_noise_std}"
     )
     shard_specs = []
     variant_seed_offset = int.from_bytes(hashlib.sha256(variant.encode("utf-8")).digest()[:4], "big")
@@ -283,6 +366,8 @@ def generate_variant(
                 "seed": shard_seed,
                 "worker_index": worker_index,
                 "max_episode_steps": max_episode_steps,
+                "post_success_hold_steps": post_success_hold_steps,
+                "post_success_hold_noise_std": post_success_hold_noise_std,
             }
         )
 
@@ -308,6 +393,10 @@ def main():
         raise ValueError("--target-episodes must be >= 1")
     if args.num_workers < 1:
         raise ValueError("--num-workers must be >= 1")
+    if args.post_success_hold_steps < 0:
+        raise ValueError("--post-success-hold-steps must be >= 0")
+    if args.post_success_hold_noise_std < 0:
+        raise ValueError("--post-success-hold-noise-std must be >= 0")
     for variant in args.variants:
         generate_variant(
             variant,
@@ -316,6 +405,8 @@ def main():
             overwrite=args.overwrite,
             seed=args.seed,
             max_episode_steps=args.max_episode_steps,
+            post_success_hold_steps=args.post_success_hold_steps,
+            post_success_hold_noise_std=args.post_success_hold_noise_std,
         )
 
 

@@ -48,4 +48,22 @@ micromamba run -n d4rl_datagen python local_varient_gen.py \
   --seed 42
 ```
 
+Generate local data with a post-success hold segment:
+
+```bash
+micromamba run -n d4rl_datagen python local_varient_gen.py \
+  --variants local-layout-07 \
+  --num-workers 4 \
+  --target-episodes 1000 \
+  --post-success-hold-steps 100 \
+  --overwrite \
+  --seed 42
+```
+
+`--post-success-hold-steps` keeps recording after the first goal reach in each
+episode. During this phase the generator uses a deterministic PD hold action by
+default, so the data teaches the policy to stay near the fixed goal. Use
+`--overwrite` when enabling hold data for an existing local dataset to avoid
+mixing old goal-arrival-only episodes with hold episodes.
+
 Generated datasets live under `local_datasets/` and are ignored by Git.
