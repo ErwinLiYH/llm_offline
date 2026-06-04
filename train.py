@@ -1422,7 +1422,7 @@ def _run_training_partitioned(
             epoch_optimizer_step = 0
             epoch_batch_step = 0
             next_step_eval_at = _initial_epoch_step_eval_at(eval_step_interval)
-            train_start = time.monotonic()
+            train_start = None
             train_desc = f"Epoch {epoch}/{num_epochs} [train]"
             optimizer.zero_grad(set_to_none=True)
             for partition_index in _partition_order(
@@ -1449,6 +1449,8 @@ def _run_training_partitioned(
                     sampler.set_epoch(epoch * partition_count + partition_index)
 
                 for batch in train_loader:
+                    if train_start is None:
+                        train_start = time.monotonic()
                     epoch_batch_step += 1
                     global_batch_step += 1
                     loss, loss_parts = _compute_batch_loss(model, batch, device, loss_context)

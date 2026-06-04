@@ -1089,3 +1089,14 @@ type: project
 - training-time eval 从 `config.yaml` 的 `eval_seed` 读取 base seed，默认 `1`
 - standalone `evaluate.py` 从 `eval.yaml` 的 `seed` 读取 base seed，默认 `1`
 - eval `result.json` 新增 `seed` 和 `episode_seeds`，用于确认不同 step/epoch eval 使用同一组 episode 初始条件
+
+---
+
+## dataset cache parallel writes（2026-06-04）
+
+**tokenized cache 文件写入改为线程池并行：**
+- `PointMazeDataset.build_batch()` 在 tokenization jobs 完成后创建 `ThreadPoolExecutor`，并把每个 cache job 的 `.pkl` 数据缓存和 `.jsonl` 可读预览作为独立写入任务提交
+- 写入线程数使用当前可见逻辑 CPU 数的一半：`max(1, (os.cpu_count() or 2) // 2)`
+- cache 写入开始时打印 `[dataset] Writing dataset caches with <N> threads`，便于确认实际写入并行度
+- 主流程仍会等待所有 write futures 完成；任一写入异常会在等待时抛出，避免静默生成损坏或缺失的 cache 文件
+- `_finalize_tokenization_job()` 保留无 executor 时的串行写入 fallback，方便单独调用和测试

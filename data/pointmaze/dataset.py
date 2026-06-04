@@ -7,7 +7,7 @@ import math
 import signal
 import time
 import gc
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -828,19 +828,31 @@ class PointMazeDataset(BaseOfflineDataset):
                 num_workers=num_workers,
                 progress_interval_seconds=progress_interval_seconds,
             )
-            for job in jobs:
-                episode_samples = cls._finalize_tokenization_job(job, results_by_job[job.job_id])
-                results_by_job.pop(job.job_id, None)
-                cls._fill_datasets_from_episode_cache(
-                    datasets=datasets,
-                    request_indices=job.request_indices,
-                    configs=configs,
-                    selection=selections_by_job[job.job_id],
-                    episode_samples=episode_samples,
-                )
-                job.episode_payloads.clear()
-                del episode_samples
-                gc.collect()
+            cache_write_futures = []
+            cache_write_workers = max(1, (os.cpu_count() or 2) // 2)
+            print(f"[dataset] Writing dataset caches with {cache_write_workers} threads")
+            with ThreadPoolExecutor(max_workers=cache_write_workers) as cache_write_executor:
+                for job in jobs:
+                    episode_samples, write_futures = cls._finalize_tokenization_job(
+                        job,
+                        results_by_job[job.job_id],
+                        cache_write_executor=cache_write_executor,
+                    )
+                    cache_write_futures.extend(write_futures)
+                    results_by_job.pop(job.job_id, None)
+                    cls._fill_datasets_from_episode_cache(
+                        datasets=datasets,
+                        request_indices=job.request_indices,
+                        configs=configs,
+                        selection=selections_by_job[job.job_id],
+                        episode_samples=episode_samples,
+                    )
+                    job.episode_payloads.clear()
+                    del episode_samples
+                    gc.collect()
+                for future, description, path in cache_write_futures:
+                    future.result()
+                    print(f"[dataset] Saved {description} to {path}")
             results_by_job.clear()
             jobs.clear()
             gc.collect()
@@ -1373,9 +1385,12 @@ class PointMazeDataset(BaseOfflineDataset):
         cls,
         job: PointMazeTokenizationJob,
         episode_results_list: list[list[tuple[int, dict | None, dict]]],
-    ) -> dict[int, list[dict]]:
+        *,
+        cache_write_executor: ThreadPoolExecutor | None = None,
+    ) -> tuple[dict[int, list[dict]], list[tuple[Future, str, str]]]:
         episode_samples: dict[int, list[dict]] = {}
         text_records = []
+        cache_write_futures = []
         for episode_results in episode_results_list:
             episode_idx = None
             samples = []
@@ -1412,16 +1427,40 @@ class PointMazeDataset(BaseOfflineDataset):
                 },
                 "episodes": episode_samples,
             }
-            with open(job.cache_path, "wb") as f:
-                pickle.dump(cache, f)
-            print(f"[dataset] Saved dataset cache to {job.cache_path}")
             jsonl_path = job.cache_path.replace(".pkl", ".jsonl")
-            with open(jsonl_path, "w") as f:
-                for record in text_records:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            print(f"[dataset] Saved human-readable cache to {jsonl_path}")
+            if cache_write_executor is None:
+                cls._write_pickle_cache(job.cache_path, cache)
+                print(f"[dataset] Saved dataset cache to {job.cache_path}")
+                cls._write_jsonl_cache(jsonl_path, text_records)
+                print(f"[dataset] Saved human-readable cache to {jsonl_path}")
+            else:
+                cache_write_futures.append(
+                    (
+                        cache_write_executor.submit(cls._write_pickle_cache, job.cache_path, cache),
+                        "dataset cache",
+                        job.cache_path,
+                    )
+                )
+                cache_write_futures.append(
+                    (
+                        cache_write_executor.submit(cls._write_jsonl_cache, jsonl_path, text_records),
+                        "human-readable cache",
+                        jsonl_path,
+                    )
+                )
 
-        return episode_samples
+        return episode_samples, cache_write_futures
+
+    @staticmethod
+    def _write_pickle_cache(cache_path: str, cache: dict):
+        with open(cache_path, "wb") as f:
+            pickle.dump(cache, f)
+
+    @staticmethod
+    def _write_jsonl_cache(jsonl_path: str, text_records: list[dict]):
+        with open(jsonl_path, "w") as f:
+            for record in text_records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def __len__(self) -> int:
         return len(self._samples)
