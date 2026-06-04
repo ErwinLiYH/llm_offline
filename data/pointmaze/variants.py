@@ -46,7 +46,7 @@ def _default_local_max_episode_steps(maze_map: list[list[int]]) -> int:
     """
     rows = len(maze_map)
     cols = len(maze_map[0]) if maze_map else 0
-    return max(300, rows * cols * 8)
+    return max(300, rows * cols * 6)
 
 
 _OPEN_MAZE = [
