@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 
 import gymnasium_robotics  # noqa: F401  registers PointMaze envs
+import imageio.v2 as imageio
 import numpy as np
 import torch
 import yaml
@@ -65,6 +66,11 @@ def load_config(args) -> dict:
     config.setdefault("action_sampling", False)
     config.setdefault("assume_yes", False)
     config.setdefault("local_reference_root", "local_references/pointmaze")
+    config.setdefault("record_video", False)
+    config.setdefault("record_all", False)
+    config.setdefault("video_episode_index", 0)
+    config.setdefault("video_fps", 20)
+    config.setdefault("video_format", "gif")
     config["score_config_source"] = args.config
     return config
 
@@ -93,6 +99,93 @@ def save_json(path: str | Path, payload: dict):
     os.makedirs(os.path.dirname(str(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+
+
+def _normalize_render_frame(frame) -> np.ndarray:
+    arr = np.asarray(frame)
+    if arr.ndim == 4:
+        if arr.shape[0] == 1:
+            arr = arr[0]
+        elif arr.shape[-1] == 1:
+            arr = arr[..., 0]
+        else:
+            raise ValueError(f"Unsupported rendered frame shape: {arr.shape}")
+    if arr.ndim == 2:
+        arr = np.repeat(arr[..., None], 3, axis=-1)
+    if arr.ndim != 3 or arr.shape[-1] not in (3, 4):
+        raise ValueError(f"Unsupported rendered frame shape: {arr.shape}")
+    if arr.shape[-1] == 4:
+        arr = arr[..., :3]
+    if arr.dtype != np.uint8:
+        if np.issubdtype(arr.dtype, np.floating):
+            scale = 255.0 if float(arr.max(initial=0.0)) <= 1.0 else 1.0
+            arr = np.clip(arr * scale, 0, 255).astype(np.uint8)
+        else:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+    return arr
+
+
+def _capture_render_frame(env, frames: list[np.ndarray]):
+    frame = env.render()
+    if frame is None:
+        raise ValueError("render() returned None; score recording requires render_mode='rgb_array'")
+    frames.append(_normalize_render_frame(frame))
+
+
+def _save_video(frames: list[np.ndarray], output_path: str, fps: int):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    ext = os.path.splitext(output_path)[1].lower()
+    if ext == ".gif":
+        duration_sec = 1.0 / max(fps, 1)
+        imageio.mimsave(output_path, frames, format="GIF", duration=duration_sec)
+        return
+
+    try:
+        imageio.mimsave(output_path, frames, fps=fps)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to save video to {output_path}. mp4 output requires a working ffmpeg backend; "
+            "try video_format='gif' if ffmpeg is unavailable."
+        ) from exc
+
+
+def _resolve_video_episode_indices(config: dict, num_episodes: int) -> list[int]:
+    if not config.get("record_video", False):
+        return []
+
+    if config.get("record_all", False):
+        return list(range(num_episodes))
+
+    raw_indices = config.get("video_episode_index", 0)
+    if isinstance(raw_indices, int):
+        indices = [raw_indices]
+    elif isinstance(raw_indices, (list, tuple)):
+        if not raw_indices:
+            raise ValueError("video_episode_index must not be empty when record_video=true and record_all=false")
+        if not all(isinstance(idx, int) for idx in raw_indices):
+            raise ValueError("video_episode_index must be an int or a list of ints")
+        indices = list(raw_indices)
+    else:
+        raise ValueError("video_episode_index must be an int or a list of ints")
+
+    unique_indices = sorted(set(indices))
+    for idx in unique_indices:
+        if not (0 <= idx < num_episodes):
+            raise ValueError(
+                f"video_episode_index must satisfy 0 <= index < num_episodes; got index={idx}, "
+                f"num_episodes={num_episodes}"
+            )
+    return unique_indices
+
+
+def configure_mujoco_gl(config: dict):
+    mujoco_gl = config.get("mujoco_gl")
+    if mujoco_gl:
+        os.environ["MUJOCO_GL"] = str(mujoco_gl)
+        return
+
+    if config.get("record_video", False):
+        os.environ.setdefault("MUJOCO_GL", "egl")
 
 
 def _load_waypoint_controller_class():
@@ -285,6 +378,7 @@ def score_model_variant(
     device: torch.device,
     template: str,
     prompt_template_name: str,
+    variant_results_dir: str | None = None,
 ) -> dict:
     from utils.eval_rollout import (
         build_action_rollout_context,
@@ -298,8 +392,16 @@ def score_model_variant(
     prompt_vars = meta["prompt_vars"]
     score_env_spec = build_pointmaze_score_env_spec(variant, config)
     reference = _reference_for_variant(config, variant, score_env_spec)
+    num_episodes = int(config["num_episodes"])
+    record_video = bool(config.get("record_video", False))
+    video_episode_indices = _resolve_video_episode_indices(config, num_episodes)
+    video_episode_index_set = set(video_episode_indices)
+    video_fps = int(config.get("video_fps", 20))
 
-    env = make_pointmaze_score_env(score_env_spec)
+    env = make_pointmaze_score_env(
+        score_env_spec,
+        render_mode="rgb_array" if record_video else None,
+    )
     try:
         action_dim = int(env.action_space.shape[0])
         checkpoint_action_dim = config.get("action_dim")
@@ -322,12 +424,23 @@ def score_model_variant(
         total_fallbacks = 0
         total_action_time = 0.0
         total_actions = 0
+        saved_video_paths = []
+        episode_artifact_dirs = []
 
-        num_episodes = int(config["num_episodes"])
         for ep_idx in range(num_episodes):
             reset_seed = int(config["seed"]) if ep_idx == 0 else None
             obs, _ = env.reset(seed=reset_seed)
             history_buffer = []
+            record_this_episode = record_video and ep_idx in video_episode_index_set
+            episode_frames = [] if record_this_episode else None
+            episode_dir = None
+            if record_this_episode:
+                if variant_results_dir is None:
+                    raise ValueError("variant_results_dir is required when record_video=true")
+                episode_dir = os.path.join(variant_results_dir, f"episode_{ep_idx}")
+                os.makedirs(episode_dir, exist_ok=True)
+                episode_artifact_dirs.append(episode_dir)
+                _capture_render_frame(env, episode_frames)
             ep_return = 0.0
             ep_steps = 0
             terminated = False
@@ -367,12 +480,22 @@ def score_model_variant(
                     }
                 )
 
+                if episode_frames is not None:
+                    _capture_render_frame(env, episode_frames)
+
                 ep_return += float(reward)
                 ep_steps += 1
                 total_parse_failures += action_result.parse_failures
                 total_fallbacks += action_result.fallback_count
                 total_action_time += action_result.action_time_seconds
                 total_actions += action_result.generation_count
+
+            if episode_frames is not None and episode_dir is not None:
+                video_ext = str(config.get("video_format", "gif")).lstrip(".")
+                video_path = os.path.join(episode_dir, f"rollout.{video_ext}")
+                _save_video(episode_frames, video_path, video_fps)
+                saved_video_paths.append(video_path)
+                print(f"  [{variant}] saved video: {video_path}")
 
             episode_returns.append(ep_return)
             episode_steps.append(ep_steps)
@@ -407,6 +530,10 @@ def score_model_variant(
             "total_parse_failures": total_parse_failures,
             "total_fallbacks": total_fallbacks,
             "mean_action_time_ms": round(mean_action_time_ms, 2),
+            "video_path": saved_video_paths[0] if len(saved_video_paths) == 1 else None,
+            "video_paths": saved_video_paths,
+            "video_episode_indices": video_episode_indices,
+            "episode_artifact_dirs": episode_artifact_dirs,
         }
     finally:
         env.close()
@@ -440,6 +567,7 @@ def run_score_mode(config: dict, selection, run_results_dir: str, *, assume_yes:
             device=device,
             template=template,
             prompt_template_name=prompt_name,
+            variant_results_dir=variant_dir,
         )
         result["result_path"] = result_path
         save_json(result_path, result)
@@ -500,6 +628,7 @@ def main():
     if mode == "reference":
         results = run_reference_mode(config, selection, run_results_dir)
     elif mode == "score":
+        configure_mujoco_gl(config)
         config, results = run_score_mode(
             config,
             selection,

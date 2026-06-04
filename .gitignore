@@ -68,3 +68,5 @@ unsloth_compiled_cache/
 tests/
 scripts/
 exp_configs/
+local_references/
+score_results/

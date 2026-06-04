@@ -327,8 +327,14 @@ def build_pointmaze_score_env_spec(variant: str, config: dict) -> PointMazeScore
     return build_local_pointmaze_score_env_spec(variant, config)
 
 
-def make_pointmaze_score_env(score_env_spec: PointMazeScoreEnvSpec):
+def make_pointmaze_score_env(
+    score_env_spec: PointMazeScoreEnvSpec,
+    *,
+    render_mode: str | None = None,
+):
     kwargs = copy.deepcopy(score_env_spec.env_kwargs)
+    if render_mode is not None:
+        kwargs["render_mode"] = render_mode
     if score_env_spec.variant_type == "local":
         return gym.make(
             score_env_spec.env_id,
