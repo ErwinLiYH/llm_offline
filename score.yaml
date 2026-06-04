@@ -1,15 +1,16 @@
-model_path: checkpoints/...
+model_path: checkpoints/pointmaze/Qwen3-0.6B/except-large-dense+local-layout-07+medium-dense+open-dense+umaze-dense/dfb2837a/step250000
+# Qwen 0.6B bin: checkpoints/pointmaze/Qwen3-0.6B/except-large-dense+local-layout-07+medium-dense+open-dense+umaze-dense/dfb2837a/step250000
 load_in_4bit: false
 result_root: score_results
 env_family: pointmaze
 mode: score              # score | reference
-eval_mode: all           # single | all | except
-variants: []             # same list semantics as eval.yaml
-num_episodes: 100
-num_reference_episodes: 100
+eval_mode: single        # single | all | except
+variants:
+  - medium
+num_episodes: 20
 seed: 123
 parse_retry_limit: 3
-assume_yes: false        # true = continue through strong prompt warnings without interactive confirmation
+assume_yes: true         # true = continue through strong prompt warnings without interactive confirmation
 prompt_templete_index: null
 history_num: 0
 history_stride: 1
@@ -19,6 +20,14 @@ action_temperature: 1.0
 action_top_p: 1.0
 action_top_k: 0
 local_reference_root: local_references/pointmaze
+
+# Optional video recording settings for score rollouts.
+record_video: true
+record_all: true
+video_episode_index: 0
+video_fps: 30
+video_format: mp4
+mujoco_gl: egl
 
 # Local/custom PointMaze score envs require an explicit fixed goal cell.
 # Cells are 0-based [row, col] in the variant maze_map and must be free.

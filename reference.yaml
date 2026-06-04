@@ -1,0 +1,37 @@
+result_root: score_results
+env_family: pointmaze
+mode: reference
+eval_mode: all
+variants:
+  - local-layout-01
+  - local-layout-02
+  - local-layout-03
+  - local-layout-04
+  - local-layout-05
+  - local-layout-06
+  - local-layout-07
+  - local-layout-08
+  - local-layout-09
+num_reference_episodes: 100
+seed: 123
+local_reference_root: local_references/pointmaze
+
+local_eval_maps:
+  local-layout-01:
+    goal_cell: [6, 6]
+  local-layout-02:
+    goal_cell: [6, 8]
+  local-layout-03:
+    goal_cell: [7, 7]
+  local-layout-04:
+    goal_cell: [8, 6]
+  local-layout-05:
+    goal_cell: [8, 10]
+  local-layout-06:
+    goal_cell: [9, 9]
+  local-layout-07:
+    goal_cell: [7, 6]
+  local-layout-08:
+    goal_cell: [11, 11]
+  local-layout-09:
+    goal_cell: [12, 10]
