@@ -1100,3 +1100,21 @@ type: project
 - cache 写入开始时打印 `[dataset] Writing dataset caches with <N> threads`，便于确认实际写入并行度
 - 主流程仍会等待所有 write futures 完成；任一写入异常会在等待时抛出，避免静默生成损坏或缺失的 cache 文件
 - `_finalize_tokenization_job()` 保留无 executor 时的串行写入 fallback，方便单独调用和测试
+
+---
+
+## step eval checkpoint-only cadence（2026-06-06）
+
+**降低高频 step eval 的 validation / rollout 开销：**
+- 新增 `step_eval_skip` 配置，默认 `1` 保持每次 step eval trigger 都执行完整 validation 和环境 rollout；设为 `n > 1` 时，每个 epoch 内仅第 `n`、`2n`、`3n` 次 trigger 执行完整评估
+- 未命中完整评估频率的 trigger 仍在梯度累积窗口完成后保存 `step<N>` checkpoint，但跳过 val loss、rollout eval 和对应 W&B eval 指标
+- step eval trigger 计数在每个 epoch 开始时重置，并同时应用于普通训练和 `dataset_load_partitions > 1` 的分区训练路径
+- `step_eval_skip` 在训练启动时规范化并校验为大于等于 `1` 的整数；训练配置摘要和 step 日志会记录实际值、epoch 内 trigger 序号及 checkpoint-only 原因
+
+**epoch eval 邻近规则：**
+- 位于 epoch eval 前后 `0.25 * eval_step_interval` 窗口内的 step trigger 不再完全跳过，而是保存 checkpoint-only `step<N>`
+- 邻近 epoch eval 时仍由 epoch checkpoint/eval 执行 validation 和 rollout，避免重复评估，同时保留中间训练状态
+
+**文档 / 配置：**
+- `config.yaml` 增加 `step_eval_skip` 示例
+- `DESIGN.md` 和 `AGENTS.md` 同步记录 trigger 计数、checkpoint-only 行为及 epoch eval 邻近规则

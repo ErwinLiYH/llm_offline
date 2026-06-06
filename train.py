@@ -115,6 +115,25 @@ def _as_bool(value) -> bool:
     return bool(value)
 
 
+def resolve_step_eval_skip(config: dict) -> int:
+    raw_value = config.get("step_eval_skip", 1)
+    if isinstance(raw_value, bool):
+        raise ValueError(f"step_eval_skip must be an integer >= 1, got {raw_value!r}")
+    if isinstance(raw_value, int):
+        step_eval_skip = raw_value
+    elif isinstance(raw_value, str):
+        try:
+            step_eval_skip = int(raw_value.strip())
+        except ValueError as exc:
+            raise ValueError(f"step_eval_skip must be an integer >= 1, got {raw_value!r}") from exc
+    else:
+        raise ValueError(f"step_eval_skip must be an integer >= 1, got {raw_value!r}")
+    if step_eval_skip < 1:
+        raise ValueError(f"step_eval_skip must be >= 1, got {step_eval_skip}")
+    config["step_eval_skip"] = step_eval_skip
+    return step_eval_skip
+
+
 def resolve_dataset_load_partitions(config: dict) -> int:
     partitions = int(config.get("dataset_load_partitions", 1) or 1)
     if partitions < 1:
@@ -1217,6 +1236,24 @@ def _step_eval_epoch_skip_reason(
     return None
 
 
+def _step_eval_checkpoint_only_reason(
+    *,
+    trigger_count: int,
+    step_eval_skip: int,
+    epoch_skip_reason: str | None,
+) -> str | None:
+    if epoch_skip_reason is not None:
+        return f"near epoch eval: {epoch_skip_reason}"
+    if step_eval_skip <= 1:
+        return None
+    if trigger_count % step_eval_skip == 0:
+        return None
+    return (
+        f"step_eval_skip={step_eval_skip}: step eval trigger {trigger_count} "
+        "this epoch is checkpoint-only"
+    )
+
+
 def _build_loss_context(config: dict, tokenizer) -> dict:
     action_token_mode = get_action_token_mode(config)
     bin_token_ids = None
@@ -1376,6 +1413,7 @@ def _run_training_partitioned(
     eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
     if eval_step_interval < 0:
         raise ValueError(f"eval_step_interval must be >= 0, got {eval_step_interval}")
+    step_eval_skip = resolve_step_eval_skip(config)
     wandb_tracking_enabled = wandb_enabled(config)
     wandb_log_every = wandb_log_interval(config) if wandb_tracking_enabled else 10
     env_step_prompt_multiplier = prompt_template_multiplier(config)
@@ -1397,6 +1435,7 @@ def _run_training_partitioned(
         f"warmup_steps={warmup_steps}, lr_decay_steps={lr_decay_steps}, "
         f"min_lr_ratio={min_lr_ratio}, "
         f"eval_step_interval={eval_step_interval}, "
+        f"step_eval_skip={step_eval_skip}, "
         f"parallel_backend={dist_context.backend}, world_size={dist_context.world_size}, "
         f"global_effective_batch_size={global_effective_batch_size}"
     )
@@ -1422,6 +1461,7 @@ def _run_training_partitioned(
             epoch_optimizer_step = 0
             epoch_batch_step = 0
             next_step_eval_at = _initial_epoch_step_eval_at(eval_step_interval)
+            epoch_step_eval_count = 0
             train_start = None
             train_desc = f"Epoch {epoch}/{num_epochs} [train]"
             optimizer.zero_grad(set_to_none=True)
@@ -1554,49 +1594,59 @@ def _run_training_partitioned(
                             train_batches_per_epoch=train_batches_per_epoch,
                             eval_step_interval=eval_step_interval,
                         )
-                        if skip_reason is not None:
-                            rank_zero_print(
-                                dist_context,
-                                f"[step {global_batch_step} epoch_step "
-                                f"{epoch_batch_step}/{train_batches_per_epoch}] "
-                                f"step eval skipped because it {skip_reason}"
-                            )
-                            continue
+                        epoch_step_eval_count += 1
+                        checkpoint_only_reason = _step_eval_checkpoint_only_reason(
+                            trigger_count=epoch_step_eval_count,
+                            step_eval_skip=step_eval_skip,
+                            epoch_skip_reason=skip_reason,
+                        )
 
                         step_train_loss = total_loss / max(num_batches, 1)
                         step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
                         if dist_context.is_main_process:
-                            step_val_loss = _run_validation(
-                                raw_model,
-                                val_loader,
-                                device,
-                                loss_context,
-                                progress,
-                                desc=f"Step {global_batch_step} [val]",
-                                warning_label=f"step {global_batch_step}",
-                            )
-                            print(
-                                f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
-                                f"epoch_step={epoch_batch_step}/{train_batches_per_epoch}  "
-                                f"val_loss={_format_loss_value(step_val_loss)}  "
-                                f"optimizer_step={optimizer_step}"
-                            )
-                            if wandb_logger.enabled:
-                                wandb_logger.log(
-                                    {
-                                        **wandb_step_metrics(
-                                            env_steps=current_env_steps,
-                                            batch_step=global_batch_step,
-                                            optimizer_step=optimizer_step,
-                                            epoch=epoch,
-                                        ),
-                                        "train/step_loss": step_train_loss,
-                                        "val/loss": step_val_loss,
-                                        "train/learning_rate": get_optimizer_lr(optimizer),
-                                    }
+                            step_val_loss = math.nan
+                            if checkpoint_only_reason is None:
+                                step_val_loss = _run_validation(
+                                    raw_model,
+                                    val_loader,
+                                    device,
+                                    loss_context,
+                                    progress,
+                                    desc=f"Step {global_batch_step} [val]",
+                                    warning_label=f"step {global_batch_step}",
+                                )
+                                print(
+                                    f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
+                                    f"epoch_step={epoch_batch_step}/{train_batches_per_epoch}  "
+                                    f"step_eval_trigger={epoch_step_eval_count}  "
+                                    f"val_loss={_format_loss_value(step_val_loss)}  "
+                                    f"optimizer_step={optimizer_step}"
+                                )
+                                if wandb_logger.enabled:
+                                    wandb_logger.log(
+                                        {
+                                            **wandb_step_metrics(
+                                                env_steps=current_env_steps,
+                                                batch_step=global_batch_step,
+                                                optimizer_step=optimizer_step,
+                                                epoch=epoch,
+                                            ),
+                                            "train/step_loss": step_train_loss,
+                                            "val/loss": step_val_loss,
+                                            "train/learning_rate": get_optimizer_lr(optimizer),
+                                        }
+                                    )
+                            else:
+                                print(
+                                    f"[step {global_batch_step}] checkpoint-only step eval: "
+                                    f"train_loss={step_train_loss:.4f}  "
+                                    f"epoch_step={epoch_batch_step}/{train_batches_per_epoch}  "
+                                    f"step_eval_trigger={epoch_step_eval_count}  "
+                                    f"optimizer_step={optimizer_step}  "
+                                    f"reason={checkpoint_only_reason}"
                                 )
                             _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
-                            if should_run_eval:
+                            if checkpoint_only_reason is None and should_run_eval:
                                 _run_eval(
                                     config,
                                     raw_model,
@@ -1763,6 +1813,7 @@ def _run_training(
     eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
     if eval_step_interval < 0:
         raise ValueError(f"eval_step_interval must be >= 0, got {eval_step_interval}")
+    step_eval_skip = resolve_step_eval_skip(config)
     wandb_tracking_enabled = wandb_enabled(config)
     wandb_log_every = wandb_log_interval(config) if wandb_tracking_enabled else 10
     env_step_prompt_multiplier = prompt_template_multiplier(config)
@@ -1781,6 +1832,7 @@ def _run_training(
         f"warmup_steps={warmup_steps}, lr_decay_steps={lr_decay_steps}, "
         f"min_lr_ratio={min_lr_ratio}, "
         f"eval_step_interval={eval_step_interval}, "
+        f"step_eval_skip={step_eval_skip}, "
         f"parallel_backend={dist_context.backend}, world_size={dist_context.world_size}, "
         f"global_effective_batch_size={global_effective_batch_size}"
     )
@@ -1810,6 +1862,7 @@ def _run_training(
             epoch_optimizer_step = 0
             train_total = len(train_loader)
             next_step_eval_at = _initial_epoch_step_eval_at(eval_step_interval)
+            epoch_step_eval_count = 0
             train_start = time.monotonic()
             train_desc = f"Epoch {epoch}/{num_epochs} [train]"
             optimizer.zero_grad(set_to_none=True)
@@ -1912,48 +1965,59 @@ def _run_training(
                         train_batches_per_epoch=train_total,
                         eval_step_interval=eval_step_interval,
                     )
-                    if skip_reason is not None:
-                        rank_zero_print(
-                            dist_context,
-                            f"[step {global_batch_step} epoch_step {step}/{train_total}] "
-                            f"step eval skipped because it {skip_reason}"
-                        )
-                        continue
+                    epoch_step_eval_count += 1
+                    checkpoint_only_reason = _step_eval_checkpoint_only_reason(
+                        trigger_count=epoch_step_eval_count,
+                        step_eval_skip=step_eval_skip,
+                        epoch_skip_reason=skip_reason,
+                    )
 
                     step_train_loss = total_loss / max(num_batches, 1)
                     step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
                     if dist_context.is_main_process:
-                        step_val_loss = _run_validation(
-                            raw_model,
-                            val_loader,
-                            device,
-                            loss_context,
-                            progress,
-                            desc=f"Step {global_batch_step} [val]",
-                            warning_label=f"step {global_batch_step}",
-                        )
-                        print(
-                            f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
-                            f"epoch_step={step}/{train_total}  "
-                            f"val_loss={_format_loss_value(step_val_loss)}  "
-                            f"optimizer_step={optimizer_step}"
-                        )
-                        if wandb_logger.enabled:
-                            wandb_logger.log(
-                                {
-                                    **wandb_step_metrics(
-                                        env_steps=current_env_steps,
-                                        batch_step=global_batch_step,
-                                        optimizer_step=optimizer_step,
-                                        epoch=epoch,
-                                    ),
-                                    "train/step_loss": step_train_loss,
-                                    "val/loss": step_val_loss,
-                                    "train/learning_rate": get_optimizer_lr(optimizer),
-                                }
+                        step_val_loss = math.nan
+                        if checkpoint_only_reason is None:
+                            step_val_loss = _run_validation(
+                                raw_model,
+                                val_loader,
+                                device,
+                                loss_context,
+                                progress,
+                                desc=f"Step {global_batch_step} [val]",
+                                warning_label=f"step {global_batch_step}",
+                            )
+                            print(
+                                f"[step {global_batch_step}] train_loss={step_train_loss:.4f}  "
+                                f"epoch_step={step}/{train_total}  "
+                                f"step_eval_trigger={epoch_step_eval_count}  "
+                                f"val_loss={_format_loss_value(step_val_loss)}  "
+                                f"optimizer_step={optimizer_step}"
+                            )
+                            if wandb_logger.enabled:
+                                wandb_logger.log(
+                                    {
+                                        **wandb_step_metrics(
+                                            env_steps=current_env_steps,
+                                            batch_step=global_batch_step,
+                                            optimizer_step=optimizer_step,
+                                            epoch=epoch,
+                                        ),
+                                        "train/step_loss": step_train_loss,
+                                        "val/loss": step_val_loss,
+                                        "train/learning_rate": get_optimizer_lr(optimizer),
+                                    }
+                                )
+                        else:
+                            print(
+                                f"[step {global_batch_step}] checkpoint-only step eval: "
+                                f"train_loss={step_train_loss:.4f}  "
+                                f"epoch_step={step}/{train_total}  "
+                                f"step_eval_trigger={epoch_step_eval_count}  "
+                                f"optimizer_step={optimizer_step}  "
+                                f"reason={checkpoint_only_reason}"
                             )
                         _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
-                        if should_run_eval:
+                        if checkpoint_only_reason is None and should_run_eval:
                             _run_eval(
                                 config,
                                 raw_model,
@@ -2176,6 +2240,7 @@ def main():
 
         normalize_prompt_config(config)
         config["dataset_load_partitions"] = resolve_dataset_load_partitions(config)
+        resolve_step_eval_skip(config)
         available_variants = get_available_variants(config["env_family"])
         train_selection = resolve_train_selection(config, available_variants)
         eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)
