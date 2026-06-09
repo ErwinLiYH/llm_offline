@@ -1118,3 +1118,24 @@ type: project
 **文档 / 配置：**
 - `config.yaml` 增加 `step_eval_skip` 示例
 - `DESIGN.md` 和 `AGENTS.md` 同步记录 trigger 计数、checkpoint-only 行为及 epoch eval 邻近规则
+
+---
+
+## DataLoader runtime configuration and tokenize-only（2026-06-09）
+
+**DataLoader 可配置化：**
+- `config.yaml` 新增 `dataloader_config`，统一配置 train/val DataLoader 的 `num_workers`、`pin_memory`、`persistent_workers` 和 `prefetch_factor`
+- 新增 `non_blocking` 控制训练 batch tensor 的设备搬运；推荐与 `pin_memory: true` 配合，为 CUDA H2D copy 与计算重叠提供条件
+- 启动时规范化并打印最终 DataLoader 配置；未知字段会报错，且 `persistent_workers` / `prefetch_factor` 在 `num_workers: 0` 时禁止使用
+- 单卡与 DDP、普通与 `dataset_load_partitions > 1` 的训练路径均复用同一套 DataLoader 配置；DDP 下配置按 rank 独立生效
+
+**仅构建 tokenized cache：**
+- `train.py` 新增 `--tokenize-only`，复用正常模型/tokenizer、variant selection、episode split、prompt/action schema 和 dataset cache signature
+- 非 partition 模式构建或加载所选 variants 的完整 train/val cache；partition 模式先准备完整 val cache，再依次遍历并准备全部 train partition cache
+- 完成后打印 partition 数、train/val sample 数和 batch 数，并在 DDP wrapping、optimizer、W&B、validation、rollout 和训练循环之前退出
+- 该模式要求配置 `dataset_cache_dir`；生成的 `.pkl` cache 可由后续单卡或 DDP 训练直接复用，DDP rank/GPU 数不参与 tokenization cache signature
+- 当前实现仍调用正常 `load_model_and_tokenizer()`，因此可能占用 GPU；本次不包含 CPU-only tokenizer 加载路径
+
+**文档：**
+- `AGENTS.md` 增加 `--tokenize-only` 命令、执行边界、缓存要求和 DDP 复用说明
+- `DESIGN.md` 增加 tokenize-only 工作流及 partition/non-partition 行为说明
