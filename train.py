@@ -101,6 +101,11 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml")
     parser.add_argument("--parallel_backend", type=str, choices=["single", "ddp"], default=None)
+    parser.add_argument(
+        "--tokenize-only",
+        action="store_true",
+        help="Build/load all selected train/val tokenized dataset caches, then exit before training.",
+    )
     return parser.parse_args()
 
 
@@ -2266,6 +2271,66 @@ def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
     print(f"[train] Checkpoint saved to: {checkpoint_dir}")
 
 
+def prepare_tokenized_data(
+    config: dict,
+    tokenizer,
+    train_selection: VariantSelection,
+    dist_context: DistributedContext,
+) -> None:
+    if not config.get("dataset_cache_dir"):
+        raise ValueError("--tokenize-only requires dataset_cache_dir")
+
+    selected_variants = train_selection.selected_variants
+    partition_count = resolve_dataset_load_partitions(config)
+    rank_zero_print(
+        dist_context,
+        "[tokenize-only] Preparing tokenized dataset caches for variants: "
+        f"{selected_variants}",
+    )
+
+    if partition_count > 1:
+        val_loader, partition_stats = _prewarm_partition_caches(
+            config,
+            tokenizer,
+            selected_variants,
+            dist_context,
+            partition_count=partition_count,
+        )
+        val_samples = _loader_sample_count(val_loader)
+        train_samples = sum(int(stat["train_samples"]) for stat in partition_stats)
+        train_batches = sum(int(stat["train_batches"]) for stat in partition_stats)
+        val_batches = len(val_loader) if val_loader is not None else 0
+        _release_loaders(val_loader)
+        rank_zero_print(
+            dist_context,
+            "[tokenize-only] Complete: "
+            f"partitions={partition_count}, train_samples={train_samples}, "
+            f"train_batches={train_batches}, val_samples={val_samples}, "
+            f"val_batches={val_batches}",
+        )
+        barrier(dist_context)
+        return
+
+    train_loader, val_loader = build_data_loaders(
+        config,
+        tokenizer,
+        selected_variants,
+        dist_context,
+    )
+    train_samples = _loader_sample_count(train_loader)
+    val_samples = _loader_sample_count(val_loader)
+    train_batches = len(train_loader) if train_loader is not None else 0
+    val_batches = len(val_loader) if val_loader is not None else 0
+    _release_loaders(train_loader, val_loader)
+    rank_zero_print(
+        dist_context,
+        "[tokenize-only] Complete: "
+        f"partitions=1, train_samples={train_samples}, train_batches={train_batches}, "
+        f"val_samples={val_samples}, val_batches={val_batches}",
+    )
+    barrier(dist_context)
+
+
 
 def train_with_selection(
     config: dict,
@@ -2355,6 +2420,7 @@ def main():
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
     config["train_config_source"] = args.config
+    config["tokenize_only"] = bool(args.tokenize_only)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)
     try:
@@ -2486,6 +2552,15 @@ def main():
         barrier(dist_context)
 
         model, tokenizer = load_model_and_tokenizer(config)
+        if args.tokenize_only:
+            prepare_tokenized_data(
+                config,
+                tokenizer,
+                train_selection,
+                dist_context,
+            )
+            return
+
         model.to(device)
 
         if dist_context.is_distributed:
