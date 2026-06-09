@@ -33,5 +33,21 @@ mujoco_gl: egl
 # Cells are 0-based [row, col] in the variant maze_map and must be free.
 # Optional per-variant max_episode_steps overrides the local variant default.
 local_eval_maps:
+  local-layout-01:
+    goal_cell: [6, 6]
+  local-layout-02:
+    goal_cell: [6, 8]
+  local-layout-03:
+    goal_cell: [7, 7]
+  local-layout-04:
+    goal_cell: [8, 6]
+  local-layout-05:
+    goal_cell: [8, 10]
+  local-layout-06:
+    goal_cell: [9, 9]
   local-layout-07:
     goal_cell: [7, 6]
+  local-layout-08:
+    goal_cell: [11, 11]
+  local-layout-09:
+    goal_cell: [12, 10]
