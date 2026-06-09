@@ -115,6 +115,103 @@ def _as_bool(value) -> bool:
     return bool(value)
 
 
+def resolve_dataloader_config(config: dict) -> dict:
+    raw_config = config.get("dataloader_config")
+    if raw_config is None:
+        raw_config = {}
+    if not isinstance(raw_config, dict):
+        raise ValueError("dataloader_config must be a mapping")
+
+    allowed_keys = {
+        "num_workers",
+        "pin_memory",
+        "persistent_workers",
+        "prefetch_factor",
+        "non_blocking",
+    }
+    unknown_keys = sorted(set(raw_config) - allowed_keys)
+    if unknown_keys:
+        raise ValueError(
+            f"Unknown dataloader_config keys: {unknown_keys}. "
+            f"Supported keys: {sorted(allowed_keys)}"
+        )
+
+    raw_num_workers = raw_config.get("num_workers", 0)
+    if isinstance(raw_num_workers, bool):
+        raise ValueError("dataloader_config.num_workers must be an integer >= 0")
+    num_workers = int(raw_num_workers)
+    if num_workers < 0:
+        raise ValueError(
+            f"dataloader_config.num_workers must be >= 0, got {num_workers}"
+        )
+
+    pin_memory = _as_bool(raw_config.get("pin_memory", False))
+    persistent_workers = _as_bool(raw_config.get("persistent_workers", False))
+    non_blocking = _as_bool(raw_config.get("non_blocking", False))
+
+    raw_prefetch_factor = raw_config.get("prefetch_factor")
+    prefetch_factor = None
+    if raw_prefetch_factor is not None:
+        if isinstance(raw_prefetch_factor, bool):
+            raise ValueError(
+                "dataloader_config.prefetch_factor must be an integer >= 1 or null"
+            )
+        prefetch_factor = int(raw_prefetch_factor)
+        if prefetch_factor < 1:
+            raise ValueError(
+                "dataloader_config.prefetch_factor must be >= 1, "
+                f"got {prefetch_factor}"
+            )
+
+    if num_workers == 0:
+        if persistent_workers:
+            raise ValueError(
+                "dataloader_config.persistent_workers requires num_workers > 0"
+            )
+        if prefetch_factor is not None:
+            raise ValueError(
+                "dataloader_config.prefetch_factor requires num_workers > 0"
+            )
+
+    resolved = {
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+        "persistent_workers": persistent_workers,
+        "prefetch_factor": prefetch_factor,
+        "non_blocking": non_blocking,
+    }
+    config["dataloader_config"] = resolved
+    return resolved
+
+
+def _build_dataloader(
+    config: dict,
+    dataset,
+    *,
+    shuffle: bool = False,
+    sampler=None,
+    collate_fn=None,
+) -> DataLoader:
+    dataloader_config = resolve_dataloader_config(config)
+    kwargs = {
+        "num_workers": dataloader_config["num_workers"],
+        "pin_memory": dataloader_config["pin_memory"],
+    }
+    if dataloader_config["num_workers"] > 0:
+        kwargs["persistent_workers"] = dataloader_config["persistent_workers"]
+        if dataloader_config["prefetch_factor"] is not None:
+            kwargs["prefetch_factor"] = dataloader_config["prefetch_factor"]
+
+    return DataLoader(
+        dataset,
+        batch_size=config["batch_size"],
+        shuffle=shuffle,
+        sampler=sampler,
+        collate_fn=collate_fn,
+        **kwargs,
+    )
+
+
 def resolve_step_eval_skip(config: dict) -> int:
     raw_value = config.get("step_eval_skip", 1)
     if isinstance(raw_value, bool):
@@ -472,17 +569,17 @@ def _build_data_loaders_once(
                     drop_last=False,
                 )
                 train_shuffle = False
-            train_loader = DataLoader(
+            train_loader = _build_dataloader(
+                config,
                 train_dataset,
-                batch_size=config["batch_size"],
                 shuffle=train_shuffle,
                 sampler=train_sampler,
                 collate_fn=collate_fn,
             )
         if val_dataset is not None:
-            val_loader = DataLoader(
+            val_loader = _build_dataloader(
+                config,
                 val_dataset,
-                batch_size=config["batch_size"],
                 shuffle=False,
                 collate_fn=collate_fn,
             )
@@ -519,18 +616,18 @@ def _build_data_loaders_once(
                 num_samples=len(combined_train),
                 replacement=True,
             )
-        train_loader = DataLoader(
+        train_loader = _build_dataloader(
+            config,
             combined_train,
-            batch_size=config["batch_size"],
             sampler=sampler,
             collate_fn=collate_fn,
         )
 
     if include_val:
         combined_val = ConcatDataset(val_datasets)
-        val_loader = DataLoader(
+        val_loader = _build_dataloader(
+            config,
             combined_val,
-            batch_size=config["batch_size"],
             shuffle=False,
             collate_fn=collate_fn,
         )
@@ -844,28 +941,43 @@ def _run_eval(
 
 
 def _compute_batch_loss(model, batch, device, loss_context: dict):
-    input_ids = batch["input_ids"].to(device)
-    attention_mask = batch["attention_mask"].to(device)
-    labels = batch["labels"].to(device)
+    non_blocking = loss_context["dataloader_non_blocking"]
+    input_ids = batch["input_ids"].to(device, non_blocking=non_blocking)
+    attention_mask = batch["attention_mask"].to(device, non_blocking=non_blocking)
+    labels = batch["labels"].to(device, non_blocking=non_blocking)
 
     if loss_context["action_token_mode"] == "mtp_bin":
-        action_bin_labels = batch["action_bin_labels"].to(device)
-        action_query_mask = batch["action_query_mask"].to(device)
+        action_bin_labels = batch["action_bin_labels"].to(
+            device, non_blocking=non_blocking
+        )
+        action_query_mask = batch["action_query_mask"].to(
+            device, non_blocking=non_blocking
+        )
         outputs = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            position_ids=batch["position_ids"].to(device),
+            position_ids=batch["position_ids"].to(
+                device, non_blocking=non_blocking
+            ),
             action_query_mask=action_query_mask,
-            action_query_offsets=batch["action_query_offsets"].to(device),
-            action_query_source_positions=batch["action_query_source_positions"].to(device),
-            action_query_prev_token_ids=batch["action_query_prev_token_ids"].to(device),
+            action_query_offsets=batch["action_query_offsets"].to(
+                device, non_blocking=non_blocking
+            ),
+            action_query_source_positions=batch["action_query_source_positions"].to(
+                device, non_blocking=non_blocking
+            ),
+            action_query_prev_token_ids=batch["action_query_prev_token_ids"].to(
+                device, non_blocking=non_blocking
+            ),
             mtp_bin=True,
         )
         loss, metrics = mtp_bin_action_loss(
             outputs,
             action_bin_labels,
             action_query_mask,
-            batch["action_query_anchor_positions"].to(device),
+            batch["action_query_anchor_positions"].to(
+                device, non_blocking=non_blocking
+            ),
             loss_context["bin_token_ids"],
             lcm_weight=loss_context["mtp_lcm_weight"],
         )
@@ -881,7 +993,9 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
         return loss, metrics
 
     if loss_context["action_token_mode"] == "gaussian_bin":
-        action_bin_labels = batch["action_bin_labels"].to(device)
+        action_bin_labels = batch["action_bin_labels"].to(
+            device, non_blocking=non_blocking
+        )
         outputs = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -909,7 +1023,11 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
         return loss, metrics
 
     if loss_context["action_token_mode"] == "parallel_l1":
-        action_values = batch["action_values"].to(device=device, dtype=torch.float32)
+        action_values = batch["action_values"].to(
+            device=device,
+            dtype=torch.float32,
+            non_blocking=non_blocking,
+        )
         predicted_actions = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -919,7 +1037,11 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
         return loss, {"l1_loss": float(loss.detach().item())}
 
     if loss_context["action_token_mode"] == "parallel_gaussian":
-        action_values = batch["action_values"].to(device=device, dtype=torch.float32)
+        action_values = batch["action_values"].to(
+            device=device,
+            dtype=torch.float32,
+            non_blocking=non_blocking,
+        )
         action_output = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -945,7 +1067,11 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
         }
 
     if loss_context["action_token_mode"] == "parallel_t":
-        action_values = batch["action_values"].to(device=device, dtype=torch.float32)
+        action_values = batch["action_values"].to(
+            device=device,
+            dtype=torch.float32,
+            non_blocking=non_blocking,
+        )
         action_output = model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -976,7 +1102,9 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
         labels=labels,
     )
     if loss_context["action_token_mode"] == "bin":
-        action_bin_labels = batch["action_bin_labels"].to(device)
+        action_bin_labels = batch["action_bin_labels"].to(
+            device, non_blocking=non_blocking
+        )
         return outputs.loss, {
             "bin_l1": action_bin_equivalent_l1(
                 outputs.logits,
@@ -1256,6 +1384,7 @@ def _step_eval_checkpoint_only_reason(
 
 def _build_loss_context(config: dict, tokenizer) -> dict:
     action_token_mode = get_action_token_mode(config)
+    dataloader_config = resolve_dataloader_config(config)
     bin_token_ids = None
     action_num_bins = None
     action_bin_min = None
@@ -1296,6 +1425,7 @@ def _build_loss_context(config: dict, tokenizer) -> dict:
         "mtp_lcm_weight": mtp_lcm_weight,
         "student_t_df": student_t_df,
         "continuous_mean_l1_weight": continuous_mean_l1_weight,
+        "dataloader_non_blocking": dataloader_config["non_blocking"],
     }
 
 
@@ -2239,6 +2369,7 @@ def main():
         config["experiment_id"] = experiment_id
 
         normalize_prompt_config(config)
+        dataloader_config = resolve_dataloader_config(config)
         config["dataset_load_partitions"] = resolve_dataset_load_partitions(config)
         resolve_step_eval_skip(config)
         available_variants = get_available_variants(config["env_family"])
@@ -2296,6 +2427,15 @@ def main():
         rank_zero_print(dist_context, f"[train] Using device: {device}")
         rank_zero_print(dist_context, f"[train] Experiment ID: {experiment_id}")
         rank_zero_print(dist_context, f"[train] Resolved action_dim: {action_dim}")
+        rank_zero_print(
+            dist_context,
+            "[train] DataLoader config: "
+            f"num_workers={dataloader_config['num_workers']}, "
+            f"pin_memory={dataloader_config['pin_memory']}, "
+            f"persistent_workers={dataloader_config['persistent_workers']}, "
+            f"prefetch_factor={dataloader_config['prefetch_factor']}, "
+            f"non_blocking={dataloader_config['non_blocking']}",
+        )
         if uses_continuous_actions(config):
             continuous_decoder_info = (
                 "[train] Resolved continuous decoder: "
