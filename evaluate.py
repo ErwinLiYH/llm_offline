@@ -11,6 +11,7 @@ import random
 import time
 import uuid
 import warnings
+from dataclasses import dataclass
 
 import gymnasium as gym
 import gymnasium_robotics  # noqa: F401  registers PointMaze envs
@@ -39,13 +40,29 @@ from utils.action_bins import (
     get_action_num_bins,
     get_action_token_mode,
     uses_action_bins,
+    uses_continuous_actions,
 )
 from utils.chat_template import build_generation_prompt
 from utils.eval_rollout import (
     build_action_rollout_context,
+    generate_valid_continuous_actions_batch,
     generate_valid_action as rollout_generate_valid_action,
     render_policy_prompt,
     validate_history_config,
+)
+from utils.distributed import (
+    all_gather_objects,
+    barrier,
+    broadcast_object,
+    cleanup_distributed,
+    init_distributed_context,
+    resolve_parallel_backend,
+)
+from utils.eval_parallel import (
+    assigned_eval_variants,
+    eval_variant_assignments,
+    resolve_eval_distribute_variants,
+    resolve_eval_parallel_episodes,
 )
 from utils.prompt_loader import load_named_templates, load_template_names, render_template
 from utils.record_format import format_eval_step_text
@@ -55,6 +72,7 @@ from utils.variant_selection import get_available_variants, resolve_selection
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="eval.yaml")
+    parser.add_argument("--parallel_backend", type=str, choices=["single", "ddp"], default=None)
     parser.add_argument("-y", "--yes", action="store_true", help="Automatically confirm strong warnings.")
     return parser.parse_args()
 
@@ -658,6 +676,306 @@ def configure_mujoco_gl(config: dict):
         os.environ.setdefault("MUJOCO_GL", "egl")
 
 
+def _resolve_variant_env_spec(config: dict, variant: str) -> tuple[dict, str, dict]:
+    meta = POINTMAZE_VARIANTS[variant]
+    if get_pointmaze_variant_type(meta) == "local":
+        env_paras = dict(meta["env_paras"])
+        env_id = env_paras.pop("id")
+        env_kwargs = env_paras
+    else:
+        env_id = meta["env_id"]
+        env_kwargs = {}
+    env_kwargs.update(dict(config.get("env_kwargs") or {}))
+    return meta, env_id, env_kwargs
+
+
+def _prepare_video_env_kwargs(config: dict, env_kwargs: dict) -> dict:
+    resolved = dict(env_kwargs)
+    if not bool(config.get("record_video", False)):
+        return resolved
+    render_mode = resolved.get("render_mode")
+    if render_mode != "rgb_array":
+        if render_mode is not None:
+            print(
+                "[eval] record_video=true: overriding "
+                f"env_kwargs.render_mode={render_mode!r} to 'rgb_array'"
+            )
+        resolved["render_mode"] = "rgb_array"
+    return resolved
+
+
+def _validate_eval_action_dim(config: dict, variant: str, env) -> int:
+    action_dim = int(env.action_space.shape[0])
+    checkpoint_action_dim = config.get("action_dim")
+    if checkpoint_action_dim is not None and int(checkpoint_action_dim) != action_dim:
+        raise ValueError(
+            "Checkpoint action_dim does not match evaluation env action space: "
+            f"checkpoint={checkpoint_action_dim}, env={action_dim}, variant={variant}"
+        )
+    return action_dim
+
+
+@dataclass
+class _BatchedEpisodeState:
+    env: object
+    episode_index: int
+    obs: object
+    history_buffer: list[dict]
+    frames: list[np.ndarray] | None
+    episode_dir: str | None
+    episode_return: float = 0.0
+    episode_success: bool = False
+    episode_steps: int = 0
+
+
+def _evaluate_variant_continuous_batched(
+    config: dict,
+    variant: str,
+    model,
+    tokenizer,
+    device: torch.device,
+    template: str,
+    variant_results_dir: str | None,
+    parallel_episodes: int,
+) -> dict:
+    formatter = get_formatter(config["env_family"])
+    meta, env_id, env_kwargs = _resolve_variant_env_spec(config, variant)
+    env_kwargs = _prepare_video_env_kwargs(config, env_kwargs)
+    num_episodes = int(config["num_episodes"])
+    history_num, history_stride = validate_history_config(config)
+    eval_seed, episode_seeds = _resolve_episode_seeds(config, num_episodes)
+    record_video = bool(config.get("record_video", False))
+    video_episode_index_set = set(_resolve_video_episode_indices(config, num_episodes))
+    video_fps = int(config.get("video_fps", 20))
+    record_step_logs = bool(config.get("record_step_logs", True))
+    active_parallel_episodes = min(parallel_episodes, num_episodes)
+
+    envs = []
+    try:
+        for _ in range(active_parallel_episodes):
+            envs.append(gym.make(env_id, **env_kwargs))
+    except Exception:
+        for env in envs:
+            env.close()
+        raise
+
+    episode_returns = [0.0] * num_episodes
+    episode_successes = [False] * num_episodes
+    episode_steps = [0] * num_episodes
+    episode_artifact_dirs: list[str | None] = [None] * num_episodes
+    saved_video_paths: list[str | None] = [None] * num_episodes
+    total_parse_failures = 0
+    total_fallbacks = 0
+    total_action_time = 0.0
+    total_actions = 0
+
+    try:
+        action_dim = _validate_eval_action_dim(config, variant, envs[0])
+        action_shape = envs[0].action_space.shape
+        action_low = getattr(envs[0].action_space, "low", None)
+        action_high = getattr(envs[0].action_space, "high", None)
+        for env in envs[1:]:
+            if env.action_space.shape != action_shape:
+                raise ValueError(
+                    "Parallel eval environments must share one action shape: "
+                    f"expected {action_shape}, got {env.action_space.shape}"
+                )
+
+        action_context = build_action_rollout_context(
+            config=config,
+            tokenizer=tokenizer,
+            action_dim=action_dim,
+            collect_bin_probabilities=False,
+        )
+        _set_episode_rng_seed(eval_seed)
+
+        def start_episode(env, episode_index: int) -> _BatchedEpisodeState:
+            episode_seed = episode_seeds[episode_index]
+            if hasattr(env.action_space, "seed"):
+                env.action_space.seed(episode_seed)
+            obs, _ = env.reset(seed=episode_seed)
+            record_this_episode = (
+                record_video and episode_index in video_episode_index_set
+            )
+            frames = [] if record_this_episode else None
+            episode_dir = None
+            if variant_results_dir is not None:
+                episode_dir = get_episode_dir(variant_results_dir, episode_index)
+                os.makedirs(episode_dir, exist_ok=True)
+                episode_artifact_dirs[episode_index] = episode_dir
+            if frames is not None:
+                _capture_render_frame(env, frames)
+            return _BatchedEpisodeState(
+                env=env,
+                episode_index=episode_index,
+                obs=obs,
+                history_buffer=[],
+                frames=frames,
+                episode_dir=episode_dir,
+            )
+
+        next_episode_index = 0
+        active_states = []
+        for env in envs:
+            active_states.append(start_episode(env, next_episode_index))
+            next_episode_index += 1
+
+        while active_states:
+            prompts = [
+                render_policy_prompt(
+                    formatter=formatter,
+                    template=template,
+                    prompt_vars=meta["prompt_vars"],
+                    obs=state.obs,
+                    history_buffer=state.history_buffer,
+                    history_num=history_num,
+                    history_stride=history_stride,
+                )
+                for state in active_states
+            ]
+            current_obs_vectors = [
+                state.obs["observation"].astype(np.float32)
+                for state in active_states
+            ]
+            action_results = generate_valid_continuous_actions_batch(
+                model=model,
+                tokenizer=tokenizer,
+                device=device,
+                formatter=formatter,
+                prompts=prompts,
+                config=config,
+                action_context=action_context,
+                action_shape=action_shape,
+                action_dim=action_dim,
+                action_low=action_low,
+                action_high=action_high,
+            )
+
+            next_active_states = []
+            for state, prompt, current_obs_vec, action_result in zip(
+                active_states,
+                prompts,
+                current_obs_vectors,
+                action_results,
+                strict=True,
+            ):
+                total_action_time += action_result.action_time_seconds
+                total_actions += action_result.generation_count
+                total_parse_failures += action_result.parse_failures
+                total_fallbacks += action_result.fallback_count
+                generated_text = "\n\n".join(
+                    f"[Attempt {idx + 1}]\n{text}"
+                    for idx, text in enumerate(action_result.generated_attempts)
+                )
+
+                if record_step_logs and state.episode_dir is not None:
+                    write_step_log(
+                        state.episode_dir,
+                        state.episode_steps,
+                        prompt=prompt,
+                        action_text=generated_text,
+                        executed_action=action_result.executed_action_text,
+                        parse_status=action_result.parse_status,
+                        attempt_count=action_result.attempt_count,
+                        raw_continuous_action=action_result.raw_continuous_action,
+                        gaussian_action_mean=action_result.gaussian_action_mean,
+                        gaussian_action_std=action_result.gaussian_action_std,
+                        student_t_action_mean=action_result.student_t_action_mean,
+                        student_t_action_scale=action_result.student_t_action_scale,
+                    )
+
+                obs, reward, terminated, truncated, _ = state.env.step(
+                    action_result.action
+                )
+                state.history_buffer.append(
+                    {
+                        "observation": current_obs_vec,
+                        "action_text": action_result.executed_action_text,
+                    }
+                )
+                state.obs = obs
+                state.episode_return += float(reward)
+                state.episode_steps += 1
+                if terminated:
+                    state.episode_success = True
+                if state.frames is not None:
+                    _capture_render_frame(state.env, state.frames)
+
+                if not (terminated or truncated):
+                    next_active_states.append(state)
+                    continue
+
+                episode_index = state.episode_index
+                episode_returns[episode_index] = state.episode_return
+                episode_successes[episode_index] = state.episode_success
+                episode_steps[episode_index] = state.episode_steps
+                if state.frames is not None and state.episode_dir is not None:
+                    video_ext = str(config.get("video_format", "gif")).lstrip(".")
+                    video_path = os.path.join(
+                        state.episode_dir,
+                        f"rollout.{video_ext}",
+                    )
+                    _save_video(state.frames, video_path, video_fps)
+                    saved_video_paths[episode_index] = video_path
+                    print(f"  [{variant}] saved video: {video_path}")
+
+                if (
+                    (episode_index + 1) % 5 == 0
+                    or episode_index in video_episode_index_set
+                ):
+                    print(
+                        f"  [{variant}] episode {episode_index + 1}/{num_episodes} | "
+                        f"return={state.episode_return:.2f} | "
+                        f"steps={state.episode_steps} | "
+                        f"success={state.episode_success}"
+                    )
+
+                if next_episode_index < num_episodes:
+                    next_active_states.append(
+                        start_episode(state.env, next_episode_index)
+                    )
+                    next_episode_index += 1
+
+            active_states = next_active_states
+    finally:
+        for env in envs:
+            env.close()
+
+    resolved_video_paths = [path for path in saved_video_paths if path is not None]
+    resolved_artifact_dirs = [
+        path for path in episode_artifact_dirs if path is not None
+    ]
+    mean_action_time_ms = (
+        total_action_time / total_actions * 1000
+        if total_actions > 0
+        else 0.0
+    )
+    return {
+        "variant": variant,
+        "num_episodes": num_episodes,
+        "seed": eval_seed,
+        "episode_seeds": episode_seeds,
+        "mean_return": float(np.mean(episode_returns)),
+        "std_return": float(np.std(episode_returns)),
+        "success_rate": float(np.mean(episode_successes)),
+        "mean_episode_steps": float(np.mean(episode_steps)),
+        "std_episode_steps": float(np.std(episode_steps)),
+        "total_parse_failures": total_parse_failures,
+        "total_fallbacks": total_fallbacks,
+        "mean_action_time_ms": round(mean_action_time_ms, 2),
+        "video_path": (
+            resolved_video_paths[0]
+            if len(resolved_video_paths) == 1
+            else None
+        ),
+        "video_paths": resolved_video_paths,
+        "episode_artifact_dirs": resolved_artifact_dirs,
+        "episode_artifacts_dir": variant_results_dir,
+        "eval_parallel_episodes_requested": parallel_episodes,
+        "eval_parallel_episodes_used": active_parallel_episodes,
+    }
+
+
 
 def evaluate_variant(
     config: dict,
@@ -668,21 +986,34 @@ def evaluate_variant(
     template: str,
     variant_results_dir: str | None = None,
 ) -> dict:
+    num_episodes = int(config["num_episodes"])
+    if num_episodes < 1:
+        raise ValueError(f"num_episodes must be >= 1, got {num_episodes}")
+    parallel_episodes = resolve_eval_parallel_episodes(config)
+    if parallel_episodes > 1 and uses_continuous_actions(config):
+        return _evaluate_variant_continuous_batched(
+            config,
+            variant,
+            model,
+            tokenizer,
+            device,
+            template,
+            variant_results_dir,
+            parallel_episodes,
+        )
+    if parallel_episodes > 1:
+        print(
+            f"[eval] action_token_mode={get_action_token_mode(config)!r} does not "
+            "support episode batching yet; falling back to serial rollout."
+        )
+
     formatter = get_formatter(config["env_family"])
-    meta = POINTMAZE_VARIANTS[variant]
-    if get_pointmaze_variant_type(meta) == "local":
-        env_paras = dict(meta["env_paras"])
-        env_id = env_paras.pop("id")
-        env_kwargs = env_paras
-    else:
-        env_id = meta["env_id"]
-        env_kwargs = {}
-    num_episodes = config["num_episodes"]
+    meta, env_id, env_kwargs = _resolve_variant_env_spec(config, variant)
+    num_episodes = int(config["num_episodes"])
     parse_retry_limit = config["parse_retry_limit"]
     history_num, history_stride = validate_history_config(config)
     eval_seed, episode_seeds = _resolve_episode_seeds(config, num_episodes)
 
-    env_kwargs.update(dict(config.get("env_kwargs") or {}))
     record_video = bool(config.get("record_video", False))
     video_episode_indices = _resolve_video_episode_indices(config, num_episodes)
     video_episode_index_set = set(video_episode_indices)
@@ -691,23 +1022,10 @@ def evaluate_variant(
     get_action_token_mode(config)
     collect_bin_probabilities = record_step_logs and uses_action_bins(config)
 
-    if record_video:
-        render_mode = env_kwargs.get("render_mode")
-        if render_mode != "rgb_array":
-            if render_mode is not None:
-                print(
-                    f"[eval] record_video=true: overriding env_kwargs.render_mode={render_mode!r} to 'rgb_array'"
-                )
-            env_kwargs["render_mode"] = "rgb_array"
+    env_kwargs = _prepare_video_env_kwargs(config, env_kwargs)
 
     env = gym.make(env_id, **env_kwargs)
-    action_dim = int(env.action_space.shape[0])
-    checkpoint_action_dim = config.get("action_dim")
-    if checkpoint_action_dim is not None and int(checkpoint_action_dim) != action_dim:
-        raise ValueError(
-            "Checkpoint action_dim does not match evaluation env action space: "
-            f"checkpoint={checkpoint_action_dim}, env={action_dim}, variant={variant}"
-        )
+    action_dim = _validate_eval_action_dim(config, variant, env)
     action_context = build_action_rollout_context(
         config=config,
         tokenizer=tokenizer,
@@ -863,6 +1181,8 @@ def evaluate_variant(
         "video_paths": saved_video_paths,
         "episode_artifact_dirs": episode_artifact_dirs,
         "episode_artifacts_dir": variant_results_dir,
+        "eval_parallel_episodes_requested": parallel_episodes,
+        "eval_parallel_episodes_used": 1,
     }
 
 
@@ -871,72 +1191,146 @@ def main():
     args = parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
-    config = apply_checkpoint_action_config(config)
-    config = apply_checkpoint_prompt_config(config, assume_yes=args.yes)
-    config.setdefault("seed", 1)
+    parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
+    dist_context = init_distributed_context(config, parallel_backend)
+    try:
+        if dist_context.is_main_process:
+            config = apply_checkpoint_action_config(config)
+            config = apply_checkpoint_prompt_config(config, assume_yes=args.yes)
+            config.setdefault("seed", 1)
+        else:
+            config = None
+        config = broadcast_object(config, dist_context)
 
-    eval_selection = resolve_standalone_eval_selection(config)
-    configure_mujoco_gl(config)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[eval] Using device: {device}")
-    print(f"[eval] Loading model from: {config['model_path']}")
-    print(f"[eval] Resolved eval variants: {eval_selection.selected_variants}")
-
-    model, tokenizer = load_from_checkpoint(
-        config["model_path"],
-        load_in_4bit=config.get("load_in_4bit"),
-    )
-    model.to(device)
-    model.eval()
-
-    env_family = config["env_family"]
-    standalone_eval_id = uuid.uuid4().hex[:8]
-    print(f"[eval] Eval ID: {standalone_eval_id}")
-
-    base_results_dir = get_results_base_dir(config)
-    run_results_dir = get_standalone_results_dir(base_results_dir, standalone_eval_id)
-    os.makedirs(run_results_dir, exist_ok=True)
-    prompt_name = config.get("resolved_eval_prompt_name")
-    if prompt_name is None:
-        prompt_name = load_template_names(env_family)[0]
-        config["resolved_eval_prompt_name"] = prompt_name
-    template = load_named_templates(env_family, [prompt_name])[0]
-    config["eval_config_source"] = args.config
-    config["standalone_eval_id"] = standalone_eval_id
-    config["standalone_results_dir"] = run_results_dir
-    config["resolved_eval_variants"] = eval_selection.selected_variants
-    eval_config_path = os.path.join(run_results_dir, "eval_config.yaml")
-    with open(eval_config_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
-    print(f"[eval] Eval config saved to: {eval_config_path}")
-
-    for variant in eval_selection.selected_variants:
-        print(f"\n[eval] Evaluating variant: {variant}")
-        results_dir = get_variant_results_dir(run_results_dir, env_family, variant)
-        os.makedirs(results_dir, exist_ok=True)
-        result_path = os.path.join(results_dir, "result.json")
-
-        result = evaluate_variant(
-            config,
-            variant,
-            model,
-            tokenizer,
-            device,
-            template,
-            variant_results_dir=results_dir,
+        eval_selection = resolve_standalone_eval_selection(config)
+        distribute_variants = resolve_eval_distribute_variants(config)
+        parallel_episodes = resolve_eval_parallel_episodes(config)
+        assignments = eval_variant_assignments(
+            eval_selection.selected_variants,
+            dist_context,
+            distribute_variants=distribute_variants,
         )
-        result["result_path"] = result_path
-        result["prompt_template_name"] = prompt_name
-        print(
-            f"[eval] {variant}: mean_return={result['mean_return']:.4f}, "
-            f"success_rate={result['success_rate']:.2%}, "
-            f"parse_failures={result['total_parse_failures']}, "
-            f"fallbacks={result['total_fallbacks']}"
+        local_variants = assigned_eval_variants(
+            eval_selection.selected_variants,
+            dist_context,
+            distribute_variants=distribute_variants,
         )
-        with open(result_path, "w") as f:
-            json.dump(result, f, indent=2)
-        print(f"[eval] Results saved to: {result_path}")
+        configure_mujoco_gl(config)
+
+        device = dist_context.device
+        if dist_context.is_main_process:
+            print(f"[eval] Using backend: {dist_context.backend}")
+            print(f"[eval] Loading model from: {config['model_path']}")
+            print(f"[eval] Resolved eval variants: {eval_selection.selected_variants}")
+            print(f"[eval] Variant assignments: {assignments}")
+            print(f"[eval] Parallel episodes per rank: {parallel_episodes}")
+
+        model, tokenizer = load_from_checkpoint(
+            config["model_path"],
+            load_in_4bit=config.get("load_in_4bit"),
+        )
+        model.to(device)
+        model.eval()
+
+        env_family = config["env_family"]
+        standalone_eval_id = (
+            uuid.uuid4().hex[:8]
+            if dist_context.is_main_process
+            else None
+        )
+        standalone_eval_id = broadcast_object(
+            standalone_eval_id,
+            dist_context,
+        )
+        if dist_context.is_main_process:
+            print(f"[eval] Eval ID: {standalone_eval_id}")
+
+        base_results_dir = get_results_base_dir(config)
+        run_results_dir = get_standalone_results_dir(
+            base_results_dir,
+            standalone_eval_id,
+        )
+        prompt_name = config.get("resolved_eval_prompt_name")
+        if prompt_name is None:
+            prompt_name = load_template_names(env_family)[0]
+            config["resolved_eval_prompt_name"] = prompt_name
+        template = load_named_templates(env_family, [prompt_name])[0]
+        config["eval_config_source"] = args.config
+        config["standalone_eval_id"] = standalone_eval_id
+        config["standalone_results_dir"] = run_results_dir
+        config["resolved_eval_variants"] = eval_selection.selected_variants
+        config["resolved_eval_variant_assignments"] = assignments
+        config["eval_world_size"] = dist_context.world_size
+        config["eval_parallel_episodes"] = parallel_episodes
+        config["eval_distribute_variants"] = distribute_variants
+        eval_config_path = os.path.join(run_results_dir, "eval_config.yaml")
+        if dist_context.is_main_process:
+            os.makedirs(run_results_dir, exist_ok=True)
+            with open(eval_config_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
+            print(f"[eval] Eval config saved to: {eval_config_path}")
+        barrier(dist_context)
+
+        local_results = []
+        for variant in local_variants:
+            print(
+                f"\n[eval][rank {dist_context.rank}] "
+                f"Evaluating variant: {variant}"
+            )
+            results_dir = get_variant_results_dir(
+                run_results_dir,
+                env_family,
+                variant,
+            )
+            os.makedirs(results_dir, exist_ok=True)
+            result_path = os.path.join(results_dir, "result.json")
+
+            result = evaluate_variant(
+                config,
+                variant,
+                model,
+                tokenizer,
+                device,
+                template,
+                variant_results_dir=results_dir,
+            )
+            result["result_path"] = result_path
+            result["prompt_template_name"] = prompt_name
+            result["eval_rank"] = dist_context.rank
+            result["eval_world_size"] = dist_context.world_size
+            result["eval_distribute_variants"] = distribute_variants
+            with open(result_path, "w") as f:
+                json.dump(result, f, indent=2)
+            print(
+                f"[eval][rank {dist_context.rank}] {variant}: "
+                f"mean_return={result['mean_return']:.4f}, "
+                f"success_rate={result['success_rate']:.2%}, "
+                f"parse_failures={result['total_parse_failures']}, "
+                f"fallbacks={result['total_fallbacks']}"
+            )
+            print(
+                f"[eval][rank {dist_context.rank}] "
+                f"Results saved to: {result_path}"
+            )
+            local_results.append(result)
+
+        gathered_results = all_gather_objects(local_results, dist_context)
+        if dist_context.is_main_process:
+            results_by_variant = {
+                result["variant"]: result
+                for rank_results in gathered_results
+                for result in rank_results
+            }
+            print("\n[eval] Completed variants:")
+            for variant in eval_selection.selected_variants:
+                result = results_by_variant[variant]
+                print(
+                    f"  {variant}: success_rate={result['success_rate']:.2%}, "
+                    f"mean_return={result['mean_return']:.4f}, "
+                    f"rank={result['eval_rank']}"
+                )
+    finally:
+        cleanup_distributed(dist_context)
 
 
 if __name__ == "__main__":

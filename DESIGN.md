@@ -414,7 +414,7 @@ dataset_cache/
 | score 录像 episode 0 | `score_results/score_<score_id>/score=pointmaze-open/episode_0/rollout.gif` |
 | local reference 分数生成 | `score_results/reference_<score_id>/score=pointmaze-local-layout-07/result.json`，并写入 `local_references/pointmaze/local-layout-07.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step 作为唯一目录名，但 step eval 的触发计数在每个 epoch 开始时重置，所以每个 epoch 的第一次触发都在 epoch-local batch `eval_step_interval`。如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存 checkpoint；是否计算 val loss 和运行环境 rollout 再由 `step_eval_skip` 与 epoch-near 规则决定。`step_eval_skip` 默认为 1；大于 1 时每个 epoch 内的 step eval 触发计数从 1 开始，只有可被该值整除的触发执行完整 validation+rollout，其余只保存 `step<N>` checkpoint。如果实际 step eval 位置落在 epoch eval 前后 `0.25 * eval_step_interval` 的 train batch 窗口内，则该 step 也只保存 checkpoint，不跑 val loss/rollout，epoch eval 仍照常执行。分区训练也保持这个 epoch-local 触发与梯度累积时机：触发点在 train shard 中间时立即执行 step eval，不等待 shard 边界。training-time eval 每次调用都使用同一组 episode reset seeds：第 `i` 个 episode 使用 `eval_seed + i`，默认即 `1..eval_num_episodes`，并同步重置 Python/NumPy/Torch RNG 与 action space seed，保证不同 step/epoch eval 间的 episode 初始条件可比。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`；standalone eval 同样使用 `seed + i` 作为 episode reset seeds。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin`、`gaussian_bin` 和 `mtp_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的概率与对应 token id。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step 作为唯一目录名，但 step eval 的触发计数在每个 epoch 开始时重置，所以每个 epoch 的第一次触发都在 epoch-local batch `eval_step_interval`。如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存 checkpoint；是否计算 val loss 和运行环境 rollout 再由 `step_eval_skip` 与 epoch-near 规则决定。`step_eval_skip` 默认为 1；大于 1 时每个 epoch 内的 step eval 触发计数从 1 开始，只有可被该值整除的触发执行完整 validation+rollout，其余只保存 `step<N>` checkpoint。如果实际 step eval 位置落在 epoch eval 前后 `0.25 * eval_step_interval` 的 train batch 窗口内，则该 step 也只保存 checkpoint，不跑 val loss/rollout，epoch eval 仍照常执行。分区训练也保持这个 epoch-local 触发与梯度累积时机：触发点在 train shard 中间时立即执行 step eval，不等待 shard 边界。training-time eval 每次调用都使用同一组 episode reset seeds：第 `i` 个 episode 使用 `eval_seed + i`，默认即 `1..eval_num_episodes`，保证不同 step/epoch eval 间的环境初始条件可比。`eval_parallel_episodes > 1` 时，`parallel_l1` / `parallel_gaussian` / `parallel_t` 会维护多个活跃环境槽位，并把同一步 prompts padding 后合并成一次模型 forward；完成的槽位立即装入后续 episode。其他 action mode 暂时回退串行。连续策略启用 `action_sampling` 时，相同 seed、episode 并行度、world size 和 variant 分配可复现；改变并行度会改变随机数消费顺序，因此轨迹可能变化。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`；standalone eval 同样使用 `seed + i` 作为 episode reset seeds。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin`、`gaussian_bin` 和 `mtp_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的概率与对应 token id。
 
 `score.py` 使用独立路径语义，不嵌入训练期/standalone eval 的 `eval=<...>` 目录。每次运行写入 `<result_root>/<mode>_<score_id>/`，其中每个变种写 `score=<env_family>-<variant>/result.json`，run 根目录写 `summary.json` 和实际使用的 `score_config.yaml`。当 `record_video: true` 时，score rollout 视频保存在对应 `score=<...>/episode_<n>/rollout.<gif|mp4>` 下，并在 variant `result.json` 中记录 `video_path` / `video_paths` / `episode_artifact_dirs`。
 
@@ -446,16 +446,21 @@ dataset_cache/
 
 ```bash
 python evaluate.py --config eval.yaml
+# 多 GPU：每个 rank 处理不同 variants
+torchrun --standalone --nproc_per_node=<num_gpus> evaluate.py --config eval.yaml --parallel_backend ddp
 ```
 
 通过 `eval.yaml` 控制所有评估配置：
 
 ```yaml
 model_path: checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/final
+parallel_backend: single # single | ddp
 env_family: pointmaze
 eval_mode: single       # single | all | except
 variants: [open]         # single: 恰好一个；all: 指定子集或留空表示全部；except: 排除列表
 num_episodes: 20
+eval_parallel_episodes: 4   # continuous action modes 在每个 rank 内合批的活跃 episode 数
+eval_distribute_variants: true  # DDP 下把 variants 轮转分配给不同 ranks
 seed: 1                  # episode reset seeds 为 seed, seed+1, ...
 parse_retry_limit: 3
 # prompt_templete_index: bin  # 可选；standalone eval 只允许一个 prompt 覆盖值
@@ -589,6 +594,7 @@ project/
 ├── local_references/
 └── utils/
     ├── action_bins.py           # action-bin display/model token codec、token selection、gaussian bin loss
+    ├── eval_parallel.py         # eval episode 并行参数与 DDP variant 分配
     ├── eval_rollout.py          # eval/score 共享 prompt、history、动作生成、parse retry、fallback 逻辑
     ├── pointmaze_score.py       # PointMaze score env、reference、fingerprint 和 normalized score 逻辑
     └── prompt_loader.py         # 加载指定环境族的共享模板，返回列表
@@ -638,7 +644,7 @@ micromamba run -n llm_offline python train.py --config config.yaml --tokenize-on
 6. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 7. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 8. **DataLoader 与设备搬运**：`dataloader_config` 统一控制 train/val loader 的 `num_workers`、`pin_memory`、`persistent_workers` 和 `prefetch_factor`，以及 batch tensor 搬到训练设备时的 `non_blocking`。`persistent_workers` / `prefetch_factor` 仅在 `num_workers > 0` 时合法；`pin_memory: true` 配合 `non_blocking: true` 可让 CUDA H2D copy 具备异步重叠条件。DDP 下每个 rank 独立创建相同数量的 DataLoader workers
-9. **DDP 并行训练**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint、validation、训练期 rollout eval、step logs 和视频只由 rank0 写入
+9. **DDP 并行训练与评估**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint 和 validation 仍只由 rank0 执行；`eval_distribute_variants: true` 时训练期和 standalone rollout 把 variants 轮转分配到各 rank，由所属 rank 写对应 result、step logs 和视频，rank0 聚合结果并写 W&B
 10. **W&B 指标**：启用 `wandb_enabled` 时，batch 级日志除 `train/loss` / `train/learning_rate` 外，还记录动作模式相关 loss parts：L1 模式记录 `train/l1`，Gaussian 模式记录 `train/nll`、`train/mae`、`train/std`，其中 `nll` 是 squashed-Gaussian NLL，`mae` 是 `tanh(latent_mean)` 与目标动作的 action-space MAE，`std` 是 state-independent policy std 的均值；Student-t 模式记录 `train/tnll`、`train/mae`、`train/scale`、`train/mean_l1_aux`、`train/mean_l1_weight`、`train/df`，`mtp_bin` 记录 `train/base_loss`、`train/sampler_loss`、`train/lcm_loss`，bin soft-label 模式记录 `train/action_loss`、`train/stop_loss`。所有 action-bin 模式（`bin`、`gaussian_bin`、`mtp_bin`）还记录 `train/bin_l1`，即 greedy 预测 bin center 与目标 bin center 在连续动作单位上的 MAE。DDP 下这些指标先跨 rank 平均，再由 rank0 写入。
 11. **Official normalized score**：`score.py` 复用 `utils/eval_rollout.py` 中的 prompt 渲染、history、模型动作生成、parse retry 和 fallback 逻辑，但结果 schema 与路径独立于 `evaluate.py`。remote PointMaze reference 使用静态 Minari metadata；local reference 使用显式 goal cell、固定 score env fingerprint 和本地 JSON 校验，避免在 goal/horizon/reward type 变动后误复用旧 reference
 12. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动

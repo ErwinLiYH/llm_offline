@@ -2,6 +2,7 @@ model_path: checkpoints/pointmaze/Qwen3.5-0.8B/except-large-dense+local-layout-0
 # if model_path is set to checkpoints/<env_family>/<model_slug>/<selection_tag>/<experiment_id>/<epoch id>, result paths will be more meaningful
 # model_path: Qwen/Qwen3-0.6B
 load_in_4bit: false      # optional override; when omitted, checkpoint eval uses saved training config
+parallel_backend: single # single | ddp; ddp must be launched with torchrun
 result_root: resultsV2     # root directory for standalone eval result outputs
 env_family: pointmaze
 history_num: 0           # number of sampled executed transitions to include in each eval prompt; 0 disables history
@@ -9,6 +10,8 @@ history_stride: 2        # sample every n past executed transitions when buildin
 eval_mode: single       # single | all | except
 variants: local-layout-07       # single: exactly one; all: selected variants or omit for all; except: excluded variants
 num_episodes: 20
+eval_parallel_episodes: 4   # continuous modes only; other action modes fall back to serial rollout
+eval_distribute_variants: true  # DDP only; assign variants across ranks
 seed: 1                  # episode reset seeds are seed, seed+1, ... for every standalone eval
 parse_retry_limit: 3
 record_step_logs: true   # whether to save one txt per eval step under the eval result artifacts directory

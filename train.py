@@ -63,6 +63,7 @@ from utils.action_bins import (
 )
 from utils.distributed import (
     DistributedContext,
+    all_gather_objects,
     barrier,
     broadcast_object,
     cleanup_distributed,
@@ -794,6 +795,8 @@ def _build_training_eval_config(config: dict) -> dict:
         "video_format": config.get("video_format", "gif"),
         "mujoco_gl": config.get("mujoco_gl"),
         "record_step_logs": config.get("record_step_logs", True),
+        "eval_parallel_episodes": config.get("eval_parallel_episodes", 1),
+        "eval_distribute_variants": config.get("eval_distribute_variants", True),
         "action_sampling": config.get("action_sampling", False),
         "action_temperature": config.get("action_temperature", 1.0),
         "action_top_p": config.get("action_top_p", 1.0),
@@ -850,13 +853,34 @@ def _run_eval(
     wandb_logger: WandbLogger | None = None,
     train_env_steps: float | None = None,
     wandb_batch_step: int | None = None,
+    dist_context: DistributedContext | None = None,
 ):
     import gymnasium_robotics  # noqa: F401
     from evaluate import configure_mujoco_gl, evaluate_variant
+    from utils.eval_parallel import (
+        assigned_eval_variants,
+        eval_variant_assignments,
+        resolve_eval_distribute_variants,
+        resolve_eval_parallel_episodes,
+    )
     from utils.prompt_loader import load_named_templates
 
+    if dist_context is None:
+        dist_context = DistributedContext(backend="single", device=device)
     eval_config = _build_training_eval_config(config)
     configure_mujoco_gl(eval_config)
+    distribute_variants = resolve_eval_distribute_variants(eval_config)
+    parallel_episodes = resolve_eval_parallel_episodes(eval_config)
+    assignments = eval_variant_assignments(
+        variants,
+        dist_context,
+        distribute_variants=distribute_variants,
+    )
+    local_variants = assigned_eval_variants(
+        variants,
+        dist_context,
+        distribute_variants=distribute_variants,
+    )
     prompt_name = config["prompt_templete_index"][0]
     template = load_named_templates(config["env_family"], [prompt_name])[0]
     eval_tag = f"step{batch_step}" if eval_type == "step" else f"epoch_{epoch}"
@@ -876,8 +900,17 @@ def _run_eval(
     ensure_mtp_bin_decoder(model, config)
 
     try:
-        for variant in variants:
-            print(f"[eval] {label} | variant: {variant}")
+        if dist_context.is_main_process:
+            print(
+                f"[eval] {label} | variant assignments={assignments} | "
+                f"parallel_episodes={parallel_episodes}"
+            )
+        local_results = []
+        for variant in local_variants:
+            print(
+                f"[eval][rank {dist_context.rank}] "
+                f"{label} | variant: {variant}"
+            )
             results_dir = get_eval_variant_results_dir(
                 config,
                 train_selection_tag,
@@ -911,9 +944,13 @@ def _run_eval(
             result["scheduled_step"] = scheduled_step
             result["scheduled_epoch_step"] = scheduled_epoch_step
             result["checkpoint_path"] = checkpoint_dir
+            result["eval_rank"] = dist_context.rank
+            result["eval_world_size"] = dist_context.world_size
+            result["eval_distribute_variants"] = distribute_variants
 
             print(
-                f"[eval] {variant}: mean_return={result['mean_return']:.4f}, "
+                f"[eval][rank {dist_context.rank}] "
+                f"{variant}: mean_return={result['mean_return']:.4f}, "
                 f"success_rate={result['success_rate']:.2%}, "
                 f"mean_steps={result['mean_episode_steps']:.1f}, "
                 f"train_loss={_format_loss_value(train_loss)}, "
@@ -922,20 +959,45 @@ def _run_eval(
 
             with open(result_path, "w") as f:
                 json.dump(result, f, indent=2)
-            print(f"[eval] Saved: {result_path}")
-            if wandb_logger is not None and wandb_logger.enabled and train_env_steps is not None:
-                wandb_logger.log(
-                    {
-                        **wandb_step_metrics(
-                            env_steps=train_env_steps,
-                            batch_step=wandb_batch_step if wandb_batch_step is not None else batch_step,
-                            optimizer_step=optimizer_step,
-                            epoch=epoch,
-                        ),
-                        f"eval/{variant}/success_rate": float(result["success_rate"]),
-                        f"eval/{variant}/mean_episode_steps": float(result["mean_episode_steps"]),
-                    }
-                )
+            print(
+                f"[eval][rank {dist_context.rank}] Saved: {result_path}"
+            )
+            local_results.append(result)
+
+        gathered_results = all_gather_objects(local_results, dist_context)
+        if dist_context.is_main_process:
+            results_by_variant = {
+                result["variant"]: result
+                for rank_results in gathered_results
+                for result in rank_results
+            }
+            for variant in variants:
+                result = results_by_variant[variant]
+                if (
+                    wandb_logger is not None
+                    and wandb_logger.enabled
+                    and train_env_steps is not None
+                ):
+                    wandb_logger.log(
+                        {
+                            **wandb_step_metrics(
+                                env_steps=train_env_steps,
+                                batch_step=(
+                                    wandb_batch_step
+                                    if wandb_batch_step is not None
+                                    else batch_step
+                                ),
+                                optimizer_step=optimizer_step,
+                                epoch=epoch,
+                            ),
+                            f"eval/{variant}/success_rate": float(
+                                result["success_rate"]
+                            ),
+                            f"eval/{variant}/mean_episode_steps": float(
+                                result["mean_episode_steps"]
+                            ),
+                        }
+                    )
     finally:
         model.train()
         unpatch_continuous_action_forward(model)
@@ -1738,8 +1800,8 @@ def _run_training_partitioned(
 
                         step_train_loss = total_loss / max(num_batches, 1)
                         step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
+                        step_val_loss = math.nan
                         if dist_context.is_main_process:
-                            step_val_loss = math.nan
                             if checkpoint_only_reason is None:
                                 step_val_loss = _run_validation(
                                     raw_model,
@@ -1781,7 +1843,12 @@ def _run_training_partitioned(
                                     f"reason={checkpoint_only_reason}"
                                 )
                             _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
-                            if checkpoint_only_reason is None and should_run_eval:
+                        if checkpoint_only_reason is None:
+                            step_val_loss = broadcast_object(
+                                step_val_loss,
+                                dist_context,
+                            )
+                            if should_run_eval:
                                 _run_eval(
                                     config,
                                     raw_model,
@@ -1802,6 +1869,7 @@ def _run_training_partitioned(
                                     wandb_logger=wandb_logger,
                                     train_env_steps=current_env_steps,
                                     wandb_batch_step=global_batch_step,
+                                    dist_context=dist_context,
                                 )
                         barrier(dist_context)
                         model.train()
@@ -1851,24 +1919,26 @@ def _run_training_partitioned(
         epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
         if dist_context.is_main_process:
             _save_checkpoint(config, raw_model, tokenizer, epoch_ckpt_dir)
-            if should_run_eval:
-                _run_eval(
-                    config,
-                    raw_model,
-                    tokenizer,
-                    device,
-                    selection_tag,
-                    eval_variants,
-                    eval_type="epoch",
-                    train_loss=train_loss,
-                    val_loss=val_loss,
-                    checkpoint_dir=epoch_ckpt_dir,
-                    epoch=epoch,
-                    optimizer_step=optimizer_step,
-                    wandb_logger=wandb_logger,
-                    train_env_steps=current_env_steps,
-                    wandb_batch_step=global_batch_step,
-                )
+        val_loss = broadcast_object(val_loss, dist_context)
+        if should_run_eval:
+            _run_eval(
+                config,
+                raw_model,
+                tokenizer,
+                device,
+                selection_tag,
+                eval_variants,
+                eval_type="epoch",
+                train_loss=train_loss,
+                val_loss=val_loss,
+                checkpoint_dir=epoch_ckpt_dir,
+                epoch=epoch,
+                optimizer_step=optimizer_step,
+                wandb_logger=wandb_logger,
+                train_env_steps=current_env_steps,
+                wandb_batch_step=global_batch_step,
+                dist_context=dist_context,
+            )
         barrier(dist_context)
         model.train()
         unpatch_continuous_action_forward(raw_model)
@@ -2109,8 +2179,8 @@ def _run_training(
 
                     step_train_loss = total_loss / max(num_batches, 1)
                     step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
+                    step_val_loss = math.nan
                     if dist_context.is_main_process:
-                        step_val_loss = math.nan
                         if checkpoint_only_reason is None:
                             step_val_loss = _run_validation(
                                 raw_model,
@@ -2152,7 +2222,12 @@ def _run_training(
                                 f"reason={checkpoint_only_reason}"
                             )
                         _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
-                        if checkpoint_only_reason is None and should_run_eval:
+                    if checkpoint_only_reason is None:
+                        step_val_loss = broadcast_object(
+                            step_val_loss,
+                            dist_context,
+                        )
+                        if should_run_eval:
                             _run_eval(
                                 config,
                                 raw_model,
@@ -2173,6 +2248,7 @@ def _run_training(
                                 wandb_logger=wandb_logger,
                                 train_env_steps=current_env_steps,
                                 wandb_batch_step=global_batch_step,
+                                dist_context=dist_context,
                             )
                     barrier(dist_context)
                     model.train()
@@ -2219,24 +2295,26 @@ def _run_training(
         epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
         if dist_context.is_main_process:
             _save_checkpoint(config, raw_model, tokenizer, epoch_ckpt_dir)
-            if should_run_eval:
-                _run_eval(
-                    config,
-                    raw_model,
-                    tokenizer,
-                    device,
-                    selection_tag,
-                    eval_variants,
-                    eval_type="epoch",
-                    train_loss=train_loss,
-                    val_loss=val_loss,
-                    checkpoint_dir=epoch_ckpt_dir,
-                    epoch=epoch,
-                    optimizer_step=optimizer_step,
-                    wandb_logger=wandb_logger,
-                    train_env_steps=current_env_steps,
-                    wandb_batch_step=global_batch_step,
-                )
+        val_loss = broadcast_object(val_loss, dist_context)
+        if should_run_eval:
+            _run_eval(
+                config,
+                raw_model,
+                tokenizer,
+                device,
+                selection_tag,
+                eval_variants,
+                eval_type="epoch",
+                train_loss=train_loss,
+                val_loss=val_loss,
+                checkpoint_dir=epoch_ckpt_dir,
+                epoch=epoch,
+                optimizer_step=optimizer_step,
+                wandb_logger=wandb_logger,
+                train_env_steps=current_env_steps,
+                wandb_batch_step=global_batch_step,
+                dist_context=dist_context,
+            )
         barrier(dist_context)
         model.train()
         unpatch_continuous_action_forward(raw_model)

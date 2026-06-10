@@ -118,6 +118,8 @@ eval_step_interval: 50000    # global train batch interval for step eval/checkpo
 step_eval_skip: 1         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
 eval_mode: except           # optional; defaults to following train_mode
 eval_variants: [open-dense, umaze-dense, medium-dense, large-dense]  # single: one variant; all: selected variants or omit for all; except: excluded variants
+eval_parallel_episodes: 4   # continuous modes only; batch this many active episodes per rank
+eval_distribute_variants: true  # DDP only; assign different eval variants to different ranks
 eval_env_kwargs:
   continuing_task: false
 

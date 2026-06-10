@@ -23,6 +23,7 @@ from utils.action_bins import (
     get_action_bin_range,
     get_action_num_bins,
     get_action_token_mode,
+    get_tokenizer_backend,
     uses_action_bins,
     uses_continuous_actions,
     uses_gaussian_continuous_actions,
@@ -581,118 +582,19 @@ def generate_valid_action(
     action_high=None,
 ) -> GeneratedActionResult:
     if uses_continuous_actions(config):
-        t0 = time.perf_counter()
-        tokenizer_kwargs = {
-            "text": build_generation_prompt(tokenizer, prompt),
-            "return_tensors": "pt",
-            "add_special_tokens": False,
-        }
-        if config.get("max_length") is not None:
-            tokenizer_kwargs["max_length"] = int(config["max_length"])
-            tokenizer_kwargs["truncation"] = True
-        encoded = tokenizer(
-            **tokenizer_kwargs,
-        )
-        input_ids = encoded.input_ids.to(device)
-        attention_mask = encoded.attention_mask.to(device)
-        with torch.no_grad():
-            predicted = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                continuous_action=True,
-            )
-        action_time_seconds = time.perf_counter() - t0
-        gaussian_mean = None
-        gaussian_std = None
-        student_t_mean = None
-        student_t_scale = None
-        if uses_gaussian_continuous_actions(config):
-            mean = predicted.mean.float()
-            if predicted.latent_mean is None:
-                raise RuntimeError("parallel_gaussian requires latent_mean from the continuous decoder")
-            latent_mean = predicted.latent_mean.float()
-            std = predicted.std.float()
-            gaussian_mean = mean[0].detach().cpu().numpy().astype(np.float32)
-            gaussian_std = std[0].detach().cpu().numpy().astype(np.float32)
-            if action_context.action_generation_config["action_sampling"]:
-                selected = torch.tanh(torch.normal(mean=latent_mean, std=std))
-            else:
-                selected = mean
-        elif uses_student_t_continuous_actions(config):
-            mean = predicted.mean.float()
-            scale = predicted.scale.float()
-            student_t_mean = mean[0].detach().cpu().numpy().astype(np.float32)
-            student_t_scale = scale[0].detach().cpu().numpy().astype(np.float32)
-            if action_context.action_generation_config["action_sampling"]:
-                df = torch.as_tensor(
-                    resolve_student_t_df(config),
-                    dtype=mean.dtype,
-                    device=mean.device,
-                )
-                selected = torch.distributions.StudentT(df, loc=mean, scale=scale).sample()
-            else:
-                selected = mean
-        else:
-            selected = predicted
-        raw_action = selected[0].detach().float().cpu().numpy().astype(np.float32)
-        if raw_action.shape != (action_dim,):
-            raise ValueError(
-                "Continuous action decoder returned unexpected shape: "
-                f"got {raw_action.shape}, expected {(action_dim,)}"
-            )
-        low = (
-            np.full(action_shape, -1.0, dtype=np.float32)
-            if action_low is None
-            else np.asarray(action_low, dtype=np.float32)
-        )
-        high = (
-            np.full(action_shape, 1.0, dtype=np.float32)
-            if action_high is None
-            else np.asarray(action_high, dtype=np.float32)
-        )
-        action = np.clip(raw_action.reshape(action_shape), low, high).astype(np.float32)
-        valid = formatter.validate_action(action.reshape(-1))
-        if valid:
-            parse_status = "success"
-            fallback_count = 0
-        else:
-            action = np.clip(np.zeros(action_shape, dtype=np.float32), low, high).astype(np.float32)
-            parse_status = "fallback"
-            fallback_count = 1
-        executed_action_text = formatter.format_action(action.reshape(-1))
-        return GeneratedActionResult(
-            action=action,
-            executed_action_text=executed_action_text,
-            generated_attempts=[executed_action_text],
-            generated_probability_logs=[],
-            attempt_count=1,
-            parse_status=parse_status,
-            parse_failures=0,
-            fallback_count=fallback_count,
-            action_time_seconds=action_time_seconds,
-            generation_count=1,
-            raw_continuous_action=[float(value) for value in raw_action.tolist()],
-            gaussian_action_mean=(
-                [float(value) for value in gaussian_mean.tolist()]
-                if gaussian_mean is not None
-                else None
-            ),
-            gaussian_action_std=(
-                [float(value) for value in gaussian_std.tolist()]
-                if gaussian_std is not None
-                else None
-            ),
-            student_t_action_mean=(
-                [float(value) for value in student_t_mean.tolist()]
-                if student_t_mean is not None
-                else None
-            ),
-            student_t_action_scale=(
-                [float(value) for value in student_t_scale.tolist()]
-                if student_t_scale is not None
-                else None
-            ),
-        )
+        return generate_valid_continuous_actions_batch(
+            model=model,
+            tokenizer=tokenizer,
+            device=device,
+            formatter=formatter,
+            prompts=[prompt],
+            config=config,
+            action_context=action_context,
+            action_shape=action_shape,
+            action_dim=action_dim,
+            action_low=action_low,
+            action_high=action_high,
+        )[0]
 
     if uses_mtp_bin(config):
         t0 = time.perf_counter()
@@ -856,3 +758,188 @@ def generate_valid_action(
         action_time_seconds=action_time_seconds,
         generation_count=generation_count,
     )
+
+
+def generate_valid_continuous_actions_batch(
+    *,
+    model,
+    tokenizer,
+    device: torch.device,
+    formatter,
+    prompts: list[str],
+    config: dict,
+    action_context: ActionRolloutContext,
+    action_shape: tuple[int, ...],
+    action_dim: int,
+    action_low=None,
+    action_high=None,
+) -> list[GeneratedActionResult]:
+    if not prompts:
+        return []
+    if not uses_continuous_actions(config):
+        raise ValueError(
+            "generate_valid_continuous_actions_batch requires a continuous action mode"
+        )
+
+    t0 = time.perf_counter()
+    tokenizer_kwargs = {
+        "text": [build_generation_prompt(tokenizer, prompt) for prompt in prompts],
+        "return_tensors": "pt",
+        "add_special_tokens": False,
+        "padding": len(prompts) > 1,
+    }
+    if config.get("max_length") is not None:
+        tokenizer_kwargs["max_length"] = int(config["max_length"])
+        tokenizer_kwargs["truncation"] = True
+
+    tokenizer_backend = get_tokenizer_backend(tokenizer)
+    original_padding_side = getattr(tokenizer_backend, "padding_side", None)
+    original_pad_token = getattr(tokenizer_backend, "pad_token", None)
+    needs_temporary_pad_token = len(prompts) > 1 and original_pad_token is None
+    temporary_pad_token = None
+    if needs_temporary_pad_token:
+        temporary_pad_token = getattr(tokenizer_backend, "eos_token", None)
+        if temporary_pad_token is None:
+            raise ValueError(
+                "Batched continuous eval requires tokenizer.pad_token or eos_token"
+            )
+    if original_padding_side is not None:
+        tokenizer_backend.padding_side = "left"
+    if needs_temporary_pad_token:
+        tokenizer_backend.pad_token = temporary_pad_token
+    try:
+        encoded = tokenizer(**tokenizer_kwargs)
+    finally:
+        if original_padding_side is not None:
+            tokenizer_backend.padding_side = original_padding_side
+        if needs_temporary_pad_token:
+            tokenizer_backend.pad_token = None
+
+    input_ids = encoded.input_ids.to(device)
+    attention_mask = encoded.attention_mask.to(device)
+    with torch.no_grad():
+        predicted = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            continuous_action=True,
+        )
+    batch_action_time_seconds = time.perf_counter() - t0
+
+    gaussian_mean = None
+    gaussian_std = None
+    student_t_mean = None
+    student_t_scale = None
+    if uses_gaussian_continuous_actions(config):
+        mean = predicted.mean.float()
+        if predicted.latent_mean is None:
+            raise RuntimeError(
+                "parallel_gaussian requires latent_mean from the continuous decoder"
+            )
+        latent_mean = predicted.latent_mean.float()
+        gaussian_mean = mean
+        gaussian_std = predicted.std.float()
+        if action_context.action_generation_config["action_sampling"]:
+            selected = torch.tanh(torch.normal(mean=latent_mean, std=gaussian_std))
+        else:
+            selected = mean
+    elif uses_student_t_continuous_actions(config):
+        mean = predicted.mean.float()
+        student_t_mean = mean
+        student_t_scale = predicted.scale.float()
+        if action_context.action_generation_config["action_sampling"]:
+            df = torch.as_tensor(
+                resolve_student_t_df(config),
+                dtype=mean.dtype,
+                device=mean.device,
+            )
+            selected = torch.distributions.StudentT(
+                df,
+                loc=mean,
+                scale=student_t_scale,
+            ).sample()
+        else:
+            selected = mean
+    else:
+        selected = predicted
+
+    selected = selected.detach().float().cpu().numpy().astype(np.float32)
+    if selected.shape != (len(prompts), action_dim):
+        raise ValueError(
+            "Continuous action decoder returned unexpected shape: "
+            f"got {selected.shape}, expected {(len(prompts), action_dim)}"
+        )
+
+    low = (
+        np.full(action_shape, -1.0, dtype=np.float32)
+        if action_low is None
+        else np.asarray(action_low, dtype=np.float32)
+    )
+    high = (
+        np.full(action_shape, 1.0, dtype=np.float32)
+        if action_high is None
+        else np.asarray(action_high, dtype=np.float32)
+    )
+    action_time_seconds = batch_action_time_seconds / len(prompts)
+    results = []
+    for batch_idx, raw_action in enumerate(selected):
+        action = np.clip(raw_action.reshape(action_shape), low, high).astype(np.float32)
+        if formatter.validate_action(action.reshape(-1)):
+            parse_status = "success"
+            fallback_count = 0
+        else:
+            action = np.clip(
+                np.zeros(action_shape, dtype=np.float32),
+                low,
+                high,
+            ).astype(np.float32)
+            parse_status = "fallback"
+            fallback_count = 1
+        executed_action_text = formatter.format_action(action.reshape(-1))
+        results.append(
+            GeneratedActionResult(
+                action=action,
+                executed_action_text=executed_action_text,
+                generated_attempts=[executed_action_text],
+                generated_probability_logs=[],
+                attempt_count=1,
+                parse_status=parse_status,
+                parse_failures=0,
+                fallback_count=fallback_count,
+                action_time_seconds=action_time_seconds,
+                generation_count=1,
+                raw_continuous_action=[float(value) for value in raw_action.tolist()],
+                gaussian_action_mean=(
+                    [
+                        float(value)
+                        for value in gaussian_mean[batch_idx].detach().cpu().tolist()
+                    ]
+                    if gaussian_mean is not None
+                    else None
+                ),
+                gaussian_action_std=(
+                    [
+                        float(value)
+                        for value in gaussian_std[batch_idx].detach().cpu().tolist()
+                    ]
+                    if gaussian_std is not None
+                    else None
+                ),
+                student_t_action_mean=(
+                    [
+                        float(value)
+                        for value in student_t_mean[batch_idx].detach().cpu().tolist()
+                    ]
+                    if student_t_mean is not None
+                    else None
+                ),
+                student_t_action_scale=(
+                    [
+                        float(value)
+                        for value in student_t_scale[batch_idx].detach().cpu().tolist()
+                    ]
+                    if student_t_scale is not None
+                    else None
+                ),
+            )
+        )
+    return results

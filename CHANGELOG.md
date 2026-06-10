@@ -4,6 +4,14 @@ description: Session changes — Unsloth integration, evaluate.py fixes, checkpo
 type: project
 ---
 
+## Parallel rollout evaluation（2026-06-10）
+
+- `parallel_l1`、`parallel_gaussian` 和 `parallel_t` eval 新增 `eval_parallel_episodes`，在每个 rank 内维护多个活跃 episode，并将 prompts 合批执行一次 continuous action forward。
+- standalone `evaluate.py` 新增 `--parallel_backend single|ddp`；`eval_distribute_variants: true` 时 variants 按 rank 轮转分配。
+- DDP 训练期 step/epoch rollout 不再局限于 rank0；checkpoint 和 validation 仍由 rank0 完成，`val_loss` 广播后各 rank 执行所属 variants，rank0 聚合结果和 W&B 指标。
+- text/bin/gaussian_bin/mtp_bin 暂不做 episode 合批，在 `eval_parallel_episodes > 1` 时明确回退串行。
+- 连续策略采样在固定 seed、episode 并行度、world size 和 variant 分配下可复现；改变并行配置可能改变采样轨迹。
+
 ## model/policy.py
 
 **训练路径改用 Unsloth：**

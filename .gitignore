@@ -66,6 +66,9 @@ unsloth_compiled_cache/
 
 
 tests/
+!tests/
+tests/*
+!tests/test_eval_parallel.py
 scripts/
 exp_configs/
 local_references/

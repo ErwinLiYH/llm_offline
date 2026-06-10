@@ -89,6 +89,14 @@ def broadcast_object(value: Any, context: DistributedContext, *, src: int = 0) -
     return values[0]
 
 
+def all_gather_objects(value: Any, context: DistributedContext) -> list[Any]:
+    if not context.is_distributed:
+        return [value]
+    values = [None] * context.world_size
+    dist.all_gather_object(values, value)
+    return values
+
+
 def reduce_mean(value: float, context: DistributedContext, device: torch.device) -> float:
     if not context.is_distributed:
         return float(value)
