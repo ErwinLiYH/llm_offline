@@ -29,7 +29,7 @@ train_mode: except        # single | all | except
 train_varients: [open-dense, umaze-dense, medium-dense, large-dense, local-layout-07]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
 
 ## Prompt templates
-prompt_templete_index: ["parallel_full_sensing"]  # prompt file names without .txt used for each training split
+prompt_templete_index: ["parallel_loca_sensing"]  # prompt file names without .txt used for each training split
 
 ## Data
 dataset_workers: 3            # processes for parallel episode tokenization
@@ -118,8 +118,8 @@ eval_step_interval: 50000    # global train batch interval for step eval/checkpo
 step_eval_skip: 1         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
 eval_mode: except           # optional; defaults to following train_mode
 eval_variants: [open-dense, umaze-dense, medium-dense, large-dense]  # single: one variant; all: selected variants or omit for all; except: excluded variants
-eval_parallel_episodes: 4   # continuous modes only; batch this many active episodes per rank
-eval_distribute_variants: true  # DDP only; assign different eval variants to different ranks
+eval_parallel_episodes: 1   # continuous modes only; batch this many active episodes per rank
+eval_distribute_variants: false  # DDP only; assign different eval variants to different ranks
 eval_env_kwargs:
   continuing_task: false
 
@@ -137,4 +137,6 @@ record_all: true         # true = record every eval episode; overrides video_epi
 video_episode_index: 0   # int or list of ints; which eval episodes to record when record_all=false
 video_fps: 30
 video_format: mp4        # gif works out of the box; mp4 requires ffmpeg backend support
+video_save_workers: 1    # 0 = synchronous; >0 = concurrent background encoding threads
+video_save_max_pending: 2  # running + queued tasks per rank; next submit blocks at this limit
 mujoco_gl: egl           # headless MuJoCo recording backend on this machine

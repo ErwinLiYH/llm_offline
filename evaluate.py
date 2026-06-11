@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 import gymnasium as gym
 import gymnasium_robotics  # noqa: F401  registers PointMaze envs
-import imageio.v2 as imageio
 import numpy as np
 import torch
 import yaml
@@ -67,6 +66,7 @@ from utils.eval_parallel import (
 from utils.prompt_loader import load_named_templates, load_template_names, render_template
 from utils.record_format import format_eval_step_text
 from utils.variant_selection import get_available_variants, resolve_selection
+from utils.video_writer import VideoSaveManager
 
 
 def parse_args():
@@ -455,24 +455,6 @@ def _capture_render_frame(env, frames: list[np.ndarray]):
 
 
 
-def _save_video(frames: list[np.ndarray], output_path: str, fps: int):
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    ext = os.path.splitext(output_path)[1].lower()
-    if ext == ".gif":
-        duration_sec = 1.0 / max(fps, 1)
-        imageio.mimsave(output_path, frames, format="GIF", duration=duration_sec)
-        return
-
-    try:
-        imageio.mimsave(output_path, frames, fps=fps)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Failed to save video to {output_path}. mp4 output requires a working ffmpeg backend; "
-            "try video_format='gif' if ffmpeg is unavailable."
-        ) from exc
-
-
-
 def generate_action(
     model,
     tokenizer,
@@ -768,6 +750,7 @@ def _evaluate_variant_continuous_batched(
     total_fallbacks = 0
     total_action_time = 0.0
     total_actions = 0
+    video_saver = VideoSaveManager(config)
 
     try:
         action_dim = _validate_eval_action_dim(config, variant, envs[0])
@@ -915,8 +898,9 @@ def _evaluate_variant_continuous_batched(
                         state.episode_dir,
                         f"rollout.{video_ext}",
                     )
-                    _save_video(state.frames, video_path, video_fps)
+                    video_saver.submit(state.frames, video_path, video_fps)
                     saved_video_paths[episode_index] = video_path
+
                 if next_episode_index < num_episodes:
                     next_active_states.append(
                         start_episode(state.env, next_episode_index)
@@ -927,6 +911,7 @@ def _evaluate_variant_continuous_batched(
     finally:
         for env in envs:
             env.close()
+        video_saver.close()
 
     resolved_video_paths = [path for path in saved_video_paths if path is not None]
     resolved_artifact_dirs = [
@@ -960,6 +945,8 @@ def _evaluate_variant_continuous_batched(
         "episode_artifacts_dir": variant_results_dir,
         "eval_parallel_episodes_requested": parallel_episodes,
         "eval_parallel_episodes_used": active_parallel_episodes,
+        "video_save_workers": video_saver.workers,
+        "video_save_max_pending": video_saver.max_pending,
     }
 
 
@@ -1029,6 +1016,7 @@ def evaluate_variant(
     total_actions = 0
     saved_video_paths = []
     episode_artifact_dirs = []
+    video_saver = VideoSaveManager(config)
 
     for ep_idx in range(num_episodes):
         episode_seed = episode_seeds[ep_idx]
@@ -1134,9 +1122,10 @@ def evaluate_variant(
         if episode_frames is not None and episode_dir is not None:
             video_ext = str(config.get("video_format", "gif")).lstrip(".")
             video_path = os.path.join(episode_dir, f"rollout.{video_ext}")
-            _save_video(episode_frames, video_path, video_fps)
+            video_saver.submit(episode_frames, video_path, video_fps)
             saved_video_paths.append(video_path)
-            print(f"  [{variant}] saved video: {video_path}")
+            status = "queued video save" if video_saver.asynchronous else "saved video"
+            print(f"  [{variant}] {status}: {video_path}")
 
         episode_returns.append(ep_return)
         episode_successes.append(ep_success)
@@ -1149,6 +1138,7 @@ def evaluate_variant(
             )
 
     env.close()
+    video_saver.close()
 
     mean_action_time_ms = (total_action_time / total_actions * 1000) if total_actions > 0 else 0.0
     return {
@@ -1170,6 +1160,8 @@ def evaluate_variant(
         "episode_artifacts_dir": variant_results_dir,
         "eval_parallel_episodes_requested": parallel_episodes,
         "eval_parallel_episodes_used": 1,
+        "video_save_workers": video_saver.workers,
+        "video_save_max_pending": video_saver.max_pending,
     }
 
 

@@ -1,4 +1,5 @@
 import unittest
+import threading
 from types import SimpleNamespace
 from unittest import mock
 
@@ -16,6 +17,7 @@ from utils.eval_rollout import (
     ActionRolloutContext,
     generate_valid_continuous_actions_batch,
 )
+from utils.video_writer import VideoSaveManager
 
 
 class DummyEncoding(dict):
@@ -127,6 +129,75 @@ class DummyEnv:
 
 
 class EvalParallelTest(unittest.TestCase):
+    def test_video_save_manager_submits_without_waiting(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_save(frames, output_path, fps):
+            started.set()
+            release.wait(timeout=5)
+
+        manager = VideoSaveManager(
+            {
+                "video_save_workers": 1,
+                "video_save_max_pending": 2,
+            }
+        )
+        with mock.patch("utils.video_writer.save_video", side_effect=blocking_save):
+            manager.submit([], "/tmp/video.gif", 20)
+            self.assertTrue(started.wait(timeout=1))
+            self.assertTrue(manager.asynchronous)
+            release.set()
+            manager.close()
+
+    def test_video_save_manager_propagates_background_error(self):
+        manager = VideoSaveManager(
+            {
+                "video_save_workers": 1,
+                "video_save_max_pending": 2,
+            }
+        )
+        with mock.patch(
+            "utils.video_writer.save_video",
+            side_effect=RuntimeError("encode failed"),
+        ):
+            manager.submit([], "/tmp/video.gif", 20)
+            with self.assertRaisesRegex(RuntimeError, "encode failed"):
+                manager.close()
+
+    def test_video_save_manager_blocks_only_at_pending_limit(self):
+        started = threading.Event()
+        release = threading.Event()
+        third_submit_returned = threading.Event()
+
+        def blocking_save(frames, output_path, fps):
+            started.set()
+            release.wait(timeout=5)
+
+        manager = VideoSaveManager(
+            {
+                "video_save_workers": 1,
+                "video_save_max_pending": 2,
+            }
+        )
+        with mock.patch("utils.video_writer.save_video", side_effect=blocking_save):
+            manager.submit([], "/tmp/video-1.gif", 20)
+            self.assertTrue(started.wait(timeout=1))
+            manager.submit([], "/tmp/video-2.gif", 20)
+
+            submit_thread = threading.Thread(
+                target=lambda: (
+                    manager.submit([], "/tmp/video-3.gif", 20),
+                    third_submit_returned.set(),
+                )
+            )
+            submit_thread.start()
+            self.assertFalse(third_submit_returned.wait(timeout=0.1))
+            release.set()
+            self.assertTrue(third_submit_returned.wait(timeout=1))
+            submit_thread.join(timeout=1)
+            manager.close()
+
     def test_variant_assignment_round_robin(self):
         context = DistributedContext(
             backend="ddp",

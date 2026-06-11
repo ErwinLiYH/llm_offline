@@ -4,14 +4,6 @@ description: Session changes — Unsloth integration, evaluate.py fixes, checkpo
 type: project
 ---
 
-## Parallel rollout evaluation（2026-06-10）
-
-- `parallel_l1`、`parallel_gaussian` 和 `parallel_t` eval 新增 `eval_parallel_episodes`，在每个 rank 内维护多个活跃 episode，并将 prompts 合批执行一次 continuous action forward。
-- standalone `evaluate.py` 新增 `--parallel_backend single|ddp`；`eval_distribute_variants: true` 时 variants 按 rank 轮转分配。
-- DDP 训练期 step/epoch rollout 不再局限于 rank0；checkpoint 和 validation 仍由 rank0 完成，`val_loss` 广播后各 rank 执行所属 variants，rank0 聚合结果和 W&B 指标。
-- text/bin/gaussian_bin/mtp_bin 暂不做 episode 合批，在 `eval_parallel_episodes > 1` 时明确回退串行。
-- 连续策略采样在固定 seed、episode 并行度、world size 和 variant 分配下可复现；改变并行配置可能改变采样轨迹。
-
 ## model/policy.py
 
 **训练路径改用 Unsloth：**
@@ -1150,6 +1142,17 @@ type: project
 
 ---
 
-## Eval logging for batched episodes（2026-06-11）
+## Parallel rollout evaluation（2026-06-10）
+
+- `parallel_l1`、`parallel_gaussian` 和 `parallel_t` eval 新增 `eval_parallel_episodes`，在每个 rank 内维护多个活跃 episode，并将 prompts 合批执行一次 continuous action forward。
+- standalone `evaluate.py` 新增 `--parallel_backend single|ddp`；`eval_distribute_variants: true` 时 variants 按 rank 轮转分配。
+- DDP 训练期 step/epoch rollout 不再局限于 rank0；checkpoint 和 validation 仍由 rank0 完成，`val_loss` 广播后各 rank 执行所属 variants，rank0 聚合结果和 W&B 指标。
+- text/bin/gaussian_bin/mtp_bin 暂不做 episode 合批，在 `eval_parallel_episodes > 1` 时明确回退串行。
+- 连续策略采样在固定 seed、episode 并行度、world size 和 variant 分配下可复现；改变并行配置可能改变采样轨迹。
+
+---
+
+## Eval logging and background video encoding（2026-06-11）
 
 - continuous action mode 实际启用 episode 合批时，不再逐 episode 打印完成顺序或视频路径，避免不等长 episode 的乱序日志造成误解；调用端仍保留启动/结果路径信息和每个 variant 完成后的成功率汇总。非 continuous mode 回退串行时保留原有逐 episode 日志。
+- eval 和 score 视频编码新增有界后台线程池：`video_save_workers` 控制并发编码线程数，`video_save_max_pending` 限制“正在编码 + 排队”的视频任务总数且不能小于 worker 数。worker 全忙但 pending 未满时仍可继续排队；pending 达到上限后下一次提交阻塞到任一任务完成。variant 返回前统一等待剩余任务并传播保存错误，`video_save_workers: 0` 可恢复同步保存。

@@ -793,6 +793,8 @@ def _build_training_eval_config(config: dict) -> dict:
         "video_episode_index": config.get("video_episode_index", 0),
         "video_fps": config.get("video_fps", 20),
         "video_format": config.get("video_format", "gif"),
+        "video_save_workers": config.get("video_save_workers", 1),
+        "video_save_max_pending": config.get("video_save_max_pending"),
         "mujoco_gl": config.get("mujoco_gl"),
         "record_step_logs": config.get("record_step_logs", True),
         "eval_parallel_episodes": config.get("eval_parallel_episodes", 1),

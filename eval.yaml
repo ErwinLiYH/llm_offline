@@ -28,6 +28,8 @@ record_all: true        # whether to record all episodes (this wil override num_
 video_episode_index: 0   # which eval episode to record (0-based)
 video_fps: 30
 video_format: mp4        # gif works out of the box; mp4 requires ffmpeg backend support
+video_save_workers: 1    # 0 = synchronous; >0 = concurrent background encoding threads
+video_save_max_pending: 2  # running + queued tasks per rank; next submit blocks at this limit
 mujoco_gl: egl           # headless MuJoCo recording backend on this machine
 
 env_kwargs:

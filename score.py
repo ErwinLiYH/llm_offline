@@ -15,7 +15,6 @@ import uuid
 from pathlib import Path
 
 import gymnasium_robotics  # noqa: F401  registers PointMaze envs
-import imageio.v2 as imageio
 import numpy as np
 import torch
 import yaml
@@ -33,6 +32,7 @@ from utils.pointmaze_score import (
 )
 from utils.prompt_loader import load_named_templates, load_template_names
 from utils.variant_selection import get_available_variants, resolve_selection
+from utils.video_writer import VideoSaveManager
 
 
 OFFICIAL_POINTMAZE_DIR = (
@@ -71,6 +71,8 @@ def load_config(args) -> dict:
     config.setdefault("video_episode_index", 0)
     config.setdefault("video_fps", 20)
     config.setdefault("video_format", "gif")
+    config.setdefault("video_save_workers", 1)
+    config.setdefault("video_save_max_pending", 2)
     config["score_config_source"] = args.config
     return config
 
@@ -130,23 +132,6 @@ def _capture_render_frame(env, frames: list[np.ndarray]):
     if frame is None:
         raise ValueError("render() returned None; score recording requires render_mode='rgb_array'")
     frames.append(_normalize_render_frame(frame))
-
-
-def _save_video(frames: list[np.ndarray], output_path: str, fps: int):
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    ext = os.path.splitext(output_path)[1].lower()
-    if ext == ".gif":
-        duration_sec = 1.0 / max(fps, 1)
-        imageio.mimsave(output_path, frames, format="GIF", duration=duration_sec)
-        return
-
-    try:
-        imageio.mimsave(output_path, frames, fps=fps)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Failed to save video to {output_path}. mp4 output requires a working ffmpeg backend; "
-            "try video_format='gif' if ffmpeg is unavailable."
-        ) from exc
 
 
 def _resolve_video_episode_indices(config: dict, num_episodes: int) -> list[int]:
@@ -402,6 +387,7 @@ def score_model_variant(
         score_env_spec,
         render_mode="rgb_array" if record_video else None,
     )
+    video_saver = VideoSaveManager(config)
     try:
         action_dim = int(env.action_space.shape[0])
         checkpoint_action_dim = config.get("action_dim")
@@ -493,9 +479,10 @@ def score_model_variant(
             if episode_frames is not None and episode_dir is not None:
                 video_ext = str(config.get("video_format", "gif")).lstrip(".")
                 video_path = os.path.join(episode_dir, f"rollout.{video_ext}")
-                _save_video(episode_frames, video_path, video_fps)
+                video_saver.submit(episode_frames, video_path, video_fps)
                 saved_video_paths.append(video_path)
-                print(f"  [{variant}] saved video: {video_path}")
+                status = "queued video save" if video_saver.asynchronous else "saved video"
+                print(f"  [{variant}] {status}: {video_path}")
 
             episode_returns.append(ep_return)
             episode_steps.append(ep_steps)
@@ -534,9 +521,12 @@ def score_model_variant(
             "video_paths": saved_video_paths,
             "video_episode_indices": video_episode_indices,
             "episode_artifact_dirs": episode_artifact_dirs,
+            "video_save_workers": video_saver.workers,
+            "video_save_max_pending": video_saver.max_pending,
         }
     finally:
         env.close()
+        video_saver.close()
 
 
 def run_score_mode(config: dict, selection, run_results_dir: str, *, assume_yes: bool) -> tuple[dict, list[dict]]:

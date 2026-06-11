@@ -1,13 +1,13 @@
-model_path: checkpoints/pointmaze/Qwen3-0.6B/except-large-dense+local-layout-07+medium-dense+open-dense+umaze-dense/dfb2837a/step250000
+model_path: checkpoints/pointmaze/Qwen3-0.6B/except-large-dense+local-layout-07+medium-dense+open-dense+umaze-dense/d90c4dd1/final
 # Qwen 0.6B bin: checkpoints/pointmaze/Qwen3-0.6B/except-large-dense+local-layout-07+medium-dense+open-dense+umaze-dense/dfb2837a/step250000
 load_in_4bit: false
 result_root: score_results
 env_family: pointmaze
 mode: score              # score | reference
-eval_mode: single        # single | all | except
+eval_mode: all        # single | all | except
 variants:
-  - medium
-num_episodes: 20
+  - local-layout-07
+num_episodes: 100
 seed: 123
 parse_retry_limit: 3
 assume_yes: true         # true = continue through strong prompt warnings without interactive confirmation
@@ -27,6 +27,8 @@ record_all: true
 video_episode_index: 0
 video_fps: 30
 video_format: mp4
+video_save_workers: 1      # 0 = synchronous; >0 = concurrent background encoding threads
+video_save_max_pending: 2  # running + queued tasks; next submit blocks at this limit
 mujoco_gl: egl
 
 # Local/custom PointMaze score envs require an explicit fixed goal cell.

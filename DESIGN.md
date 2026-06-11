@@ -473,6 +473,8 @@ env_kwargs:
 
 当 continuous action mode 实际使用 `eval_parallel_episodes > 1` 时，不等长 episode 可能乱序完成。合批 rollout 因此关闭逐 episode 进度和逐视频路径输出；调用端仍保留启动信息、结果路径以及每个 variant 完成后的成功率汇总。非 continuous action mode 回退串行后继续使用原有逐 episode 日志。
 
+`evaluate.py` 和 `score.py` 的视频编码默认通过 `video_save_workers: 1` 放到后台线程执行，rollout 在提交后继续。`video_save_workers` 是并发编码线程数；`video_save_max_pending` 统计正在编码与在线程池中排队的视频任务总数，并且不能小于 worker 数。仅线程全部忙碌并不会立即阻塞，只要 pending 数仍低于上限就可以继续排队；达到上限后，下一次提交会等待至少一个任务完成，以免 `record_all` 把全部 frame 长时间保留在内存中。每个 variant 返回和写最终结果前仍会等待其全部视频完成并传播编码错误。设 `video_save_workers: 0` 可恢复同步保存。
+
 ---
 
 ### Local PointMaze data generation
