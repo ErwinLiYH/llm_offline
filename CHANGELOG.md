@@ -1147,3 +1147,9 @@ type: project
 **文档：**
 - `AGENTS.md` 增加 `--tokenize-only` 命令、执行边界、缓存要求和 DDP 复用说明
 - `DESIGN.md` 增加 tokenize-only 工作流及 partition/non-partition 行为说明
+
+---
+
+## Eval logging for batched episodes（2026-06-11）
+
+- continuous action mode 实际启用 episode 合批时，不再逐 episode 打印完成顺序或视频路径，避免不等长 episode 的乱序日志造成误解；调用端仍保留启动/结果路径信息和每个 variant 完成后的成功率汇总。非 continuous mode 回退串行时保留原有逐 episode 日志。

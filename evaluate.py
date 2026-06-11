@@ -917,19 +917,6 @@ def _evaluate_variant_continuous_batched(
                     )
                     _save_video(state.frames, video_path, video_fps)
                     saved_video_paths[episode_index] = video_path
-                    print(f"  [{variant}] saved video: {video_path}")
-
-                if (
-                    (episode_index + 1) % 5 == 0
-                    or episode_index in video_episode_index_set
-                ):
-                    print(
-                        f"  [{variant}] episode {episode_index + 1}/{num_episodes} | "
-                        f"return={state.episode_return:.2f} | "
-                        f"steps={state.episode_steps} | "
-                        f"success={state.episode_success}"
-                    )
-
                 if next_episode_index < num_episodes:
                     next_active_states.append(
                         start_episode(state.env, next_episode_index)
