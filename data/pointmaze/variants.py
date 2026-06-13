@@ -211,17 +211,129 @@ _LOCAL_LAYOUT_09 = [
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  ############
 ]
 
+_LOCAL_LAYOUT_10 = [
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  ############
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],  #..........#
+    [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],  #..#...#...#
+    [1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1],  #..#...#.#.#
+    [1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1],  #....#...#.#
+    [1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1],  #.#..#...#.#
+    [1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1],  #.#....#...#
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],  #..........#
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  ############
+]
+
+_LOCAL_LAYOUT_11 = [
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  ##########
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 1],  #........#
+    [1, 0, 1, 1, 1, 0, 0, 1, 0, 1],  #.###..#.#
+    [1, 0, 0, 0, 1, 0, 0, 1, 0, 1],  #...#..#.#
+    [1, 0, 1, 0, 1, 0, 1, 1, 0, 1],  #.#.#.##.#
+    [1, 0, 1, 0, 0, 0, 1, 0, 0, 1],  #.#...#..#
+    [1, 0, 1, 1, 1, 0, 1, 0, 1, 1],  #.###.#.##
+    [1, 0, 0, 0, 1, 0, 0, 0, 1, 1],  #...#...##
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 1],  #........#
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  ##########
+]
+
+_LOCAL_LAYOUT_12 = [
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  ###########
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],  #.........#
+    [1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1],  #.##.#.##.#
+    [1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1],  #..#.#..#.#
+    [1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 1],  ##.#...#..#
+    [1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1],  #...##.#.##
+    [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],  #.#.......#
+    [1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1],  #.###.###.#
+    [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1],  #...#...#.#
+    [1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1],  ###.###.#.#
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],  #.........#
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  ###########
+]
+
+_LOCAL_LAYOUT_13 = [
+    [1, 1, 1, 1, 1, 1, 1, 1],  ########
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 0, 1, 1, 1, 1, 1, 1],  #.######
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 1, 1, 1, 1, 1, 0, 1],  ######.#
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 0, 1, 1, 1, 1, 1, 1],  #.######
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 1, 1, 1, 1, 1, 0, 1],  ######.#
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 0, 1, 1, 1, 1, 1, 1],  #.######
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 1, 1, 1, 1, 1, 1, 1],  ########
+]
+
+_TEST_LAYOUT_01 = [
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  #############
+    [1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1],  #....#...#..#
+    [1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1],  #.##.#.#.#.##
+    [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1],  #..#...#....#
+    [1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1],  ##.###.####.#
+    [1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1],  #....#...#..#
+    [1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1],  #.##...#...##
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  #############
+]
+
+_TEST_LAYOUT_02 = [
+    [1, 1, 1, 1, 1, 1, 1, 1],  ########
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 0, 1, 1, 1, 1, 0, 1],  #.####.#
+    [1, 0, 0, 0, 0, 1, 0, 1],  #....#.#
+    [1, 1, 1, 1, 0, 1, 0, 1],  ####.#.#
+    [1, 0, 0, 0, 0, 1, 0, 1],  #....#.#
+    [1, 0, 1, 1, 1, 1, 0, 1],  #.####.#
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 1, 1, 1, 1, 0, 1, 1],  #####.##
+    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
+    [1, 0, 1, 1, 1, 1, 0, 1],  #.####.#
+    [1, 1, 1, 1, 1, 1, 1, 1],  ########
+]
+
+_TEST_LAYOUT_03 = [
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  #############
+    [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],  #...#...#...#
+    [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],  #.#.#.#.#.#.#
+    [1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1],  #.#...#...#.#
+    [1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1],  #.###.###.#.#
+    [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],  #...#...#...#
+    [1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1],  ###.###.###.#
+    [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1],  #.....#...#.#
+    [1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1],  #.###.###.#.#
+    [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],  #.#.....#...#
+    [1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1],  #.#.###.###.#
+    [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],  #...#.......#
+    [1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1],  ##.###.###.##
+    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  #############
+]
+
 
 def _build_local_variant(
     *,
-    index: int,
+    index: int | None = None,
+    variant_name: str | None = None,
+    env_name: str | None = None,
     maze_map: list[list[int]],
     structure_desc_en: str,
     structure_desc_zh: str,
 ) -> dict:
+    if variant_name is None:
+        if index is None:
+            raise ValueError("Local variants require index or variant_name")
+        variant_name = f"local-layout-{index:02d}"
+    if env_name is None:
+        env_name = (
+            f"PointMaze Local Layout {index:02d}"
+            if index is not None
+            else f"PointMaze {variant_name}"
+        )
     return {
         "varient_type": "local",
-        "dataset_path": f"local_datasets/pointmaze-local-layout-{index:02d}-v0",
+        "dataset_path": f"local_datasets/pointmaze-{variant_name}-v0",
         "env_paras": {
             "id": "PointMaze_UMaze-v3",
             "maze_map": maze_map,
@@ -231,7 +343,7 @@ def _build_local_variant(
             "max_episode_steps": _default_local_max_episode_steps(maze_map),
         },
         "prompt_vars": _build_prompt_vars(
-            env_name=f"PointMaze Local Layout {index:02d}",
+            env_name=env_name,
             reward_type="sparse",
             maze_map=maze_map,
             structure_desc_en=structure_desc_en,
@@ -390,6 +502,51 @@ POINTMAZE_VARIANTS = {
         maze_map=_LOCAL_LAYOUT_09,
         structure_desc_en="A 14x12 layout with stacked gates, narrow vertical shafts, and a lower connecting corridor.",
         structure_desc_zh="一个 14x12 的布局，包含层叠门洞、狭窄纵向通道和底部连接走廊。",
+    ),
+    "local-layout-10": _build_local_variant(
+        index=10,
+        maze_map=_LOCAL_LAYOUT_10,
+        structure_desc_en="A 9x12 wide layout with staggered vertical barriers and open upper and lower crossings.",
+        structure_desc_zh="一个 9x12 的横向布局，包含错开的纵向隔墙以及上下两条开放连接通道。",
+    ),
+    "local-layout-11": _build_local_variant(
+        index=11,
+        maze_map=_LOCAL_LAYOUT_11,
+        structure_desc_en="A 10x10 square layout with offset wall clusters, short branches, and perimeter bypasses.",
+        structure_desc_zh="一个 10x10 的方形布局，包含错位墙簇、短分支和沿外围绕行的通道。",
+    ),
+    "local-layout-12": _build_local_variant(
+        index=12,
+        maze_map=_LOCAL_LAYOUT_12,
+        structure_desc_en="A 12x11 layout with interlocking corridor sections, alternating gates, and a broad lower passage.",
+        structure_desc_zh="一个 12x11 的布局，包含交错走廊段、交替门洞和较宽的底部通路。",
+    ),
+    "local-layout-13": _build_local_variant(
+        index=13,
+        maze_map=_LOCAL_LAYOUT_13,
+        structure_desc_en="A 14x8 tall serpentine layout with alternating side openings and long horizontal corridors.",
+        structure_desc_zh="一个 14x8 的纵向蛇形布局，包含交替侧向开口和多条长横向走廊。",
+    ),
+    "test-layout-01": _build_local_variant(
+        variant_name="test-layout-01",
+        env_name="PointMaze Test Layout 01",
+        maze_map=_TEST_LAYOUT_01,
+        structure_desc_en="An 8x13 wide test layout with staggered gates, branching corridors, and multiple horizontal crossings.",
+        structure_desc_zh="一个 8x13 的横向测试布局，包含错位门洞、分支走廊和多条横向连接通道。",
+    ),
+    "test-layout-02": _build_local_variant(
+        variant_name="test-layout-02",
+        env_name="PointMaze Test Layout 02",
+        maze_map=_TEST_LAYOUT_02,
+        structure_desc_en="A 12x8 tall test layout with alternating horizontal barriers and two long side passages.",
+        structure_desc_zh="一个 12x8 的纵向测试布局，包含交替横向隔墙和两条较长的侧边通道。",
+    ),
+    "test-layout-03": _build_local_variant(
+        variant_name="test-layout-03",
+        env_name="PointMaze Test Layout 03",
+        maze_map=_TEST_LAYOUT_03,
+        structure_desc_en="A 14x13 large test layout with repeated corridor modules, narrow gates, and lower cross-connections.",
+        structure_desc_zh="一个 14x13 的大型测试布局，包含重复走廊模块、狭窄门洞和底部交叉连接。",
     ),
 }
 
