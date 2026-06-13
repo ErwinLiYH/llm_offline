@@ -2351,6 +2351,41 @@ def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
     print(f"[train] Checkpoint saved to: {checkpoint_dir}")
 
 
+def _print_tokenize_only_step_summary(
+    config: dict,
+    dist_context: DistributedContext,
+    *,
+    train_batches_per_epoch: int,
+) -> None:
+    num_epochs = int(config["num_epochs"])
+    total_train_batch_steps = train_batches_per_epoch * num_epochs
+    global_samples_per_batch_step = int(config["batch_size"]) * dist_context.world_size
+    separator = "=" * 72
+    rank_zero_print(dist_context, separator)
+    rank_zero_print(dist_context, "[tokenize-only] STEP EVAL INTERVAL PLANNING")
+    rank_zero_print(
+        dist_context,
+        f"[tokenize-only] Train batch steps per epoch: {train_batches_per_epoch}",
+    )
+    rank_zero_print(
+        dist_context,
+        f"[tokenize-only] Total train batch steps across {num_epochs} epoch(s): "
+        f"{total_train_batch_steps}",
+    )
+    rank_zero_print(
+        dist_context,
+        "[tokenize-only] eval_step_interval counts the per-epoch batch steps above "
+        "and resets at every epoch.",
+    )
+    rank_zero_print(
+        dist_context,
+        "[tokenize-only] Each batch step processes approximately "
+        f"batch_size({config['batch_size']}) * world_size({dist_context.world_size}) "
+        f"= {global_samples_per_batch_step} global samples.",
+    )
+    rank_zero_print(dist_context, separator)
+
+
 def prepare_tokenized_data(
     config: dict,
     tokenizer,
@@ -2388,6 +2423,11 @@ def prepare_tokenized_data(
             f"train_batches={train_batches}, val_samples={val_samples}, "
             f"val_batches={val_batches}",
         )
+        _print_tokenize_only_step_summary(
+            config,
+            dist_context,
+            train_batches_per_epoch=train_batches,
+        )
         barrier(dist_context)
         return
 
@@ -2407,6 +2447,11 @@ def prepare_tokenized_data(
         "[tokenize-only] Complete: "
         f"partitions=1, train_samples={train_samples}, train_batches={train_batches}, "
         f"val_samples={val_samples}, val_batches={val_batches}",
+    )
+    _print_tokenize_only_step_summary(
+        config,
+        dist_context,
+        train_batches_per_epoch=train_batches,
     )
     barrier(dist_context)
 
