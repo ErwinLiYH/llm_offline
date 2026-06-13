@@ -73,3 +73,6 @@ scripts/
 exp_configs/
 local_references/
 score_results/
+
+*.err
+*.out

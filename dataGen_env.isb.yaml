@@ -1,0 +1,18 @@
+name: d4rl_datagen
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+    # The official generator pins gymnasium-robotics 1.2.4, which requires
+    # mujoco<3 and has no Python 3.12 aarch64 wheel. The repository wrapper is
+    # compatible with the current Farama APIs and only imports the controller.
+    - numpy==2.2.6
+    - scipy==1.15.3
+    - gymnasium==1.2.3
+    - gymnasium-robotics==1.4.2
+    - minari[create]==0.5.3
+    - mujoco==3.6.0
+    - h5py==3.16.0
+    - tqdm==4.67.3
