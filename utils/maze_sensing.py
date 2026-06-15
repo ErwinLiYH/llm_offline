@@ -108,6 +108,27 @@ def _cell_status(maze_map: list[list[object]], row: int, col: int) -> str:
     return "free" if _is_free_cell(maze_map, row, col) else "wall"
 
 
+def _has_new_corner(
+    maze_map: list[list[object]],
+    row: int,
+    col: int,
+    side_d_row: int,
+    side_d_col: int,
+    diagonal_d_row: int,
+    diagonal_d_col: int,
+) -> bool:
+    """Return whether a free side closes into a wall at the next cell."""
+    return (
+        _cell_status(maze_map, row + side_d_row, col + side_d_col) == "free"
+        and _cell_status(
+            maze_map,
+            row + diagonal_d_row,
+            col + diagonal_d_col,
+        )
+        == "wall"
+    )
+
+
 def _neighbor_status(
     maze_map: list[list[object]],
     row: int,
@@ -146,25 +167,21 @@ def _neighbor_status(
     near_bottom = y - bottom_y <= threshold
     near_top = top_y - y <= threshold
 
-    if d_col < 0:
-        if near_top and _cell_status(maze_map, row - 1, col - 1) == "wall":
-            return "wall"
-        if near_bottom and _cell_status(maze_map, row + 1, col - 1) == "wall":
-            return "wall"
-    elif d_col > 0:
-        if near_top and _cell_status(maze_map, row - 1, col + 1) == "wall":
-            return "wall"
-        if near_bottom and _cell_status(maze_map, row + 1, col + 1) == "wall":
-            return "wall"
-    elif d_row < 0:
-        if near_left and _cell_status(maze_map, row - 1, col - 1) == "wall":
-            return "wall"
-        if near_right and _cell_status(maze_map, row - 1, col + 1) == "wall":
-            return "wall"
-    elif d_row > 0:
-        if near_left and _cell_status(maze_map, row + 1, col - 1) == "wall":
-            return "wall"
-        if near_right and _cell_status(maze_map, row + 1, col + 1) == "wall":
+    if d_col:
+        side_checks = ((-1, 0, near_top), (1, 0, near_bottom))
+    else:
+        side_checks = ((0, -1, near_left), (0, 1, near_right))
+
+    for side_d_row, side_d_col, near_side in side_checks:
+        if near_side and _has_new_corner(
+            maze_map,
+            row,
+            col,
+            side_d_row,
+            side_d_col,
+            d_row + side_d_row,
+            d_col + side_d_col,
+        ):
             return "wall"
     return "free"
 

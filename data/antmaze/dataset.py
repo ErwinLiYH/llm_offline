@@ -10,7 +10,7 @@ class AntMazeDataset(PointMazeDataset):
     ENV_FAMILY = "antmaze"
     VARIANTS = ANTMAZE_VARIANTS
     ACTION_DIM = 8
-    CACHE_FORMAT = "antmaze_hash_signature_v1"
+    CACHE_FORMAT = "antmaze_hash_signature_v2"
 
     @classmethod
     def _load_variant_episodes(cls, variant: str):

@@ -762,7 +762,7 @@ class PointMazeDataset(BaseOfflineDataset):
     ENV_FAMILY = "pointmaze"
     VARIANTS = POINTMAZE_VARIANTS
     ACTION_DIM = 2
-    CACHE_FORMAT = "pointmaze_hash_signature_v1"
+    CACHE_FORMAT = "pointmaze_hash_signature_v2"
 
     def __init__(self, variant: str, split: str, samples: list[dict]):
         super().__init__()
@@ -1053,6 +1053,7 @@ class PointMazeDataset(BaseOfflineDataset):
             variant_metadata["env_kwargs"] = meta["env_kwargs"]
         payload = {
             "env_family": cls.ENV_FAMILY,
+            "cache_format": cls.CACHE_FORMAT,
             "cache_kind": "episode_tokenized_samples",
             "variant": config.variant,
             "variant_type": variant_type,

@@ -1177,3 +1177,27 @@ type: project
 - 第一个 step 覆盖初始化文件，后续 step 按顺序追加；每段使用分割线和 `Step 0001` 形式的标题，同时保留原有 prompt、模型输出、执行动作、parse 状态、概率分布和 continuous policy metadata
 - 串行 rollout 与 continuous batched rollout 继续复用同一个写入函数，显著减少长 rollout 产生的小文件和 inode 数量
 - 新增测试验证单文件输出、step 顺序、分割线和旧 `steps/` 目录不再创建
+
+---
+
+## Official AntMaze support and shared maze sensing（2026-06-15）
+
+**官方 D4RL/Minari AntMaze 环境族：**
+- 新增 `antmaze` 环境族，支持 `umaze`、`umaze-diverse`、`medium-play`、`medium-diverse`、`large-play` 和 `large-diverse` 六个官方数据集；当前不包含本地自定义 AntMaze 地图
+- 保持 Minari Gymnasium Robotics v4 数据契约：27 维本体 `observation`、2 维 `achieved_goal` / `desired_goal` 和 8 维 torque action，避免 v5 contact-force observation 改变输入维度
+- 新增 AntMaze formatter、共享 prompt、registry 路由以及 `config.antmaze.yaml` / `eval.antmaze.yaml` 示例；text action 使用 8 个逗号分隔的整数百分位，bin、MTP 和 continuous action mode 复用现有通用路径
+- AntMaze 的 action-bin 与 continuous prompt 各提供 full、location-only、wall-only、no-sensing 四种模板，命名与 PointMaze 的 `bin_*_sensing` / `parallel_*_sensing` 保持一致；示例训练配置默认使用 `parallel_full_sensing`
+- PointMaze dataset/tokenization 管线改为按 `ENV_FAMILY`、variant metadata、formatter 和 `ACTION_DIM` 参数化，AntMaze 通过子类复用 episode split、history、partition cache、多进程 tokenization 和全部 action encoding mode
+- 普通 rollout success 优先读取 `info["success"]`，兼容 continuing maze task 到达目标但不设置 `terminated=True` 的行为
+
+**共享 location / wall sensing：**
+- 新增 `utils/maze_sensing.py`，PointMaze 与 AntMaze 共用连续 xy 到迷宫格、墙格吸附、1-based location sensing 和四方向 wall sensing
+- AntMaze 使用 torso `achieved_goal` 作为当前位置，并按官方 `maze_size_scaling=4.0` 计算当前格、目标格和历史格子；PointMaze 继续使用 point-mass observation 和对应地图缩放
+- AntMaze 官方 eval map 可能与离线采集地图不同，包括 UMaze 中间墙朝向；rollout 创建环境后会从 `env.unwrapped.maze` 刷新 prompt map、visual map 和缩放参数
+- 墙角风险逻辑调整为：移动方向邻格为 free 时，只有当前位置落入某一侧 threshold、当前同侧格为 free、而前方同侧对角格为 wall，才把该方向报告为 `wall`
+- 新逻辑会预警十字路口进入窄道时新出现的墙角，但连续直道侧墙不会让贴边前进持续误报 `wall`；正前方邻格为墙时仍直接报告 `wall`
+- PointMaze 与 AntMaze cache format 升级到 v2，并将 cache format 纳入 tokenization signature，避免复用包含旧 wall sensing 文本的缓存
+
+**验证：**
+- 新增六个官方 AntMaze train/eval 地图坐标转换、prompt sensing、history、8 维 action、bin/continuous tokenization 和 eval prompt-map 刷新测试
+- 新增四个移动方向、左右两侧共 8 种新墙角/连续墙对照测试，并保留正前方真实墙阻塞测试

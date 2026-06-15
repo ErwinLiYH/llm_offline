@@ -16,6 +16,7 @@ from data.antmaze.dataset import AntMazeDataset
 from data.antmaze.variants import ANTMAZE_VARIANTS
 from data.base_dataset import DatasetBuildRequest
 from data.registry import get_action_dim, resolve_variant_env_spec
+from utils.maze_sensing import _neighbor_status
 from utils.prompt_loader import load_template_map, render_template
 from utils.variant_selection import get_available_variants
 
@@ -70,6 +71,116 @@ def _make_test_tokenizer(path: str):
 
 
 class AntMazeSupportTest(unittest.TestCase):
+    def test_corner_risk_distinguishes_new_corners_from_continuous_walls(self):
+        row = 3
+        col = 3
+        cases = [
+            ("up-left", -1, 0, 0, -1, -1, -1, -0.45, 0.0),
+            ("up-right", -1, 0, 0, 1, -1, 1, 0.45, 0.0),
+            ("down-left", 1, 0, 0, -1, 1, -1, -0.45, 0.0),
+            ("down-right", 1, 0, 0, 1, 1, 1, 0.45, 0.0),
+            ("left-top", 0, -1, -1, 0, -1, -1, 0.0, 0.45),
+            ("left-bottom", 0, -1, 1, 0, 1, -1, 0.0, -0.45),
+            ("right-top", 0, 1, -1, 0, -1, 1, 0.0, 0.45),
+            ("right-bottom", 0, 1, 1, 0, 1, 1, 0.0, -0.45),
+        ]
+
+        for (
+            name,
+            d_row,
+            d_col,
+            side_d_row,
+            side_d_col,
+            diagonal_d_row,
+            diagonal_d_col,
+            x,
+            y,
+        ) in cases:
+            with self.subTest(case=name):
+                maze_map = [[0 for _ in range(7)] for _ in range(7)]
+                maze_map[row + diagonal_d_row][col + diagonal_d_col] = 1
+
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                    ),
+                    "wall",
+                )
+
+                maze_map[row + side_d_row][col + side_d_col] = 1
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                    ),
+                    "free",
+                )
+
+                maze_map[row + side_d_row][col + side_d_col] = 0
+                maze_map[row + diagonal_d_row][col + diagonal_d_col] = 0
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                    ),
+                    "free",
+                )
+
+                maze_map[row + diagonal_d_row][col + diagonal_d_col] = 1
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=0.0,
+                        y=0.0,
+                    ),
+                    "free",
+                )
+
+    def test_direct_neighbor_wall_still_blocks_all_directions(self):
+        row = 3
+        col = 3
+        for name, d_row, d_col in (
+            ("up", -1, 0),
+            ("down", 1, 0),
+            ("left", 0, -1),
+            ("right", 0, 1),
+        ):
+            with self.subTest(direction=name):
+                maze_map = [[0 for _ in range(7)] for _ in range(7)]
+                maze_map[row + d_row][col + d_col] = 1
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=0.0,
+                        y=0.0,
+                    ),
+                    "wall",
+                )
+
     def test_registry_contains_official_d4rl_variants(self):
         self.assertEqual(
             get_available_variants("antmaze"),
