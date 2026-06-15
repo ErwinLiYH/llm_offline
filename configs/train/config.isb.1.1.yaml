@@ -26,7 +26,7 @@ distributed_timeout_seconds: 7200 # allow rank0 time to build missing shared cac
 
 ## Variant selection
 train_mode: except        # single | all | except
-train_varients: [open-dense, umaze-dense, medium-dense, large-dense, local-layout-07]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
+train_varients: [open-dense, umaze-dense, medium-dense, large-dense, local-layout-07, test-layout-01, test-layout-02, test-layout-03]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
 
 ## Prompt templates
 prompt_templete_index: ["parallel_loca_sensing"]  # prompt file names without .txt used for each training split
@@ -34,7 +34,7 @@ prompt_templete_index: ["parallel_loca_sensing"]  # prompt file names without .t
 ## Data
 dataset_workers: 16           # rank0 processes for parallel episode tokenization/cache construction
 dataset_cache_dir: /scratch/u6mx/yl1118.u6mx/dataset_cache  # cache tokenized dataset to disk; comment out to disable
-dataset_load_partitions: 2    # >1 splits train tokenized data into episode shards; requires dataset_cache_dir
+dataset_load_partitions: 3    # >1 splits train tokenized data into episode shards; requires dataset_cache_dir
 dataloader_config:
   num_workers: 0              # prepare train/val batches in the training process
   pin_memory: false           # match the pre-dataloader_config behavior
@@ -114,11 +114,11 @@ lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
 ## Epoch-level and optional step-level environment evaluation
 eval_num_episodes: 20    # rollout episodes per variant per training eval; 0 = disable rollout eval
 eval_seed: 64             # episode reset seeds are eval_seed, eval_seed+1, ... for every eval
-eval_step_interval: 7000    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
+eval_step_interval: 9000    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
 step_eval_skip: 1         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
 eval_mode: except           # optional; defaults to following train_mode
-eval_variants: [open-dense, umaze-dense, medium-dense, large-dense]  # single: one variant; all: selected variants or omit for all; except: excluded variants
-eval_parallel_episodes: 8   # continuous modes only; batch this many active episodes per rank
+eval_variants: [open-dense, umaze-dense, medium-dense, large-dense, local-layout-07]  # single: one variant; all: selected variants or omit for all; except: excluded variants
+eval_parallel_episodes: 10   # continuous modes only; batch this many active episodes per rank
 eval_distribute_variants: true  # DDP only; assign different eval variants to different ranks
 eval_env_kwargs:
   continuing_task: false

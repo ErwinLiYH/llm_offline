@@ -6,9 +6,9 @@
 #SBATCH --chdir=/home/u6mx/yl1118.u6mx/llm_offline
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=72
-#SBATCH --mem=115G
-#SBATCH --time=20:00:00
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=36G
+#SBATCH --time=5:00:00
 
 set -euo pipefail
 
@@ -19,8 +19,8 @@ echo "Node: $(hostname)"
 
 /home/u6mx/yl1118.u6mx/miniforge3/bin/conda run --no-capture-output -n d4rl_datagen \
     python -u local_varient_gen.py \
-    --variants local-layout-01 local-layout-02 local-layout-03 local-layout-04 local-layout-05 local-layout-06 local-layout-07 local-layout-08 local-layout-09 \
-    --num-workers 20 \
+    --variants local-layout-10 local-layout-11 local-layout-12 local-layout-13 test-layout-01 test-layout-02 test-layout-03 \
+    --num-workers 10 \
     --target-episodes 5000 \
     --post-success-hold-steps 100 \
     --overwrite \

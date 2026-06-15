@@ -5,8 +5,8 @@ model_name: Qwen/Qwen3-0.6B
 load_in_4bit: false       # true = enable Unsloth 4-bit quantized loading
 max_length: 1024
 
-checkpoint_root: checkpoints  # root directory for saved checkpoints
-result_root: resultsV2        # root directory for train/eval result outputs
+checkpoint_root: /scratch/u6mx/yl1118.u6mx/checkpoints  # root directory for saved checkpoints
+result_root: /scratch/u6mx/yl1118.u6mx/resultsV2        # root directory for train/eval result outputs
 # experiment_id: ab12cd34     # optional; if omitted, auto-generated per run
 
 ## Weights & Biases logging
@@ -33,14 +33,14 @@ prompt_templete_index: ["parallel_full_sensing"]  # prompt file names without .t
 
 ## Data
 dataset_workers: 16           # rank0 processes for parallel episode tokenization/cache construction
-dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable
+dataset_cache_dir: /scratch/u6mx/yl1118.u6mx/dataset_cache  # cache tokenized dataset to disk; comment out to disable
 dataset_load_partitions: 2    # >1 splits train tokenized data into episode shards; requires dataset_cache_dir
 dataloader_config:
-  num_workers: 4              # worker processes used to prepare train/val batches
-  pin_memory: true            # stage CPU tensors in pinned memory for faster CUDA copies
-  persistent_workers: true    # keep workers alive across epochs; requires num_workers > 0
-  prefetch_factor: 2          # batches prefetched per worker; requires num_workers > 0
-  non_blocking: true          # request asynchronous CPU-to-GPU tensor copies
+  num_workers: 0              # prepare train/val batches in the training process
+  pin_memory: false           # match the pre-dataloader_config behavior
+  persistent_workers: false   # no DataLoader worker processes to keep alive
+  prefetch_factor: null       # prefetching requires num_workers > 0
+  non_blocking: false         # use synchronous CPU-to-GPU tensor copies
 train_data_ratio: 0.95         # train split ratio inside the sampled episode pool; val gets the remainder
 episode_keep_num: 1000           # max episodes sampled before train/val splitting; if dataset has fewer, use all
 balance_variant_episode_count: false  # true = align each selected variant's sampled episode pool to the smallest target
