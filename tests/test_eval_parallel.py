@@ -131,6 +131,24 @@ class DummyEnv:
 
 
 class EvalParallelTest(unittest.TestCase):
+    def test_prepare_eval_prompt_vars_uses_formatter_hook(self):
+        formatter = SimpleNamespace(
+            prepare_eval_prompt_vars=mock.Mock(return_value={"maze_map": "eval"})
+        )
+        env = object()
+
+        resolved = evaluate._prepare_eval_prompt_vars(
+            formatter,
+            {"maze_map": "train"},
+            env,
+        )
+
+        self.assertEqual(resolved, {"maze_map": "eval"})
+        formatter.prepare_eval_prompt_vars.assert_called_once_with(
+            {"maze_map": "train"},
+            env,
+        )
+
     def test_video_save_manager_submits_without_waiting(self):
         started = threading.Event()
         release = threading.Event()

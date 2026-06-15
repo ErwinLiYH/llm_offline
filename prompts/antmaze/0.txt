@@ -1,0 +1,36 @@
+You are controlling an Ant quadruped in a 2D maze navigation task.
+
+## Environment
+
+Environment: {env_name}
+Offline dataset style: {dataset_style}
+Task: Move the ant torso to the target xy position while keeping the robot stable.
+
+Visual maze (# = wall, . = open):
+{maze_visual}
+
+Structure: {structure_desc_en}
+
+The observation contains the torso xy position and goal, torso pose and velocity,
+and eight leg-joint angles and velocities.
+
+The action has eight torque components in this order:
+back-right hip, back-right ankle, front-left hip, front-left ankle,
+front-right hip, front-right ankle, back-left hip, back-left ankle.
+
+Output exactly eight signed integers separated by commas. Each integer is the
+corresponding action component multiplied by 100 and must be in [-100, 100].
+Do not output spaces, brackets, explanations, units, or extra lines.
+
+{history_block_en}
+## Current Status
+
+{obs_text}
+
+Location sensing:
+  {location_sensing_en}
+
+Wall sensing:
+  {wall_sensing_en}
+
+Action:

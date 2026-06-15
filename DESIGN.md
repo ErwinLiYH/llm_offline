@@ -7,7 +7,7 @@
 
 ### 技术栈
 - **基座模型**：`Qwen/Qwen3-0.6B`（HuggingFace 加载，LoRA finetune）
-- **数据集**：D4RL PointMaze 系列（`minari` 库加载）
+- **数据集**：D4RL PointMaze 与 AntMaze 系列（`minari` 库加载）
 - **训练框架**：PyTorch + HuggingFace Transformers + PEFT（LoRA）+ Unsloth（训练加速）
 
 **依赖版本约束：**
@@ -140,6 +140,25 @@ POINTMAZE_VARIANTS = {
 
 ---
 
+### AntMaze 官方 D4RL 变种
+
+`data/antmaze/variants.py` 注册 Minari 当前提供的 6 个官方数据集：
+
+| variant | Minari dataset | rollout env |
+|---|---|---|
+| `umaze` | `D4RL/antmaze/umaze-v1` | `AntMaze_UMaze-v4` |
+| `umaze-diverse` | `D4RL/antmaze/umaze-diverse-v1` | `AntMaze_UMaze-v4` |
+| `medium-play` | `D4RL/antmaze/medium-play-v1` | `AntMaze_Medium-v4` |
+| `medium-diverse` | `D4RL/antmaze/medium-diverse-v1` | `AntMaze_Medium_Diverse_GR-v4` |
+| `large-play` | `D4RL/antmaze/large-play-v1` | `AntMaze_Large-v4` |
+| `large-diverse` | `D4RL/antmaze/large-diverse-v1` | `AntMaze_Large_Diverse_GR-v4` |
+
+AntMaze 必须保持 Minari metadata 中的 v4 数据契约：`observation` 为 27 维本体状态，另有 2 维 `achieved_goal` / `desired_goal`，action 为 8 维关节 torque。不能直接替换成 v5 默认环境，因为 v5 默认包含 contact-force observation，会改变输入维度。每个 variant 的 `env_kwargs` 保存官方 eval map、稀疏奖励、horizon 对应的 continuing/reset 语义；训练期或 standalone eval 可用配置中的 `env_kwargs` 覆盖 `continuing_task`。官方 eval map 与离线采集 map 不保证相同，例如 UMaze 的中间墙朝向不同，因此 rollout 创建环境后会从 `env.unwrapped.maze` 刷新 prompt 使用的 map、visual map 和 `maze_size_scaling`。
+
+当前只支持上述官方地图，不包含本地自定义 AntMaze 数据生成或地图注册。`score.py` 仍是 PointMaze-only；AntMaze 当前支持训练和普通 return/success-rate rollout eval。
+
+---
+
 ### Prompt 设计
 
 #### 核心原则（通用，适用于所有环境族）
@@ -148,9 +167,10 @@ POINTMAZE_VARIANTS = {
 - 每个 variant 只在 `data/<env_family>/variants.py` 中维护自己的 `prompt_vars`，提供环境名、迷宫拓扑、迷宫可视化、结构说明等差异化信息
 - 训练时使用 `prompt_templete_index` 指定的共享模板名，因此每个 timestep 产生“所选模板数”条训练样本
 - 训练期评估默认使用训练 prompt 列表中的第一个模板；standalone eval 默认使用 checkpoint config 中记录的第一个训练 prompt。`eval.yaml` 可用单个 `prompt_templete_index` 覆盖 standalone eval prompt；若覆盖值不在 checkpoint 训练 prompt 列表中，`evaluate.py` 会强警告并要求输入 `Y`，或通过 `-y/--yes` 自动确认
-- 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的动态字段；PointMaze 当前动态字段至少包括 `obs_text`、`location_sensing_en/zh`、`wall_sensing_en/zh`、`history_block_en/zh`
+- 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的动态字段；PointMaze 与 AntMaze 当前都提供 `obs_text`、`location_sensing_en/zh`、`wall_sensing_en/zh` 和 history block
 - PointMaze action-bin prompt 使用 `bin_full_sensing`、`bin_loca_sensing`、`bin_wall_sensing`、`bin_no_sensing`，由 `bin`、`gaussian_bin` 和 `mtp_bin` 共享
 - PointMaze 连续动作 prompt 使用去模式化命名：`parallel_full_sensing`、`parallel_loca_sensing`、`parallel_wall_sensing`、`parallel_no_sensing`，由 `parallel_l1`、`parallel_gaussian` 和 `parallel_t` 共享；当前 `config.yaml` 默认使用 `parallel_full_sensing` + `parallel_l1`
+- AntMaze 使用 `0`（text）、`bin`（bin/gaussian_bin/mtp_bin）和 `parallel`（parallel_l1/parallel_gaussian/parallel_t）三个共享模板
 - 共享模板当前按“静态 Env Description 在前、动态 Current Status 在后”的结构组织，以提高前缀 cache 命中率
 - 渲染出的共享模板文本只负责环境/任务语义；最终输入序列会再通过 tokenizer 自带的 `chat_template` 包装成 `user` / `assistant` 对话格式
 
@@ -178,6 +198,14 @@ Action:
 - `format_obs(obs, meta)` 负责生成 `obs_text` 与动态 `location_sensing_en/zh`、`wall_sensing_en/zh`
 - `format_history(history_entries, meta)` 负责生成可选历史块 `history_block_en/zh`
 - 当历史块存在时，历史条目按时间从早到晚排列：第一条是最早采样到的历史 step，最后一条是当前 step 之前最近的采样历史 step
+
+#### AntMaze 当前实现
+
+- `format_obs` 展开 torso xy/goal、torso height、四元数、8 个 joint angle、torso linear/angular velocity 和 8 个 joint velocity
+- `format_obs` 使用 `achieved_goal` 作为 torso xy，以 `maze_size_scaling=4.0` 映射到 1-based 行列，并与 PointMaze 复用 `utils/maze_sensing.py` 的 location/wall sensing
+- text action 是 8 个逗号分隔的整数百分位，actuator 顺序为 back-right hip/ankle、front-left hip/ankle、front-right hip/ankle、back-left hip/ankle
+- history 仅保留过去 torso xy、对应格子和实际执行动作，避免把 27 维本体状态重复塞入 prompt
+- `data/antmaze/dataset.py` 复用参数化后的 goal-maze episode cache/tokenization 管线，因此支持 episode split、partition cache、history、全部 action token mode 和多进程 tokenization
 
 ### 数据处理
 
@@ -578,7 +606,7 @@ project/
 │   │   ├── dataset.py           # 数据加载、tokenize（每 timestep 展开5条）
 │   │   └── formatting.py        # obs 序列化/附加 prompt 变量、text action 生成与解析、action 校验
 │   ├── base_dataset.py          # 抽象基类，定义通用接口（load、format、tokenize）
-│   └── registry.py              # 环境族注册表，按 env_family 路由 dataset 和 formatter
+│   └── registry.py              # 环境族注册表，路由 dataset、formatter、variants 和 eval env spec
 ├── model/
 │   └── policy.py                # 模型加载（从 config 读取 model_name）、LoRA 设置
 ├── train.py                     # 训练入口，读取 config 决定训练模式
@@ -613,7 +641,7 @@ def validate_action(action) -> bool:
     """校验解析出的 action 是否在合法范围内"""
 ```
 
-`registry.py` 同时暴露 `get_dataset(env_family)` 和 `get_formatter(env_family)`，让 `train.py` 和 `evaluate.py` 只需传入 `env_family` 即可自动路由。新增环境族时在 `data/` 下新建子文件夹（含 `formatting.py`）并在 `registry.py` 注册一行即可，`train.py` 和 `evaluate.py` 无需改动。
+`registry.py` 暴露 dataset、formatter、variant metadata 和 eval env spec 查询，让 `train.py` 和 `evaluate.py` 只需传入 `env_family` 即可自动路由。新增环境族时在 `data/` 下新建子文件夹（含 `formatting.py`）并在 `registry.py` 注册一行即可，`train.py` 和 `evaluate.py` 无需改动。
 
 仅预构建当前训练选择对应的 train/val tokenized cache，不进入训练：
 
@@ -634,10 +662,12 @@ micromamba run -n llm_offline python train.py --config config.yaml --tokenize-on
 3. **每 timestep 按所选 prompt 展开**：`dataset.py` 构造数据时对每个 timestep 遍历 `prompt_templete_index` 指定的共享模板名，生成对应数量的独立样本
 4. **Action generation / parsing**：默认 rollout 使用 greedy decoding。若 `action_sampling: true`，text 模式使用普通采样并继续依赖 parse retry / fallback 兜底；bin / gaussian_bin 模式只允许 action-bin token 参与生成，并固定生成 `action_dim` 个 token，避免 EOS 或普通 token 导致动作维度缺失。`mtp_bin` 不调用 `generate()`，而是使用 generation prompt、AQT embedding、sampler head 和 Quadratic Decoding 路径得到固定长度 action bins；若 `mtp_quadratic_decoding: false`，eval 只执行第一次 MTP forward，直接信任 NTP + AQT/sampler proposal，不再 verifier。当前 `mtp_bin` eval 要求 `action_sampling: false`。`parallel_l1`、`parallel_gaussian` 和 `parallel_t` 模式也不调用 `generate()`，而是由 decoder 在 generation prompt embedding 后追加可训练 `action_queries`，使用自定义 attention mask 保持 prompt 内 causal、action query 可看完整非 padding prompt 且 action query 之间双向可见，再读取最后的 query hidden states，经 OFT-style MLPResNet action head 并行预测当前步动作；`action_head_dropout` 只加在该 MLP head 的 hidden path 中，训练模式生效，eval/rollout 下由 `model.eval()` 自动关闭。`parallel_l1` 输出确定性连续动作；`parallel_gaussian` 输出 latent mean，并使用一个 shape 为 `[action_dim]` 的 state-independent `gaussian_log_std` 参数定义 tanh-squashed Gaussian 策略，`action_sampling: true` 时执行 `tanh(Normal(latent_mean, std))` 采样，`false` 时执行 `tanh(latent_mean)`；`parallel_t` 输出 Student-t 策略的 `mean/log_scale`，`action_sampling: true` 时从对应策略采样、`false` 时执行 mean，并在进入环境前按 action bounds clip。text 模式通过 `registry.get_formatter(env_family)` 获取该族的 `parse_action` 解析 decoded 文本；bin 模式不进入环境族 formatter，而是通过共享 `ActionBinCodec` 从 generated/AQT-selected token ids 反查 action bin，再映射回连续动作，因此 `new_token: false` 不依赖低频 token 的 decoded 文本。生成式模式都会调用环境族 `validate_action` 做合法性校验。若解析失败或校验不通过，最多重新让模型生成 `parse_retry_limit` 次（来自 `eval.yaml`）；`mtp_bin` 输出受 ABT 限制，单次 direct forward 失败时直接 fallback。若达到上限仍失败，fallback 到零向量。全程记录 parse 失败次数和 fallback 次数作为辅助指标。
    - *PointMaze text 模式实现*：正则解析紧凑的百分位整数格式 `35,-72`，除以 100 后校验各分量在 `[-1, 1]` 内，clip 后返回；bin 模式由共享 action-bin codec 从 generated/AQT-selected token ids 解析
+   - *AntMaze text 模式实现*：解析 8 个逗号分隔的整数百分位并映射为 8 维 torque；bin/continuous 模式共享现有通用实现
    - 其他环境族在各自 `formatting.py` 中实现 text action 解析和校验；bin action 的 token-id 解析保持共享
 5. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text；`mtp_bin` tokenize generation prompt 和 action prefix，并为 AQT 位置保存 `action_query_*` metadata；连续模式只 tokenize generation prompt，存储连续 `action_values`，不拼 assistant action 文本；`parallel_l1` 用 L1 BC；`parallel_gaussian` 先将目标动作 clamp 到 `(-1, 1)` 内并做 `atanh(action)`，再用 latent-space Gaussian NLL 加 tanh change-of-variables correction 训练 bounded likelihood；`parallel_t` 用 Student-t NLL BC，并可通过 `continuous_mean_l1_weight` 额外加入 `alpha * L1(mean, action)`。若配置 `action_head_weight_decay`，训练 optimizer 只对 continuous action MLP head 内的 Linear weight 使用该 AdamW weight decay；LLM/LoRA、`action_queries`、Gaussian `gaussian_log_std`、bias 和 LayerNorm 参数不受影响
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text`、动态 `location_sensing_en/zh` 和动态 `wall_sensing_en/zh`
-   - `location_sensing` 会直接给出当前位置格子和目标格子；`wall_sensing` 会给出上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数。坐标先按 PointMaze 的 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。四邻方向在靠近 cell 边界时采用保守二值判断：如果邻格本身 free，但当前位置贴近对应边界且对角格为墙，则该方向报告为 `wall`。
+   - *AntMaze 实现*：严格校验 27 维 v4 本体 observation，并结合 `achieved_goal` / `desired_goal` 渲染 torso、姿态、关节和速度状态；训练使用离线数据地图，rollout 使用实例化 eval env 的真实地图
+   - `location_sensing` 会直接给出当前位置格子和目标格子；`wall_sensing` 会给出上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数。坐标由 `utils/maze_sensing.py` 按 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。四邻方向在靠近 cell 边界时采用保守二值判断：如果邻格本身 free，但当前位置贴近对应边界且对角格为墙，则该方向报告为 `wall`。
 6. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 7. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 8. **DataLoader 与设备搬运**：`dataloader_config` 统一控制 train/val loader 的 `num_workers`、`pin_memory`、`persistent_workers` 和 `prefetch_factor`，以及 batch tensor 搬到训练设备时的 `non_blocking`。`persistent_workers` / `prefetch_factor` 仅在 `num_workers > 0` 时合法；`pin_memory: true` 配合 `non_blocking: true` 可让 CUDA H2D copy 具备异步重叠条件。DDP 下每个 rank 独立创建相同数量的 DataLoader workers

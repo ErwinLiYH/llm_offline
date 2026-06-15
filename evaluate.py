@@ -14,13 +14,12 @@ import warnings
 from dataclasses import dataclass
 
 import gymnasium as gym
-import gymnasium_robotics  # noqa: F401  registers PointMaze envs
+import gymnasium_robotics  # noqa: F401  registers maze environments
 import numpy as np
 import torch
 import yaml
 
-from data.registry import get_formatter
-from data.pointmaze.variants import POINTMAZE_VARIANTS, get_pointmaze_variant_type
+from data.registry import get_formatter, resolve_variant_env_spec
 from model.continuous_action import (
     resolve_action_head_dropout,
     resolve_action_head_num_blocks,
@@ -668,16 +667,24 @@ def configure_mujoco_gl(config: dict):
 
 
 def _resolve_variant_env_spec(config: dict, variant: str) -> tuple[dict, str, dict]:
-    meta = POINTMAZE_VARIANTS[variant]
-    if get_pointmaze_variant_type(meta) == "local":
-        env_paras = dict(meta["env_paras"])
-        env_id = env_paras.pop("id")
-        env_kwargs = env_paras
-    else:
-        env_id = meta["env_id"]
-        env_kwargs = {}
+    meta, env_id, env_kwargs = resolve_variant_env_spec(
+        config["env_family"],
+        variant,
+    )
     env_kwargs.update(dict(config.get("env_kwargs") or {}))
     return meta, env_id, env_kwargs
+
+
+def _history_observation(formatter, obs) -> np.ndarray:
+    if hasattr(formatter, "format_history_observation"):
+        return np.asarray(formatter.format_history_observation(obs), dtype=np.float32)
+    return np.asarray(obs["observation"], dtype=np.float32)
+
+
+def _prepare_eval_prompt_vars(formatter, prompt_vars: dict, env) -> dict:
+    if hasattr(formatter, "prepare_eval_prompt_vars"):
+        return formatter.prepare_eval_prompt_vars(prompt_vars, env)
+    return prompt_vars
 
 
 def _prepare_video_env_kwargs(config: dict, env_kwargs: dict) -> dict:
@@ -763,6 +770,11 @@ def _evaluate_variant_continuous_batched(
 
     try:
         action_dim = _validate_eval_action_dim(config, variant, envs[0])
+        prompt_vars = _prepare_eval_prompt_vars(
+            formatter,
+            meta["prompt_vars"],
+            envs[0],
+        )
         action_shape = envs[0].action_space.shape
         action_low = getattr(envs[0].action_space, "low", None)
         action_high = getattr(envs[0].action_space, "high", None)
@@ -817,7 +829,7 @@ def _evaluate_variant_continuous_batched(
                 render_policy_prompt(
                     formatter=formatter,
                     template=template,
-                    prompt_vars=meta["prompt_vars"],
+                    prompt_vars=prompt_vars,
                     obs=state.obs,
                     history_buffer=state.history_buffer,
                     history_num=history_num,
@@ -825,8 +837,8 @@ def _evaluate_variant_continuous_batched(
                 )
                 for state in active_states
             ]
-            current_obs_vectors = [
-                state.obs["observation"].astype(np.float32)
+            current_history_observations = [
+                _history_observation(formatter, state.obs)
                 for state in active_states
             ]
             action_results = generate_valid_continuous_actions_batch(
@@ -844,10 +856,10 @@ def _evaluate_variant_continuous_batched(
             )
 
             next_active_states = []
-            for state, prompt, current_obs_vec, action_result in zip(
+            for state, prompt, current_history_observation, action_result in zip(
                 active_states,
                 prompts,
-                current_obs_vectors,
+                current_history_observations,
                 action_results,
                 strict=True,
             ):
@@ -876,19 +888,19 @@ def _evaluate_variant_continuous_batched(
                         student_t_action_scale=action_result.student_t_action_scale,
                     )
 
-                obs, reward, terminated, truncated, _ = state.env.step(
+                obs, reward, terminated, truncated, info = state.env.step(
                     action_result.action
                 )
                 state.history_buffer.append(
                     {
-                        "observation": current_obs_vec,
+                        "observation": current_history_observation,
                         "action_text": action_result.executed_action_text,
                     }
                 )
                 state.obs = obs
                 state.episode_return += float(reward)
                 state.episode_steps += 1
-                if terminated:
+                if bool(info.get("success", terminated)):
                     state.episode_success = True
                 if state.frames is not None:
                     _capture_render_frame(state.env, state.frames)
@@ -1009,6 +1021,7 @@ def evaluate_variant(
 
     env = gym.make(env_id, **env_kwargs)
     action_dim = _validate_eval_action_dim(config, variant, env)
+    prompt_vars = _prepare_eval_prompt_vars(formatter, meta["prompt_vars"], env)
     action_context = build_action_rollout_context(
         config=config,
         tokenizer=tokenizer,
@@ -1056,13 +1069,13 @@ def evaluate_variant(
             prompt = render_policy_prompt(
                 formatter=formatter,
                 template=template,
-                prompt_vars=meta["prompt_vars"],
+                prompt_vars=prompt_vars,
                 obs=obs,
                 history_buffer=history_buffer,
                 history_num=history_num,
                 history_stride=history_stride,
             )
-            current_obs_vec = obs["observation"].astype(np.float32)
+            current_history_observation = _history_observation(formatter, obs)
             action_result = rollout_generate_valid_action(
                 model=model,
                 tokenizer=tokenizer,
@@ -1114,7 +1127,7 @@ def evaluate_variant(
             obs, reward, terminated, truncated, info = env.step(action)
             history_buffer.append(
                 {
-                    "observation": current_obs_vec,
+                    "observation": current_history_observation,
                     "action_text": executed_action_text,
                 }
             )
@@ -1125,7 +1138,7 @@ def evaluate_variant(
             ep_return += float(reward)
             ep_steps += 1
 
-            if terminated:
+            if bool(info.get("success", terminated)):
                 ep_success = True
 
         if episode_frames is not None and episode_dir is not None:

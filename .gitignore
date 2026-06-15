@@ -69,6 +69,7 @@ tests/
 !tests/
 tests/*
 !tests/test_eval_parallel.py
+!tests/test_antmaze_support.py
 scripts/
 exp_configs/
 local_references/

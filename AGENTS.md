@@ -4,7 +4,7 @@ This file provides guidance to Codex when working with code in this repository.
 
 ## Project Overview
 
-LLM Offline RL: behavior cloning on D4RL PointMaze environments using a fine-tuned LLM via LoRA. Per-family formatters convert observations into prompt render variables; the model predicts actions as compact integer hundredths such as `35,-72`, as discrete action bins displayed as `<act_03><act_48>`, via `mtp_bin` AQT-based multi-token action-bin prediction, via `parallel_l1` continuous regression, via `parallel_gaussian` tanh-squashed Gaussian policy BC with state-independent log std, or via `parallel_t` Student-t policy BC with learned action queries. In the default bin path, display tokens map to reused low-frequency tokenizer IDs rather than newly added special tokens.
+LLM Offline RL: behavior cloning on D4RL PointMaze and AntMaze environments using a fine-tuned LLM via LoRA. Per-family formatters convert observations into prompt render variables; the model predicts actions as compact integer hundredths such as `35,-72`, as discrete action bins displayed as `<act_03><act_48>`, via `mtp_bin` AQT-based multi-token action-bin prediction, via `parallel_l1` continuous regression, via `parallel_gaussian` tanh-squashed Gaussian policy BC with state-independent log std, or via `parallel_t` Student-t policy BC with learned action queries. In the default bin path, display tokens map to reused low-frequency tokenizer IDs rather than newly added special tokens.
 
 Main design reference: `DESIGN.md` (Chinese).
 
@@ -41,7 +41,7 @@ Key files:
 - `train.py`: entry point; reads `config.yaml`
 - `evaluate.py`: entry point; reads `eval.yaml`
 - `score.py`: official-style PointMaze normalized score entry point; reads `score.yaml`
-- `data/registry.py`: routes `env_family` to dataset + formatter
+- `data/registry.py`: routes `env_family` to dataset, formatter, variants, and eval env specs
 - `data/base_dataset.py`: abstract dataset interface
 - `data/<env_family>/variants.py`: variant metadata
 - `data/<env_family>/dataset.py`: load data, expand to one sample per selected prompt template per timestep, tokenize
@@ -54,10 +54,12 @@ Key files:
 - `utils/eval_parallel.py`: eval episode-count validation and DDP variant-to-rank assignment
 - `utils/eval_rollout.py`: shared prompt rendering, history sampling, model action generation, parse retry, fallback, and action-bin eval logging helpers
 - `utils/experiment_config.py`: save per-experiment runtime config snapshots
+- `utils/maze_sensing.py`: shared maze xy-to-cell conversion plus location and conservative four-neighbor wall sensing
 - `utils/pointmaze_score.py`: PointMaze score env specs, official remote reference scores, local reference validation, env fingerprints, and normalized score helpers
 - `utils/prompt_loader.py`: load shared prompt templates for an environment family
 - `utils/variant_selection.py`: resolve `single | all | except` plus variant lists into concrete training/eval sets
 - `prompts/<env_family>/<prompt_name>.txt`: shared prompt templates for that family; the filename stem is the prompt name
+- `config.antmaze.yaml` / `eval.antmaze.yaml`: official D4RL AntMaze train/eval examples
 
 Data flow:
 - dataset
@@ -79,7 +81,13 @@ To add a new environment family:
 
 ## Implementation Notes
 
-- Formatting is per environment family. There is no shared global formatting helper.
+- Observation/action formatting remains per environment family; common maze geometry and sensing live in `utils/maze_sensing.py`.
+- AntMaze supports the six official Minari D4RL datasets: `umaze`, `umaze-diverse`, `medium-play`, `medium-diverse`, `large-play`, and `large-diverse`. Local/custom AntMaze maps are not implemented.
+- AntMaze intentionally uses the Minari metadata's Gymnasium Robotics v4 env specs. The offline contract is a 27-dimensional proprioceptive `observation`, 2D `achieved_goal`, 2D `desired_goal`, and 8-dimensional torque action. Do not silently switch rollout to v5 defaults, which include contact-force observations and change the input shape.
+- AntMaze prompt templates are `0` for text actions, `bin` for `bin` / `gaussian_bin` / `mtp_bin`, and `parallel` for `parallel_l1` / `parallel_gaussian` / `parallel_t`.
+- AntMaze text actions use eight comma-separated integer hundredths in actuator order: back-right hip/ankle, front-left hip/ankle, front-right hip/ankle, back-left hip/ankle.
+- AntMaze emits the same `location_sensing_*` / `wall_sensing_*` fields as PointMaze, using torso `achieved_goal` xy and `maze_size_scaling: 4.0`; history entries include torso xy, 1-based row/column, and the executed action.
+- Official AntMaze evaluation maps can differ from the offline collection maps, including UMaze wall orientation. During rollout, `evaluate.py` lets the AntMaze formatter refresh prompt map, visual map, and scaling from the instantiated environment before rendering sensing fields.
 - Shared prompt templates render the environment/task text only; final training/eval token sequences are built through the model tokenizer's native `chat_template`, not by plain-text concatenation.
 - Qwen3.5 models loaded through Unsloth may return a `Qwen3VLProcessor` instead of a plain tokenizer. The outer processor does not expose tokenizer mutation methods such as `add_special_tokens`; unwrap `processor.tokenizer` first. In this repo, use `utils.action_bins.get_tokenizer_backend(...)` before adding action tokens, resizing embeddings, selecting reused action token ids, or looking up action token ids.
 - `evaluate.py` uses `registry.get_formatter(env_family)` for text-mode `parse_action` and all-mode `validate_action`; bin-mode parsing is centralized in `utils.action_bins.ActionBinCodec` and uses generated/AQT-selected token ids; `mtp_bin` and continuous modes skip `generate()` and run direct forward paths.
@@ -100,11 +108,12 @@ To add a new environment family:
 - `action_token_mode` supports `text`, `bin`, `gaussian_bin`, `mtp_bin`, `parallel_l1`, `parallel_gaussian`, and `parallel_t`. In bin modes, `new_token: false` (default) reuses stable low-frequency tokenizer IDs from the end of the base vocabulary for model training/generation while logs and jsonl display `<act_00>` ... according to `action_num_bins`; `mtp_bin` uses trainable Action Query Token embeddings from `mtp_bin_decoder.pt`, plus a sampler head and LCM loss. `mtp_quadratic_decoding: false` disables eval-time verifier looping and trusts the first MTP NTP+AQT proposal directly. In continuous modes, training stores prompt-only tokens plus `action_values` and appends learned action queries inside the model; `parallel_l1` regresses actions with L1 loss, `parallel_gaussian` outputs a latent Gaussian mean plus a state-independent `gaussian_log_std` parameter, squashes actions through `tanh`, and trains with tanh-squashed Gaussian NLL on `atanh(action)` targets; `parallel_t` outputs `mean/log_scale` and trains Student-t NLL controlled by `student_t_df`. `gaussian_log_std_init` initializes the learned Gaussian log std, while `gaussian_log_std_min/max` clamp the log std used for loss and rollout. `parallel_t` can add `continuous_mean_l1_weight * L1(mean, action)` as an auxiliary mean-fitting term. `action_head_dropout` applies only inside the continuous action MLP head and is disabled by `model.eval()` during rollout/eval. `action_head_weight_decay`, when configured, creates optimizer param groups so only continuous action MLP Linear weights receive AdamW weight decay; LLM/LoRA parameters, learned `action_queries`, Gaussian `gaussian_log_std`, bias, and LayerNorm parameters do not.
 - With `new_token: false`, do not resize embeddings for action bins and do not automatically add `embed_tokens` / `lm_head` to LoRA target modules. With `new_token: true`, the tokenizer must register the special action tokens, resize model embeddings if needed, and train the new input/output rows. AQT embeddings are never tokenizer tokens; they are stored separately in `mtp_bin_decoder.pt`.
 - `gaussian_bin` stores per-token `action_bin_labels` in the dataset and trains action token positions with Gaussian soft labels controlled by `action_soft_label_sigma`; optional `action_soft_label_radius` restricts this CE to center +/- n bins so out-of-window action tokens receive no gradient. Chat-template stop tokens still train with ordinary CE.
-- Parallel/continuous action dimension is resolved by `registry.get_action_dim(env_family, variants)` after variant selection and saved into checkpoint `config.yaml`; PointMaze returns `2`, and future env families should expose their own flat action dimension.
-- PointMaze `format_obs` also emits dynamic `location_sensing_en` / `location_sensing_zh` and `wall_sensing_en` / `wall_sensing_zh`. Location sensing describes the current cell and goal cell using 1-based row/column indexing from the top-left corner. Wall sensing describes four-neighbor `wall/free` status. Coordinate-to-cell conversion first applies the PointMaze floor/map-center formula; if that raw cell is a wall, it snaps to the nearest free cell center so prompts do not report wall cells as positions. Directional `wall/free` sensing is conservative near cell boundaries: if a free neighbor would be entered while close to a boundary whose diagonal cell is a wall, that direction is reported as `wall`.
+- Parallel/continuous action dimension is resolved by `registry.get_action_dim(env_family, variants)` after variant selection and saved into checkpoint `config.yaml`; PointMaze returns `2` and AntMaze returns `8`.
+- PointMaze and AntMaze `format_obs` emit dynamic `location_sensing_en` / `location_sensing_zh` and `wall_sensing_en` / `wall_sensing_zh`. Location sensing describes the current cell and goal cell using 1-based row/column indexing from the top-left corner. Wall sensing describes four-neighbor `wall/free` status. Shared coordinate-to-cell conversion applies the floor/map-center formula with the family map scaling; if that raw cell is a wall, it snaps to the nearest free cell center so prompts do not report wall cells as positions. Directional `wall/free` sensing is conservative near cell boundaries: if a free neighbor would be entered while close to a boundary whose diagonal cell is a wall, that direction is reported as `wall`.
 - PointMaze history entries contain the past step's start position plus executed action. Positions are shown as both grid coordinates and continuous `x/y`.
 - If `history_num > 0`, training samples history from the same episode using indices `t-1`, `t-1-history_stride`, ... and renders entries in chronological order. The first step in each episode has no history block.
 - Standalone eval and training-time eval maintain an online history buffer of actually executed actions, including fallback zero actions on parse failure.
+- Rollout success is accumulated from `info["success"]` when available, because continuing maze tasks may reach the goal without setting `terminated=True`.
 - Standalone eval and training-time eval reset each episode with deterministic seeds. Standalone `eval.yaml seed: S` and training `config.yaml eval_seed: S` make episode `i` use reset seed `S + i`; result JSON records `seed` and `episode_seeds`.
 - `eval_parallel_episodes > 1` batches active episodes into one model forward for `parallel_l1`, `parallel_gaussian`, and `parallel_t`. Finished slots are immediately reused for later episode indices. Other action modes print a fallback notice and remain serial.
 - When `eval_parallel_episodes > 1` is actually used by a continuous action mode, the batched rollout suppresses per-episode progress and video-path prints because episodes complete out of order. The caller still prints normal startup/result-path messages and a summary after each variant completes; non-continuous modes that fall back to serial rollout retain serial per-episode logging.

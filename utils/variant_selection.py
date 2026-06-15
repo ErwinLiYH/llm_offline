@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from data.pointmaze.variants import POINTMAZE_VARIANTS
+from data.registry import get_variants
 
 
 @dataclass(frozen=True)
@@ -15,9 +15,7 @@ class VariantSelection:
 
 
 def get_available_variants(env_family: str) -> list[str]:
-    if env_family == "pointmaze":
-        return list(POINTMAZE_VARIANTS.keys())
-    raise ValueError(f"Unsupported env_family for variant resolution: {env_family!r}")
+    return list(get_variants(env_family).keys())
 
 
 

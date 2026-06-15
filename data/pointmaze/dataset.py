@@ -3,6 +3,7 @@ import multiprocessing
 import os
 import pickle
 import hashlib
+import importlib
 import math
 import signal
 import time
@@ -20,7 +21,6 @@ import torch
 from transformers import AutoTokenizer
 
 from data.base_dataset import BaseOfflineDataset, DatasetBuildRequest, TensorSample, VariantEpisodeStats
-from data.pointmaze import formatting
 from data.pointmaze.variants import (
     POINTMAZE_VARIANTS,
     get_pointmaze_variant_type,
@@ -51,6 +51,7 @@ _POINTMAZE_WORKER_TOKENIZER = None
 _POINTMAZE_WORKER_CONFIGS: dict[str, dict] | None = None
 _POINTMAZE_WORKER_SHARED_CONFIG: dict | None = None
 _POINTMAZE_WORKER_ACTION_CODEC = None
+_POINTMAZE_WORKER_FORMATTER = None
 _POINTMAZE_WORKER_DONE = 0
 _POINTMAZE_WORKER_START_TIME = 0.0
 _LINUX_PR_SET_PDEATHSIG = 1
@@ -63,7 +64,7 @@ def _pointmaze_action_config(config: dict) -> dict:
         "action_bin_min": config["action_bin_min"],
         "action_bin_max": config["action_bin_max"],
         "new_token": config.get("new_token", False),
-        "action_dim": config.get("action_dim", 2),
+        "action_dim": config["action_dim"],
         "mtp_k": config.get("mtp_k"),
     }
 
@@ -98,6 +99,7 @@ def _init_pointmaze_tokenization_worker(progress_initializer, progress_initargs:
     global _POINTMAZE_WORKER_CONFIGS
     global _POINTMAZE_WORKER_SHARED_CONFIG
     global _POINTMAZE_WORKER_ACTION_CODEC
+    global _POINTMAZE_WORKER_FORMATTER
     global _POINTMAZE_WORKER_DONE
     global _POINTMAZE_WORKER_START_TIME
 
@@ -111,6 +113,8 @@ def _init_pointmaze_tokenization_worker(progress_initializer, progress_initargs:
         _POINTMAZE_WORKER_SHARED_CONFIG["tokenizer_name_or_path"],
         trust_remote_code=True,
     )
+    env_family = str(_POINTMAZE_WORKER_SHARED_CONFIG.get("env_family", "pointmaze"))
+    _POINTMAZE_WORKER_FORMATTER = importlib.import_module(f"data.{env_family}.formatting")
     action_config = _pointmaze_action_config(_POINTMAZE_WORKER_SHARED_CONFIG)
     if uses_action_bins(action_config):
         _POINTMAZE_WORKER_ACTION_CODEC = get_action_bin_codec(
@@ -124,7 +128,9 @@ def _init_pointmaze_tokenization_worker(progress_initializer, progress_initargs:
 
 def _format_pointmaze_action_texts(action: np.ndarray, config: dict) -> dict:
     if not uses_action_bins(config):
-        action_text = formatting.format_action(action)
+        if _POINTMAZE_WORKER_FORMATTER is None:
+            raise RuntimeError("Goal-maze formatter was not initialized.")
+        action_text = _POINTMAZE_WORKER_FORMATTER.format_action(action)
         return {
             "model_text": action_text,
             "display_text": action_text,
@@ -133,7 +139,7 @@ def _format_pointmaze_action_texts(action: np.ndarray, config: dict) -> dict:
         }
 
     if _POINTMAZE_WORKER_TOKENIZER is None or _POINTMAZE_WORKER_ACTION_CODEC is None:
-        raise RuntimeError("PointMaze action-bin codec was not initialized.")
+        raise RuntimeError("Goal-maze action-bin codec was not initialized.")
     bin_indices = _POINTMAZE_WORKER_ACTION_CODEC.bin_indices_for_action(
         action,
         low=config["action_bin_min"],
@@ -171,12 +177,12 @@ def _build_mtp_bin_sample(
     mtp_k = resolve_mtp_k(action_dim, config.get("mtp_k"))
     if len(action_bin_indices) != action_dim:
         raise ValueError(
-            "PointMaze mtp_bin action labels do not match action_dim: "
+            "Goal-maze mtp_bin action labels do not match action_dim: "
             f"labels={len(action_bin_indices)}, action_dim={action_dim}."
         )
     if len(action_token_ids) != action_dim:
         raise ValueError(
-            "PointMaze mtp_bin action token IDs do not match action_dim: "
+            "Goal-maze mtp_bin action token IDs do not match action_dim: "
             f"token_ids={len(action_token_ids)}, action_dim={action_dim}."
         )
     if not prompt_input_ids:
@@ -248,7 +254,7 @@ def _tokenize_pointmaze_sample(
 ) -> dict:
     tok = _POINTMAZE_WORKER_TOKENIZER
     if tok is None:
-        raise RuntimeError("PointMaze tokenization worker was not initialized.")
+        raise RuntimeError("Goal-maze tokenization worker was not initialized.")
 
     prompt_text = build_generation_prompt(tok, prompt)
     prompt_ids = tok(text=prompt_text, add_special_tokens=False).input_ids
@@ -272,11 +278,11 @@ def _tokenize_pointmaze_sample(
 
     if uses_mtp_bin(config):
         if _POINTMAZE_WORKER_ACTION_CODEC is None:
-            raise RuntimeError("PointMaze mtp_bin codec was not initialized.")
+            raise RuntimeError("Goal-maze mtp_bin codec was not initialized.")
         if expected_action_bin_indices is None:
-            raise RuntimeError("Missing expected action-bin labels for PointMaze mtp_bin.")
+            raise RuntimeError("Missing expected action-bin labels for goal-maze mtp_bin.")
         if expected_action_token_ids is None:
-            raise RuntimeError("Missing expected action-bin token IDs for PointMaze mtp_bin.")
+            raise RuntimeError("Missing expected action-bin token IDs for goal-maze mtp_bin.")
         action_dim = int(config.get("action_dim", len(expected_action_bin_indices)))
         mtp_k = resolve_mtp_k(action_dim, config.get("mtp_k"))
         action_prefix_len = max(action_dim - 1, 0)
@@ -321,11 +327,11 @@ def _tokenize_pointmaze_sample(
     action_bin_labels = [-1] * len(input_ids)
     if uses_action_bins(config):
         if not expected_action_token_ids or expected_action_bin_indices is None:
-            raise RuntimeError("Missing expected action-bin token IDs for PointMaze tokenization.")
+            raise RuntimeError("Missing expected action-bin token IDs for goal-maze tokenization.")
         action_start = _find_subsequence(input_ids, expected_action_token_ids, prompt_len)
         if action_start is None:
             raise ValueError(
-                "Tokenized PointMaze sample does not contain the expected action-bin token ID sequence. "
+                "Tokenized goal-maze sample does not contain the expected action-bin token ID sequence. "
                 f"expected_ids={expected_action_token_ids}, prompt_len={prompt_len}, "
                 f"seq_len={len(input_ids)}, max_length={config['max_length']}."
             )
@@ -345,14 +351,14 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
 
     configs = _POINTMAZE_WORKER_CONFIGS
     shared_config = _POINTMAZE_WORKER_SHARED_CONFIG
-    if configs is None or shared_config is None:
-        raise RuntimeError("PointMaze tokenization worker was not initialized.")
+    formatter = _POINTMAZE_WORKER_FORMATTER
+    if configs is None or shared_config is None or formatter is None:
+        raise RuntimeError("Goal-maze tokenization worker was not initialized.")
 
     job_id = str(payload["job_id"])
     config = configs[job_id]
     episode_idx = int(payload["episode_idx"])
-    obs_arr = payload["observations"]
-    goal_arr = payload["goals"]
+    observation_arrays = payload["observations"]
     actions = payload["actions"]
     templates = config["templates"]
     prompt_vars = config["prompt_vars"]
@@ -372,20 +378,18 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
 
     results = []
     for t, action in enumerate(actions):
-        obs_vec = obs_arr[t].astype(np.float32)
-        goal = goal_arr[t].astype(np.float32)
+        obs = {
+            key: np.asarray(values[t], dtype=np.float32)
+            for key, values in observation_arrays.items()
+        }
         action = action.astype(np.float32)
-        action_dim = int(config.get("action_dim", 2))
+        action_dim = int(config["action_dim"])
         if tuple(action.shape) != (action_dim,):
             raise ValueError(
-                "PointMaze action shape does not match configured action_dim: "
+                "Goal-maze action shape does not match configured action_dim: "
                 f"variant={variant}, episode={episode_idx}, timestep={t}, "
                 f"shape={tuple(action.shape)}, action_dim={action_dim}"
             )
-        obs = {
-            "observation": obs_vec,
-            "desired_goal": goal,
-        }
         action_texts = _format_pointmaze_action_texts(action, config)
         history_entries = []
         if config["history_num"] > 0:
@@ -396,9 +400,17 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
                 hist_idx -= config["history_stride"]
             history_indices.reverse()
             for hist_t in history_indices:
+                history_obs = {
+                    key: np.asarray(values[hist_t], dtype=np.float32)
+                    for key, values in observation_arrays.items()
+                }
+                if hasattr(formatter, "format_history_observation"):
+                    history_observation = formatter.format_history_observation(history_obs)
+                else:
+                    history_observation = history_obs["observation"]
                 history_entries.append(
                     {
-                        "observation": obs_arr[hist_t].astype(np.float32),
+                        "observation": history_observation,
                         "action_text": _format_pointmaze_action_texts(
                             actions[hist_t].astype(np.float32),
                             config,
@@ -406,8 +418,8 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
                         "steps_ago": t - hist_t,
                     }
                 )
-        obs_payload = formatting.format_obs(obs, prompt_vars)
-        history_payload = formatting.format_history(history_entries, prompt_vars)
+        obs_payload = formatter.format_obs(obs, prompt_vars)
+        history_payload = formatter.format_history(history_entries, prompt_vars)
         for template in templates:
             prompt = render_template(template, prompt_vars, **obs_payload, **history_payload)
             token_sample = _tokenize_pointmaze_sample(
@@ -566,8 +578,13 @@ def _variant_sampling_seed(variant: str, sampling_seed: int) -> int:
     return int.from_bytes(digest[:8], "big", signed=False)
 
 
-def _collect_variant_episode_stats(variant: str, episode_keep_num: int | None) -> VariantEpisodeStats:
-    _, episodes, step_counts = _load_variant_episodes(variant)
+def _collect_variant_episode_stats(
+    variant: str,
+    episode_keep_num: int | None,
+    *,
+    episode_loader=_load_variant_episodes,
+) -> VariantEpisodeStats:
+    _, episodes, step_counts = episode_loader(variant)
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
     sampled_episode_target = _compute_sampled_episode_target(total_episodes, episode_keep_num)
@@ -586,6 +603,8 @@ def select_variant_episode_indices(
     episode_keep_num: int | None,
     sampling_seed: int,
     balanced_train_target: int | None = None,
+    *,
+    episode_loader=_load_variant_episodes,
 ) -> dict:
     if not (0.0 < train_data_ratio < 1.0):
         raise ValueError(
@@ -595,7 +614,7 @@ def select_variant_episode_indices(
     if not isinstance(sampling_seed, int):
         raise ValueError(f"sampling_seed must be an int, got {type(sampling_seed).__name__}")
 
-    _, episodes, step_counts = _load_variant_episodes(variant)
+    _, episodes, step_counts = episode_loader(variant)
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
     initial_sampled_target = _compute_sampled_episode_target(total_episodes, episode_keep_num)
@@ -738,7 +757,12 @@ class PointMazeTokenizationJob:
 
 
 class PointMazeDataset(BaseOfflineDataset):
-    """Loaded tokenized PointMaze behavior cloning dataset."""
+    """Loaded goal-maze behavior cloning dataset with PointMaze defaults."""
+
+    ENV_FAMILY = "pointmaze"
+    VARIANTS = POINTMAZE_VARIANTS
+    ACTION_DIM = 2
+    CACHE_FORMAT = "pointmaze_hash_signature_v1"
 
     def __init__(self, variant: str, split: str, samples: list[dict]):
         super().__init__()
@@ -748,14 +772,32 @@ class PointMazeDataset(BaseOfflineDataset):
 
     @classmethod
     def collect_variant_episode_stats(cls, variant: str, episode_keep_num: int | None) -> VariantEpisodeStats:
-        return _collect_variant_episode_stats(variant, episode_keep_num)
+        return _collect_variant_episode_stats(
+            variant,
+            episode_keep_num,
+            episode_loader=cls._load_variant_episodes,
+        )
 
     @classmethod
     def get_action_dim(cls, variants: list[str]) -> int:
         for variant in variants:
-            if variant not in POINTMAZE_VARIANTS:
-                raise ValueError(f"Unknown PointMaze variant: {variant}")
-        return 2
+            if variant not in cls.VARIANTS:
+                raise ValueError(f"Unknown {cls.ENV_FAMILY} variant: {variant}")
+        return cls.ACTION_DIM
+
+    @classmethod
+    def _load_variant_episodes(cls, variant: str):
+        return _load_variant_episodes(variant)
+
+    @classmethod
+    def _get_variant_type(cls, meta: dict) -> str:
+        return get_pointmaze_variant_type(meta)
+
+    @classmethod
+    def _local_data_signature(cls, meta: dict) -> str | None:
+        if cls._get_variant_type(meta) != "local":
+            return None
+        return _local_dataset_step_signature(meta)
 
     @classmethod
     def build_batch(cls, requests: list[DatasetBuildRequest]) -> list["PointMazeDataset"]:
@@ -780,6 +822,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 episode_keep_num=base_config.episode_keep_num,
                 sampling_seed=base_config.sampling_seed,
                 balanced_train_target=base_config.balanced_train_episode_count,
+                episode_loader=cls._load_variant_episodes,
             )
             selection = _apply_selection_partition(selection, base_config)
             selection_for_summary = dict(selection)
@@ -858,7 +901,9 @@ class PointMazeDataset(BaseOfflineDataset):
             gc.collect()
 
         if any(dataset is None for dataset in datasets):
-            raise RuntimeError("PointMazeDataset.build_batch did not construct every requested dataset.")
+            raise RuntimeError(
+                f"{cls.__name__}.build_batch did not construct every requested dataset."
+            )
         return [dataset for dataset in datasets if dataset is not None]
 
     @classmethod
@@ -866,7 +911,7 @@ class PointMazeDataset(BaseOfflineDataset):
         tokenizer_name_or_path = request.tokenizer_name_or_path or getattr(request.tokenizer, "name_or_path", None)
         if not tokenizer_name_or_path:
             raise ValueError(
-                "PointMazeDataset requires tokenizer_name_or_path when tokenizer does not expose name_or_path."
+                f"{cls.__name__} requires tokenizer_name_or_path when tokenizer does not expose name_or_path."
             )
         action_config = {
             "action_token_mode": request.action_token_mode,
@@ -874,13 +919,15 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_bin_min": request.action_bin_min,
             "action_bin_max": request.action_bin_max,
             "new_token": request.new_token,
-            "action_dim": request.action_dim if request.action_dim is not None else 2,
+            "action_dim": request.action_dim if request.action_dim is not None else cls.ACTION_DIM,
             "mtp_k": request.mtp_k,
         }
         action_token_mode = get_action_token_mode(action_config)
         action_dim = int(action_config["action_dim"])
-        if action_dim != 2:
-            raise ValueError(f"PointMaze action_dim must be 2, got {action_dim}")
+        if action_dim != cls.ACTION_DIM:
+            raise ValueError(
+                f"{cls.ENV_FAMILY} action_dim must be {cls.ACTION_DIM}, got {action_dim}"
+            )
         dataset_partition_count = int(request.dataset_partition_count)
         if dataset_partition_count < 1:
             raise ValueError(
@@ -966,13 +1013,14 @@ class PointMazeDataset(BaseOfflineDataset):
 
     @classmethod
     def _resolve_prompt_names(cls, config: PointMazeBuildConfig) -> list[str]:
-        available_names = load_template_names("pointmaze")
+        available_names = load_template_names(cls.ENV_FAMILY)
         if config.prompt_templete_index is not None:
             missing = [name for name in config.prompt_templete_index if name not in available_names]
             if missing:
                 available = ", ".join(available_names)
                 raise ValueError(
-                    f"Unknown prompt template names for pointmaze: {missing}. Available: {available}"
+                    f"Unknown prompt template names for {cls.ENV_FAMILY}: "
+                    f"{missing}. Available: {available}"
                 )
             return list(config.prompt_templete_index)
 
@@ -989,25 +1037,26 @@ class PointMazeDataset(BaseOfflineDataset):
 
     @classmethod
     def _cache_signature_payload(cls, config: PointMazeBuildConfig) -> dict:
-        meta = POINTMAZE_VARIANTS[config.variant]
-        variant_type = get_pointmaze_variant_type(meta)
+        meta = cls.VARIANTS[config.variant]
+        variant_type = cls._get_variant_type(meta)
         prompt_names = cls._resolve_prompt_names(config)
-        templates = load_named_templates("pointmaze", prompt_names)
-        local_data_signature = None
-        if variant_type == "local":
-            local_data_signature = _local_dataset_step_signature(meta)
+        templates = load_named_templates(cls.ENV_FAMILY, prompt_names)
+        local_data_signature = cls._local_data_signature(meta)
+        variant_metadata = {
+            "dataset_id": meta.get("dataset_id"),
+            "dataset_path": meta.get("dataset_path"),
+            "env_id": meta.get("env_id"),
+            "env_paras": meta.get("env_paras"),
+            "prompt_vars": meta["prompt_vars"],
+        }
+        if "env_kwargs" in meta:
+            variant_metadata["env_kwargs"] = meta["env_kwargs"]
         payload = {
-            "env_family": "pointmaze",
+            "env_family": cls.ENV_FAMILY,
             "cache_kind": "episode_tokenized_samples",
             "variant": config.variant,
             "variant_type": variant_type,
-            "variant_metadata": {
-                "dataset_id": meta.get("dataset_id"),
-                "dataset_path": meta.get("dataset_path"),
-                "env_id": meta.get("env_id"),
-                "env_paras": meta.get("env_paras"),
-                "prompt_vars": meta["prompt_vars"],
-            },
+            "variant_metadata": variant_metadata,
             "local_data_signature": local_data_signature,
             "tokenizer_name_or_path": config.tokenizer_name_or_path,
             "max_length": config.max_length,
@@ -1104,9 +1153,9 @@ class PointMazeDataset(BaseOfflineDataset):
         selection: dict,
         request_indices: list[int],
     ) -> PointMazeTokenizationJob:
-        meta = POINTMAZE_VARIANTS[config.variant]
+        meta = cls.VARIANTS[config.variant]
         prompt_names = cls._resolve_prompt_names(config)
-        templates = load_named_templates("pointmaze", prompt_names)
+        templates = load_named_templates(cls.ENV_FAMILY, prompt_names)
         prompt_vars = meta["prompt_vars"]
 
         all_episodes = selection["episodes"]
@@ -1121,14 +1170,17 @@ class PointMazeDataset(BaseOfflineDataset):
                 "job_id": job_id,
                 "episode_idx": episode_idx,
                 "include_text_records": episode_idx in human_readable_episode_indices,
-                "observations": episode.observations["observation"],
-                "goals": episode.observations["desired_goal"],
+                "observations": {
+                    key: values
+                    for key, values in episode.observations.items()
+                },
                 "actions": episode.actions,
             }
             for episode_idx in episode_indices
             for episode in [all_episodes[episode_idx]]
         ]
         worker_config = {
+            "env_family": cls.ENV_FAMILY,
             "variant": config.variant,
             "split": "cache",
             "max_length": config.max_length,
@@ -1146,6 +1198,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_token_schema_hash": config.action_token_schema_hash,
         }
         shared_config = {
+            "env_family": cls.ENV_FAMILY,
             "tokenizer_name_or_path": config.tokenizer_name_or_path,
             "action_token_mode": config.action_token_mode,
             "action_num_bins": config.action_num_bins,
@@ -1168,8 +1221,8 @@ class PointMazeDataset(BaseOfflineDataset):
             request_indices=list(request_indices),
         )
 
-    @staticmethod
-    def _validate_config(config: PointMazeBuildConfig):
+    @classmethod
+    def _validate_config(cls, config: PointMazeBuildConfig):
         if not (0.0 < config.train_data_ratio < 1.0):
             raise ValueError(
                 "Invalid train_data_ratio: expected 0 < train_data_ratio < 1, "
@@ -1181,8 +1234,11 @@ class PointMazeDataset(BaseOfflineDataset):
             raise ValueError(f"history_num must be >= 0, got {config.history_num}")
         if config.history_stride < 1:
             raise ValueError(f"history_stride must be >= 1, got {config.history_stride}")
-        if config.action_dim != 2:
-            raise ValueError(f"PointMaze action_dim must be 2, got {config.action_dim}")
+        if config.action_dim != cls.ACTION_DIM:
+            raise ValueError(
+                f"{cls.ENV_FAMILY} action_dim must be "
+                f"{cls.ACTION_DIM}, got {config.action_dim}"
+            )
         if config.dataset_partition_count < 1:
             raise ValueError(
                 f"dataset_partition_count must be >= 1, got {config.dataset_partition_count}"
@@ -1196,8 +1252,11 @@ class PointMazeDataset(BaseOfflineDataset):
                     f"[0, {config.dataset_partition_count}), got {config.dataset_partition_index}"
                 )
 
-    @staticmethod
-    def _validate_variant_request_group(configs: list[PointMazeBuildConfig]):
+    @classmethod
+    def _validate_variant_request_group(
+        cls,
+        configs: list[PointMazeBuildConfig],
+    ):
         if not configs:
             return
         base = configs[0]
@@ -1230,7 +1289,7 @@ class PointMazeDataset(BaseOfflineDataset):
             for field in fields:
                 if getattr(config, field) != getattr(base, field):
                     raise ValueError(
-                        "PointMazeDataset.build_batch requires requests for the same variant "
+                        f"{cls.__name__}.build_batch requires requests for the same variant "
                         f"to share {field}; got {getattr(base, field)!r} and {getattr(config, field)!r}."
                     )
 
@@ -1329,7 +1388,7 @@ class PointMazeDataset(BaseOfflineDataset):
         for job in pending_jobs[1:]:
             if dict(job.shared_config) != shared_config:
                 raise ValueError(
-                    "PointMazeDataset.build_batch requires all pending datasets to use the same "
+                    f"{cls.__name__}.build_batch requires all pending datasets to use the same "
                     "tokenizer and action-bin configuration."
                 )
 
@@ -1352,7 +1411,7 @@ class PointMazeDataset(BaseOfflineDataset):
         }
         ctx = multiprocessing.get_context("spawn")
         with MultiWorkerFileProgress(
-            desc="Tokenizing pointmaze datasets",
+            desc=f"Tokenizing {cls.ENV_FAMILY} datasets",
             total=len(episode_payloads),
             interval_seconds=progress_interval_seconds,
             cleanup_on_success=True,
@@ -1416,7 +1475,7 @@ class PointMazeDataset(BaseOfflineDataset):
                     cache_partition_index = job.config.dataset_partition_index
             cache = {
                 "metadata": {
-                    "cache_format": "pointmaze_hash_signature_v1",
+                    "cache_format": cls.CACHE_FORMAT,
                     "cache_signature_hash": cache_signature_hash,
                     "cache_signature_payload": cache_signature_payload,
                     "total_episodes": job.total_episodes,

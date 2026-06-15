@@ -1,0 +1,27 @@
+model_path: checkpoints/antmaze/Qwen3-0.6B/large-play/<experiment_id>/final
+load_in_4bit: false
+parallel_backend: single
+result_root: results
+env_family: antmaze
+
+eval_mode: single
+variants: [large-play]
+num_episodes: 20
+eval_parallel_episodes: 1
+eval_distribute_variants: false
+seed: 1
+
+history_num: 0
+history_stride: 1
+parse_retry_limit: 3
+record_step_logs: true
+# prompt_templete_index: parallel_full_sensing  # optional; defaults to checkpoint's first training prompt
+action_sampling: false
+action_temperature: 1.0
+action_top_p: 1.0
+action_top_k: 0
+
+record_video: false
+env_kwargs:
+  continuing_task: false
+  reset_target: false
