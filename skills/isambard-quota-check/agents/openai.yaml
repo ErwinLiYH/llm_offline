@@ -1,0 +1,4 @@
+interface:
+  display_name: "Isambard Quota Check"
+  short_description: "Audit storage, inode, Slurm, and project limits"
+  default_prompt: "Use $isambard-quota-check to audit my current Isambard quotas and explain any risks."
