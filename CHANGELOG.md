@@ -1156,3 +1156,24 @@ type: project
 
 - continuous action mode 实际启用 episode 合批时，不再逐 episode 打印完成顺序或视频路径，避免不等长 episode 的乱序日志造成误解；调用端仍保留启动/结果路径信息和每个 variant 完成后的成功率汇总。非 continuous mode 回退串行时保留原有逐 episode 日志。
 - eval 和 score 视频编码新增有界后台线程池：`video_save_workers` 控制并发编码线程数，`video_save_max_pending` 限制“正在编码 + 排队”的视频任务总数且不能小于 worker 数。worker 全忙但 pending 未满时仍可继续排队；pending 达到上限后下一次提交阻塞到任一任务完成。variant 返回前统一等待剩余任务并传播保存错误，`video_save_workers: 0` 可恢复同步保存。
+
+---
+
+## Tokenize-only planning, PointMaze variants, and episode logs（2026-06-15）
+
+**`--tokenize-only` 输出 step eval 规划信息：**
+- cache 准备完成后除 train/val sample 与 batch 汇总外，还会打印每个 epoch 的 train batch steps、跨全部 epochs 的总 train batch steps，以及 `eval_step_interval` 每个 epoch 重置的语义
+- 同时按 `batch_size * world_size` 打印每个 batch step 近似处理的 global samples，便于在正式训练前规划 step eval interval
+- 普通 dataset 加载和 `dataset_load_partitions > 1` 的分区 cache 预热路径使用同一套摘要
+
+**扩展 PointMaze local/test variants：**
+- 新增 `local-layout-10` 到 `local-layout-13`，继续使用本地 Minari dataset、动态 local horizon 和中英文 maze structure prompt metadata
+- 新增 `test-layout-01` 到 `test-layout-03`，用于与训练 local layouts 分开的泛化测试地图
+- `_build_local_variant()` 支持显式 `variant_name` 和 `env_name`，使非 `local-layout-XX` 命名也能生成对应 `local_datasets/pointmaze-<variant>-v0` 路径
+- `reference.yaml` / `score.yaml` 的 local goal-cell 示例仍只覆盖 `local-layout-01..09`；对新增 layout 做 official-style local score 前需要另行补充 goal cell 并生成匹配 fingerprint 的 reference
+
+**每个 episode 合并 step logs：**
+- eval step log 从 `episode_<n>/steps/step_<n>.txt` 改为每个 episode 一个 `episode_<n>/steps.txt`
+- 第一个 step 覆盖初始化文件，后续 step 按顺序追加；每段使用分割线和 `Step 0001` 形式的标题，同时保留原有 prompt、模型输出、执行动作、parse 状态、概率分布和 continuous policy metadata
+- 串行 rollout 与 continuous batched rollout 继续复用同一个写入函数，显著减少长 rollout 产生的小文件和 inode 数量
+- 新增测试验证单文件输出、step 顺序、分割线和旧 `steps/` 目录不再创建

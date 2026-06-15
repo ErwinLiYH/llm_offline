@@ -1,5 +1,7 @@
 import unittest
 import threading
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -305,6 +307,32 @@ class EvalParallelTest(unittest.TestCase):
         self.assertEqual(result["mean_episode_steps"], 1.4)
         self.assertEqual(model.batch_sizes[0], 3)
         self.assertTrue(any(batch_size < 3 for batch_size in model.batch_sizes))
+
+    def test_step_logs_are_combined_per_episode(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode_dir = Path(tmpdir) / "episode_0001"
+            for step_index in range(2):
+                evaluate.write_step_log(
+                    str(episode_dir),
+                    step_index,
+                    prompt=f"prompt {step_index + 1}",
+                    action_text=f"action {step_index + 1}",
+                    executed_action=f"executed {step_index + 1}",
+                    parse_status="ok",
+                    attempt_count=1,
+                )
+
+            step_log_path = episode_dir / "steps.txt"
+            content = step_log_path.read_text(encoding="utf-8")
+
+            self.assertTrue(step_log_path.is_file())
+            self.assertFalse((episode_dir / "steps").exists())
+            self.assertEqual(content.count("=" * 80), 4)
+            self.assertEqual(content.count("Step 0001"), 1)
+            self.assertEqual(content.count("Step 0002"), 1)
+            self.assertLess(content.index("Step 0001"), content.index("Step 0002"))
+            self.assertIn("prompt 1", content)
+            self.assertIn("prompt 2", content)
 
 
 if __name__ == "__main__":

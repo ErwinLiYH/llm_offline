@@ -402,9 +402,8 @@ def write_step_log(
     student_t_action_mean: list[float] | None = None,
     student_t_action_scale: list[float] | None = None,
 ):
-    steps_dir = os.path.join(episode_dir, "steps")
-    os.makedirs(steps_dir, exist_ok=True)
-    step_path = os.path.join(steps_dir, f"step_{step_index + 1:04d}.txt")
+    os.makedirs(episode_dir, exist_ok=True)
+    step_path = os.path.join(episode_dir, "steps.txt")
     payload = format_eval_step_text(
         prompt,
         action_text,
@@ -418,8 +417,18 @@ def write_step_log(
         student_t_action_mean=student_t_action_mean,
         student_t_action_scale=student_t_action_scale,
     )
-    with open(step_path, "w", encoding="utf-8") as f:
-        f.write(payload)
+    separator = "=" * 80
+    step_payload = (
+        f"{separator}\n"
+        f"Step {step_index + 1:04d}\n"
+        f"{separator}\n"
+        f"{payload.rstrip()}\n"
+    )
+    mode = "w" if step_index == 0 else "a"
+    with open(step_path, mode, encoding="utf-8") as f:
+        if step_index > 0:
+            f.write("\n")
+        f.write(step_payload)
 
 
 

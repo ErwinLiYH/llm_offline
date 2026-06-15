@@ -17,11 +17,11 @@
 
 ### PointMaze 变种完整列表
 
-定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中，包含所有 8 个变种的 `dataset_id`、`env_id`、`prompt_vars`。
+定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中。当前 registry 包含 8 个 remote D4RL 变种、`local-layout-01..13` 和 `test-layout-01..03`；remote 使用 `dataset_id` / `env_id`，local/test 使用 `dataset_path` / `env_paras`，全部通过 `prompt_vars` 提供 prompt metadata。
 
 `maze_map` 和 `reward_type` 现在收在每个变种的 `prompt_vars` 中，供共享 prompt 渲染使用。
 
-8 个变种及其信息：
+以下代码块列出 8 个 remote D4RL 基础变种；local/test 地图以 `_LOCAL_LAYOUT_*` / `_TEST_LAYOUT_*` 常量和 `_build_local_variant()` 注册：
 
 ```python
 POINTMAZE_VARIANTS = {
@@ -263,11 +263,7 @@ sampling_seed: 0         # 控制 episode 随机抽样的可复现性
 eval_seed: 1             # 训练期 eval 的 episode reset seeds 为 eval_seed, eval_seed+1, ...
 ```
 
-对 PointMaze 环境族，共训练以下 9 个模型：
-- 单变种模型 × 8（每个变种独立训练）
-- 全变种联合模型 × 1
-
-联合训练时各变种数据按样本数加权采样，避免大变种压制小变种。
+PointMaze 训练集合不再固定为“8 个单变种 + 1 个联合模型”，而是由 `train_mode` 和 `train_varients` 从当前 registry 中选择。联合训练时各变种数据按样本数加权采样，避免大变种压制小变种。
 
 ---
 
@@ -373,22 +369,19 @@ dataset_cache/
             │       ├── result.json
             │       └── episode_<n>/
             │           ├── rollout.gif|mp4
-            │           └── steps/
-            │               └── step_<n>.txt
+            │           └── steps.txt
             ├── step<n>/
             │   └── eval=<env_family>-<variant>/
             │       ├── result.json
             │       └── episode_<n>/
             │           ├── rollout.gif|mp4
-            │           └── steps/
-            │               └── step_<n>.txt
+            │           └── steps.txt
             └── standalone_<eval_uuid>/
                 └── eval=<env_family>-<variant>/
                     ├── result.json
                     └── episode_<n>/
                         ├── rollout.gif|mp4
-                        └── steps/
-                            └── step_<n>.txt
+                        └── steps.txt
 ```
 
 **路径字段说明：**
@@ -414,7 +407,7 @@ dataset_cache/
 | score 录像 episode 0 | `score_results/score_<score_id>/score=pointmaze-open/episode_0/rollout.gif` |
 | local reference 分数生成 | `score_results/reference_<score_id>/score=pointmaze-local-layout-07/result.json`，并写入 `local_references/pointmaze/local-layout-07.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step 作为唯一目录名，但 step eval 的触发计数在每个 epoch 开始时重置，所以每个 epoch 的第一次触发都在 epoch-local batch `eval_step_interval`。如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存 checkpoint；是否计算 val loss 和运行环境 rollout 再由 `step_eval_skip` 与 epoch-near 规则决定。`step_eval_skip` 默认为 1；大于 1 时每个 epoch 内的 step eval 触发计数从 1 开始，只有可被该值整除的触发执行完整 validation+rollout，其余只保存 `step<N>` checkpoint。如果实际 step eval 位置落在 epoch eval 前后 `0.25 * eval_step_interval` 的 train batch 窗口内，则该 step 也只保存 checkpoint，不跑 val loss/rollout，epoch eval 仍照常执行。分区训练也保持这个 epoch-local 触发与梯度累积时机：触发点在 train shard 中间时立即执行 step eval，不等待 shard 边界。training-time eval 每次调用都使用同一组 episode reset seeds：第 `i` 个 episode 使用 `eval_seed + i`，默认即 `1..eval_num_episodes`，保证不同 step/epoch eval 间的环境初始条件可比。`eval_parallel_episodes > 1` 时，`parallel_l1` / `parallel_gaussian` / `parallel_t` 会维护多个活跃环境槽位，并把同一步 prompts padding 后合并成一次模型 forward；完成的槽位立即装入后续 episode。其他 action mode 暂时回退串行。连续策略启用 `action_sampling` 时，相同 seed、episode 并行度、world size 和 variant 分配可复现；改变并行度会改变随机数消费顺序，因此轨迹可能变化。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`；standalone eval 同样使用 `seed + i` 作为 episode reset seeds。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps/step_<n>.txt` 记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin`、`gaussian_bin` 和 `mtp_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的概率与对应 token id。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step 作为唯一目录名，但 step eval 的触发计数在每个 epoch 开始时重置，所以每个 epoch 的第一次触发都在 epoch-local batch `eval_step_interval`。如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存 checkpoint；是否计算 val loss 和运行环境 rollout 再由 `step_eval_skip` 与 epoch-near 规则决定。`step_eval_skip` 默认为 1；大于 1 时每个 epoch 内的 step eval 触发计数从 1 开始，只有可被该值整除的触发执行完整 validation+rollout，其余只保存 `step<N>` checkpoint。如果实际 step eval 位置落在 epoch eval 前后 `0.25 * eval_step_interval` 的 train batch 窗口内，则该 step 也只保存 checkpoint，不跑 val loss/rollout，epoch eval 仍照常执行。分区训练也保持这个 epoch-local 触发与梯度累积时机：触发点在 train shard 中间时立即执行 step eval，不等待 shard 边界。training-time eval 每次调用都使用同一组 episode reset seeds：第 `i` 个 episode 使用 `eval_seed + i`，默认即 `1..eval_num_episodes`，保证不同 step/epoch eval 间的环境初始条件可比。`eval_parallel_episodes > 1` 时，`parallel_l1` / `parallel_gaussian` / `parallel_t` 会维护多个活跃环境槽位，并把同一步 prompts padding 后合并成一次模型 forward；完成的槽位立即装入后续 episode。其他 action mode 暂时回退串行。连续策略启用 `action_sampling` 时，相同 seed、episode 并行度、world size 和 variant 分配可复现；改变并行度会改变随机数消费顺序，因此轨迹可能变化。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`；standalone eval 同样使用 `seed + i` 作为 episode reset seeds。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 `steps.txt` 汇总该 episode 的所有 step，并用分割线和 `Step <n>` 标题分段记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin`、`gaussian_bin` 和 `mtp_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的概率与对应 token id。
 
 `score.py` 使用独立路径语义，不嵌入训练期/standalone eval 的 `eval=<...>` 目录。每次运行写入 `<result_root>/<mode>_<score_id>/`，其中每个变种写 `score=<env_family>-<variant>/result.json`，run 根目录写 `summary.json` 和实际使用的 `score_config.yaml`。当 `record_video: true` 时，score rollout 视频保存在对应 `score=<...>/episode_<n>/rollout.<gif|mp4>` 下，并在 variant `result.json` 中记录 `video_path` / `video_paths` / `episode_artifact_dirs`。
 
@@ -564,7 +557,7 @@ local_eval_maps:
 
 reference 生成会用 seeded random policy 估计 `ref_min_score`，用 Farama `WaypointController(..., maze_solver="QIteration")` 且无动作噪声估计 `ref_max_score`。默认写入 `local_references/pointmaze/<variant>.json`，文件包含 reference 分数、seed、episode count、horizon、goal cell、reward type、env fingerprint 和 method metadata。后续 local `mode: score` 会校验 reference 文件存在且 env fingerprint 与当前 `score.yaml` 一致，不匹配时拒绝打分。
 
-仓库提供 `reference.yaml` 作为本地 reference 生成示例，默认列出 `local-layout-01` 到 `local-layout-09` 的固定 goal cell；`score.yaml` 则作为模型评分示例，包含 checkpoint、variant、local reference root 和可选录像配置。两者都通过 `python score.py --config <yaml>` 运行。
+仓库提供 `reference.yaml` 作为本地 reference 生成示例，默认列出 `local-layout-01` 到 `local-layout-09` 的固定 goal cell；`score.yaml` 则作为模型评分示例，包含 checkpoint、variant、local reference root 和可选录像配置。虽然训练/eval registry 还包含 `local-layout-10..13` 和 `test-layout-01..03`，这些新增地图尚未在示例 YAML 中配置 local score goal cell；对其运行 official-style local score 前需要补充 goal cell 并生成 fingerprint 匹配的 reference。两者都通过 `python score.py --config <yaml>` 运行。
 
 ---
 
@@ -628,7 +621,7 @@ def validate_action(action) -> bool:
 micromamba run -n llm_offline python train.py --config config.yaml --tokenize-only
 ```
 
-该模式要求配置 `dataset_cache_dir`。`dataset_load_partitions: 1` 时构建或加载完整 train/val cache；`dataset_load_partitions > 1` 时依次准备完整 val cache 和所有 train partition cache。完成后打印 train/val sample 与 batch 汇总，并在 DDP 包装、optimizer、W&B、validation、rollout 和训练循环之前退出。
+该模式要求配置 `dataset_cache_dir`。`dataset_load_partitions: 1` 时构建或加载完整 train/val cache；`dataset_load_partitions > 1` 时依次准备完整 val cache 和所有 train partition cache。完成后打印 train/val sample 与 batch 汇总、每个 epoch 和全部 epochs 的 train batch steps，并按 `batch_size * world_size` 给出每个 batch step 的近似 global sample 数；摘要同时提醒 `eval_step_interval` 按 epoch-local batch step 计数并在每个 epoch 重置。随后在 DDP 包装、optimizer、W&B、validation、rollout 和训练循环之前退出。
 
 当前 `--tokenize-only` 仍复用正常的 `load_model_and_tokenizer()`，因此会加载 Unsloth 模型并可能占用 GPU；它只保证不进入训练，不提供 CPU-only tokenizer 路径。生成的 cache signature 不包含 DDP rank/world size，之后可直接由单卡或 DDP 训练复用。
 
