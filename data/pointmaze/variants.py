@@ -264,7 +264,6 @@ _LOCAL_LAYOUT_13 = [
     [1, 0, 0, 0, 0, 0, 0, 1],  #......#
     [1, 0, 1, 1, 1, 1, 1, 1],  #.######
     [1, 0, 0, 0, 0, 0, 0, 1],  #......#
-    [1, 0, 0, 0, 0, 0, 0, 1],  #......#
     [1, 1, 1, 1, 1, 1, 1, 1],  ########
 ]
 
@@ -306,8 +305,7 @@ _TEST_LAYOUT_03 = [
     [1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1],  #.###.###.#.#
     [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],  #.#.....#...#
     [1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1],  #.#.###.###.#
-    [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],  #...#.......#
-    [1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1],  ##.###.###.##
+    [1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1],  #...###.....#
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  #############
 ]
 
@@ -320,6 +318,7 @@ def _build_local_variant(
     maze_map: list[list[int]],
     structure_desc_en: str,
     structure_desc_zh: str,
+    max_episode_steps: int | None = None,
 ) -> dict:
     if variant_name is None:
         if index is None:
@@ -340,7 +339,11 @@ def _build_local_variant(
             "reward_type": "sparse",
             "continuing_task": True,
             "reset_target": True,
-            "max_episode_steps": _default_local_max_episode_steps(maze_map),
+            "max_episode_steps": (
+                max_episode_steps
+                if max_episode_steps is not None
+                else _default_local_max_episode_steps(maze_map)
+            ),
         },
         "prompt_vars": _build_prompt_vars(
             env_name=env_name,
@@ -524,8 +527,9 @@ POINTMAZE_VARIANTS = {
     "local-layout-13": _build_local_variant(
         index=13,
         maze_map=_LOCAL_LAYOUT_13,
-        structure_desc_en="A 14x8 tall serpentine layout with alternating side openings and long horizontal corridors.",
-        structure_desc_zh="一个 14x8 的纵向蛇形布局，包含交替侧向开口和多条长横向走廊。",
+        structure_desc_en="A 13x8 tall serpentine layout with alternating side openings and long horizontal corridors.",
+        structure_desc_zh="一个 13x8 的纵向蛇形布局，包含交替侧向开口和多条长横向走廊。",
+        max_episode_steps=900,
     ),
     "test-layout-01": _build_local_variant(
         variant_name="test-layout-01",
@@ -545,8 +549,8 @@ POINTMAZE_VARIANTS = {
         variant_name="test-layout-03",
         env_name="PointMaze Test Layout 03",
         maze_map=_TEST_LAYOUT_03,
-        structure_desc_en="A 14x13 large test layout with repeated corridor modules, narrow gates, and lower cross-connections.",
-        structure_desc_zh="一个 14x13 的大型测试布局，包含重复走廊模块、狭窄门洞和底部交叉连接。",
+        structure_desc_en="A 13x13 large test layout with repeated corridor modules, narrow gates, and lower cross-connections.",
+        structure_desc_zh="一个 13x13 的大型测试布局，包含重复走廊模块、狭窄门洞和底部交叉连接。",
     ),
 }
 
