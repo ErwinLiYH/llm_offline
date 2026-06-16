@@ -1,4 +1,4 @@
-model_path: checkpoints/antmaze/Qwen3-0.6B/large-play/<experiment_id>/final
+model_path: checkpoints/antmaze/Qwen3-0.6B/large-play/3d19193e/final
 load_in_4bit: false
 parallel_backend: single
 result_root: results
@@ -21,7 +21,14 @@ action_temperature: 1.0
 action_top_p: 1.0
 action_top_k: 0
 
-record_video: false
+record_video: true       # AntMaze saves rollout.<ext> and rollout_global.<ext> by default
+record_all: true         # record all episodes; overrides video_episode_index
+video_episode_index: 0   # which eval episode to record if record_all is false (0-based)
+video_fps: 30
+video_format: mp4        # gif works out of the box; mp4 requires ffmpeg backend support
+video_save_workers: 1    # 0 = synchronous; >0 = concurrent background encoding threads
+video_save_max_pending: 2  # running + queued tasks per rank; next submit blocks at this limit
+mujoco_gl: egl           # headless MuJoCo recording backend on this machine
 env_kwargs:
   continuing_task: false
   reset_target: false
