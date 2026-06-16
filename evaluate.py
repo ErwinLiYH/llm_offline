@@ -462,6 +462,101 @@ def _capture_render_frame(env, frames: list[np.ndarray]):
     frames.append(_normalize_render_frame(frame))
 
 
+def _should_record_antmaze_global_video(config: dict) -> bool:
+    return bool(config.get("record_video", False)) and config.get("env_family") == "antmaze"
+
+
+def _resolve_antmaze_global_camera(env) -> dict:
+    unwrapped = getattr(env, "unwrapped", env)
+    maze = getattr(unwrapped, "maze", None)
+    if maze is not None:
+        span_x = float(maze.map_width) * float(maze.maze_size_scaling)
+        span_y = float(maze.map_length) * float(maze.maze_size_scaling)
+        distance = max(14.0, max(span_x, span_y) * 1.6)
+    else:
+        ant_env = getattr(unwrapped, "ant_env", None)
+        model = getattr(ant_env, "model", None)
+        extent = float(getattr(getattr(model, "stat", None), "extent", 8.0))
+        distance = max(14.0, extent * 3.0)
+
+    return {
+        "lookat": np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        "distance": distance,
+        "elevation": -90.0,
+        "azimuth": 90.0,
+    }
+
+
+def _capture_antmaze_global_render_frame(env, frames: list[np.ndarray]):
+    unwrapped = getattr(env, "unwrapped", env)
+    ant_env = getattr(unwrapped, "ant_env", None)
+    renderer = getattr(ant_env, "mujoco_renderer", None)
+    if renderer is None or not hasattr(renderer, "_get_viewer"):
+        raise ValueError("AntMaze global video recording requires a MuJoCo renderer")
+
+    viewer = renderer._get_viewer("rgb_array")
+    cam = viewer.cam
+    camera = _resolve_antmaze_global_camera(env)
+    original_renderer_camera_id = getattr(renderer, "camera_id", None)
+    original_cam_state = {
+        "type": cam.type,
+        "fixedcamid": cam.fixedcamid,
+        "lookat": np.array(cam.lookat, dtype=np.float64),
+        "distance": cam.distance,
+        "elevation": cam.elevation,
+        "azimuth": cam.azimuth,
+    }
+
+    try:
+        renderer.camera_id = -1
+        cam.lookat[:] = camera["lookat"]
+        cam.distance = camera["distance"]
+        cam.elevation = camera["elevation"]
+        cam.azimuth = camera["azimuth"]
+        frame = env.render()
+        if frame is None:
+            raise ValueError("render() returned None while recording AntMaze global view")
+        frames.append(_normalize_render_frame(frame))
+    finally:
+        renderer.camera_id = original_renderer_camera_id
+        cam.type = original_cam_state["type"]
+        cam.fixedcamid = original_cam_state["fixedcamid"]
+        cam.lookat[:] = original_cam_state["lookat"]
+        cam.distance = original_cam_state["distance"]
+        cam.elevation = original_cam_state["elevation"]
+        cam.azimuth = original_cam_state["azimuth"]
+
+
+def _capture_video_frames(
+    env,
+    frames: list[np.ndarray],
+    global_frames: list[np.ndarray] | None = None,
+):
+    _capture_render_frame(env, frames)
+    if global_frames is not None:
+        _capture_antmaze_global_render_frame(env, global_frames)
+
+
+def _record_episode_videos(
+    *,
+    video_saver: VideoSaveManager,
+    frames: list[np.ndarray],
+    global_frames: list[np.ndarray] | None,
+    episode_dir: str,
+    video_ext: str,
+    video_fps: int,
+) -> tuple[str, str | None]:
+    video_path = os.path.join(episode_dir, f"rollout.{video_ext}")
+    video_saver.submit(frames, video_path, video_fps)
+
+    global_video_path = None
+    if global_frames is not None:
+        global_video_path = os.path.join(episode_dir, f"rollout_global.{video_ext}")
+        video_saver.submit(global_frames, global_video_path, video_fps)
+
+    return video_path, global_video_path
+
+
 
 def generate_action(
     model,
@@ -720,6 +815,7 @@ class _BatchedEpisodeState:
     obs: object
     history_buffer: list[dict]
     frames: list[np.ndarray] | None
+    global_frames: list[np.ndarray] | None
     episode_dir: str | None
     episode_return: float = 0.0
     episode_success: bool = False
@@ -743,6 +839,7 @@ def _evaluate_variant_continuous_batched(
     history_num, history_stride = validate_history_config(config)
     eval_seed, episode_seeds = _resolve_episode_seeds(config, num_episodes)
     record_video = bool(config.get("record_video", False))
+    record_global_video = _should_record_antmaze_global_video(config)
     video_episode_index_set = set(_resolve_video_episode_indices(config, num_episodes))
     video_fps = int(config.get("video_fps", 20))
     record_step_logs = bool(config.get("record_step_logs", True))
@@ -762,6 +859,7 @@ def _evaluate_variant_continuous_batched(
     episode_steps = [0] * num_episodes
     episode_artifact_dirs: list[str | None] = [None] * num_episodes
     saved_video_paths: list[str | None] = [None] * num_episodes
+    saved_global_video_paths: list[str | None] = [None] * num_episodes
     total_parse_failures = 0
     total_fallbacks = 0
     total_action_time = 0.0
@@ -802,19 +900,21 @@ def _evaluate_variant_continuous_batched(
                 record_video and episode_index in video_episode_index_set
             )
             frames = [] if record_this_episode else None
+            global_frames = [] if record_this_episode and record_global_video else None
             episode_dir = None
             if variant_results_dir is not None:
                 episode_dir = get_episode_dir(variant_results_dir, episode_index)
                 os.makedirs(episode_dir, exist_ok=True)
                 episode_artifact_dirs[episode_index] = episode_dir
             if frames is not None:
-                _capture_render_frame(env, frames)
+                _capture_video_frames(env, frames, global_frames)
             return _BatchedEpisodeState(
                 env=env,
                 episode_index=episode_index,
                 obs=obs,
                 history_buffer=[],
                 frames=frames,
+                global_frames=global_frames,
                 episode_dir=episode_dir,
             )
 
@@ -903,7 +1003,11 @@ def _evaluate_variant_continuous_batched(
                 if bool(info.get("success", terminated)):
                     state.episode_success = True
                 if state.frames is not None:
-                    _capture_render_frame(state.env, state.frames)
+                    _capture_video_frames(
+                        state.env,
+                        state.frames,
+                        state.global_frames,
+                    )
 
                 if not (terminated or truncated):
                     next_active_states.append(state)
@@ -915,12 +1019,16 @@ def _evaluate_variant_continuous_batched(
                 episode_steps[episode_index] = state.episode_steps
                 if state.frames is not None and state.episode_dir is not None:
                     video_ext = str(config.get("video_format", "gif")).lstrip(".")
-                    video_path = os.path.join(
-                        state.episode_dir,
-                        f"rollout.{video_ext}",
+                    video_path, global_video_path = _record_episode_videos(
+                        video_saver=video_saver,
+                        frames=state.frames,
+                        global_frames=state.global_frames,
+                        episode_dir=state.episode_dir,
+                        video_ext=video_ext,
+                        video_fps=video_fps,
                     )
-                    video_saver.submit(state.frames, video_path, video_fps)
                     saved_video_paths[episode_index] = video_path
+                    saved_global_video_paths[episode_index] = global_video_path
 
                 if next_episode_index < num_episodes:
                     next_active_states.append(
@@ -935,6 +1043,9 @@ def _evaluate_variant_continuous_batched(
         video_saver.close()
 
     resolved_video_paths = [path for path in saved_video_paths if path is not None]
+    resolved_global_video_paths = [
+        path for path in saved_global_video_paths if path is not None
+    ]
     resolved_artifact_dirs = [
         path for path in episode_artifact_dirs if path is not None
     ]
@@ -962,6 +1073,13 @@ def _evaluate_variant_continuous_batched(
             else None
         ),
         "video_paths": resolved_video_paths,
+        "global_video_path": (
+            resolved_global_video_paths[0]
+            if len(resolved_global_video_paths) == 1
+            else None
+        ),
+        "global_video_paths": resolved_global_video_paths,
+        "all_video_paths": resolved_video_paths + resolved_global_video_paths,
         "episode_artifact_dirs": resolved_artifact_dirs,
         "episode_artifacts_dir": variant_results_dir,
         "eval_parallel_episodes_requested": parallel_episodes,
@@ -1018,6 +1136,7 @@ def evaluate_variant(
     collect_bin_probabilities = record_step_logs and uses_action_bins(config)
 
     env_kwargs = _prepare_video_env_kwargs(config, env_kwargs)
+    record_global_video = _should_record_antmaze_global_video(config)
 
     env = gym.make(env_id, **env_kwargs)
     action_dim = _validate_eval_action_dim(config, variant, env)
@@ -1037,6 +1156,7 @@ def evaluate_variant(
     total_action_time = 0.0
     total_actions = 0
     saved_video_paths = []
+    saved_global_video_paths = []
     episode_artifact_dirs = []
     video_saver = VideoSaveManager(config)
 
@@ -1049,6 +1169,7 @@ def evaluate_variant(
         history_buffer = []
         record_this_episode = record_video and ep_idx in video_episode_index_set
         episode_frames = [] if record_this_episode else None
+        episode_global_frames = [] if record_this_episode and record_global_video else None
         episode_dir = None
 
         if variant_results_dir is not None:
@@ -1057,7 +1178,7 @@ def evaluate_variant(
             episode_artifact_dirs.append(episode_dir)
 
         if episode_frames is not None:
-            _capture_render_frame(env, episode_frames)
+            _capture_video_frames(env, episode_frames, episode_global_frames)
 
         ep_return = 0.0
         ep_success = False
@@ -1133,7 +1254,7 @@ def evaluate_variant(
             )
 
             if episode_frames is not None:
-                _capture_render_frame(env, episode_frames)
+                _capture_video_frames(env, episode_frames, episode_global_frames)
 
             ep_return += float(reward)
             ep_steps += 1
@@ -1143,11 +1264,21 @@ def evaluate_variant(
 
         if episode_frames is not None and episode_dir is not None:
             video_ext = str(config.get("video_format", "gif")).lstrip(".")
-            video_path = os.path.join(episode_dir, f"rollout.{video_ext}")
-            video_saver.submit(episode_frames, video_path, video_fps)
+            video_path, global_video_path = _record_episode_videos(
+                video_saver=video_saver,
+                frames=episode_frames,
+                global_frames=episode_global_frames,
+                episode_dir=episode_dir,
+                video_ext=video_ext,
+                video_fps=video_fps,
+            )
             saved_video_paths.append(video_path)
+            if global_video_path is not None:
+                saved_global_video_paths.append(global_video_path)
             status = "queued video save" if video_saver.asynchronous else "saved video"
             print(f"  [{variant}] {status}: {video_path}")
+            if global_video_path is not None:
+                print(f"  [{variant}] {status}: {global_video_path}")
 
         episode_returns.append(ep_return)
         episode_successes.append(ep_success)
@@ -1178,6 +1309,13 @@ def evaluate_variant(
         "mean_action_time_ms": round(mean_action_time_ms, 2),
         "video_path": saved_video_paths[0] if len(saved_video_paths) == 1 else None,
         "video_paths": saved_video_paths,
+        "global_video_path": (
+            saved_global_video_paths[0]
+            if len(saved_global_video_paths) == 1
+            else None
+        ),
+        "global_video_paths": saved_global_video_paths,
+        "all_video_paths": saved_video_paths + saved_global_video_paths,
         "episode_artifact_dirs": episode_artifact_dirs,
         "episode_artifacts_dir": variant_results_dir,
         "eval_parallel_episodes_requested": parallel_episodes,

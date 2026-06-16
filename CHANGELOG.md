@@ -1201,3 +1201,18 @@ type: project
 **验证：**
 - 新增六个官方 AntMaze train/eval 地图坐标转换、prompt sensing、history、8 维 action、bin/continuous tokenization 和 eval prompt-map 刷新测试
 - 新增四个移动方向、左右两侧共 8 种新墙角/连续墙对照测试，并保留正前方真实墙阻塞测试
+
+---
+
+## AntMaze eval global videos（2026-06-16）
+
+**AntMaze 录制默认增加全局俯视角：**
+- `evaluate.py` 在 `env_family: antmaze` 且 `record_video: true` 时，除原有跟随视角 `rollout.<ext>` 外，默认额外保存 `rollout_global.<ext>`，无需新增配置项
+- 全局视角使用 MuJoCo offscreen free camera，按 AntMaze 实例的 `maze.map_width`、`maze.map_length` 和 `maze_size_scaling` 自动计算俯视距离，覆盖完整地图；每帧录制后恢复原相机状态，避免影响原跟随视角
+- 串行 rollout 和 `parallel_l1` / `parallel_gaussian` / `parallel_t` 的 batched continuous rollout 均支持双路视频帧采集与保存
+- AntMaze standalone eval 与训练期 eval 的 episode 目录现在同时包含 `rollout.<ext>` 和 `rollout_global.<ext>`；PointMaze 与 `score.py` 视频路径保持不变
+- eval `result.json` 保留原有 `video_path` / `video_paths` 指向跟随视角，并新增 `global_video_path` / `global_video_paths` / `all_video_paths` 记录全局视角和合并视频路径
+
+**验证：**
+- 已用 AntMaze `rgb_array` smoke test 验证同一步能同时捕获跟随视角和全局俯视帧
+- 已用同步 GIF 写盘 smoke test 验证同一 episode 下会生成 `rollout.gif` 与 `rollout_global.gif`
