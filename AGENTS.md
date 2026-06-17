@@ -20,8 +20,10 @@ Stack:
 
 Training:
 - `micromamba run -n llm_offline python train.py --config config.yaml`
+- Override run identity from the CLI, for example Slurm job IDs: `micromamba run -n llm_offline python train.py --config config.yaml --experiment_id <id>`
 - Tokenize/cache only, then exit before optimizer/training setup: `micromamba run -n llm_offline python train.py --config config.yaml --tokenize-only`
 - DDP single-node multi-GPU: `micromamba run -n llm_offline torchrun --standalone --nproc_per_node=<num_gpus> train.py --config config.yaml --parallel_backend ddp`
+- `--experiment_id` overrides any `experiment_id` in the config before automatic ID generation, DDP broadcast, resource monitoring, and runtime config snapshot saving.
 - Training progress is written to one run-scoped `progress/<experiment_id>.txt` file; `train.py` prints the file path once, updates it across epochs, prints the final progress line and deletes the file on successful training completion, and leaves it behind on failure. In partitioned training, shard loading is also reflected in this file as a `loading data partition ...` status.
 - Optional system resource monitoring is controlled by `resource_monitor_enabled` and writes the latest RAM/swap/GPU status to `sys_info/<experiment_id>.txt` every `resource_monitor_interval_seconds`; in DDP only rank0 samples the whole machine. The file is latest-only, not an append log.
 - At startup, `train.py` saves the resolved runtime config to `exp_configs/<experiment_id>/config.yaml`, Git metadata to `git.yaml`, and the text dirty worktree patch to `dirty.patch` before model loading and dataset construction.

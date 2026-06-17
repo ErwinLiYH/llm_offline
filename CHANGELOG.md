@@ -1245,3 +1245,15 @@ type: project
 - 写文件使用临时文件加 `os.replace()` 原子覆盖，避免读取到半行状态
 - GPU 查询失败或不可用时只在文件中记录 `gpu_error`，不影响训练主流程
 - `config.yaml` / `config.antmaze.yaml`、`AGENTS.md`、`DESIGN.md` 和 `.gitignore` 同步更新；新增单测覆盖解析、渲染、后台写入和停止状态
+
+---
+
+## Slurm experiment id override（2026-06-17）
+
+**训练启动参数：**
+- `train.py` 新增 `--experiment_id` CLI 参数，可覆盖配置文件中的 `experiment_id`；传入空字符串会直接报错
+- 覆盖发生在 experiment id 自动生成、DDP 广播、资源监控和运行配置快照之前，因此 checkpoint、result、W&B run name、`progress/<experiment_id>.txt`、`sys_info/<experiment_id>.txt` 和 `exp_configs/<experiment_id>/` 都使用 CLI 传入值
+
+**Isambard sbatch 脚本：**
+- 所有调用 `train.py` 的训练与 tokenize-only Slurm 脚本都会传入 `--experiment_id "${SLURM_JOB_ID}"`，使 Slurm job id 成为实验 ID，便于将 scheduler 日志、checkpoint、result 和 runtime snapshot 对齐
+- 新增 `sbatch/train.isb.ant.1.slurm`，用于通过 DDP 运行 `configs/train/config.isb.ant.1.yaml`

@@ -104,6 +104,12 @@ def parse_args():
     parser.add_argument("--config", type=str, default="config.yaml")
     parser.add_argument("--parallel_backend", type=str, choices=["single", "ddp"], default=None)
     parser.add_argument(
+        "--experiment_id",
+        type=str,
+        default=None,
+        help="Override experiment_id from the config; useful for scheduler job ids.",
+    )
+    parser.add_argument(
         "--tokenize-only",
         action="store_true",
         help="Build/load all selected train/val tokenized dataset caches, then exit before training.",
@@ -2629,6 +2635,11 @@ def main():
     args = parse_args()
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
+    if args.experiment_id is not None:
+        experiment_id_override = str(args.experiment_id).strip()
+        if not experiment_id_override:
+            raise ValueError("--experiment_id must not be empty when provided")
+        config["experiment_id"] = experiment_id_override
     config["train_config_source"] = args.config
     config["tokenize_only"] = bool(args.tokenize_only)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)

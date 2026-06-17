@@ -337,7 +337,7 @@ checkpoints/
 | Qwen3-0.6B 使用 except 模式排除 `large` 和 `large-dense` | `checkpoints/pointmaze/Qwen3-0.6B/except-large+large-dense/<experiment_id>/final/` |
 | Llama-3.2-1B 单独训练 umaze 变种 | `checkpoints/pointmaze/Llama-3.2-1B/umaze/<experiment_id>/final/` |
 
-`model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。`selection_tag` 已经包含训练选择语义，因此路径里不再单独重复 `train_mode`。
+`model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。`selection_tag` 已经包含训练选择语义，因此路径里不再单独重复 `train_mode`。`experiment_id` 可在配置中指定、由训练启动自动生成，或通过 `train.py --experiment_id <id>` 覆盖；CLI 覆盖发生在 DDP 广播、资源监控和运行配置快照之前。
 
 训练 batch 进度不再通过终端 carriage return 渲染，而是写入 run 级别的单行快照文件 `progress/<experiment_id>.txt`；`train.py` 启动训练 loop 时打印一次路径，跨 epoch 持续覆盖更新，训练成功完成最终 checkpoint/barrier 后打印最终进度行并删除该文件，异常退出时保留最后一次进度。`dataset_load_partitions > 1` 时，每个 train shard 加载前会把同一 progress 文件刷新为 `loading data partition i/N` 状态。
 

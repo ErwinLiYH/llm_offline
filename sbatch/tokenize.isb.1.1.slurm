@@ -38,6 +38,7 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 srun --ntasks=1 "${ENV_BIN}/python" train.py \
     --config "${CONFIG_PATH}" \
     --parallel_backend single \
+    --experiment_id "${SLURM_JOB_ID}" \
     --tokenize-only
 
 echo "Job ${SLURM_JOB_ID} finished at $(date --iso-8601=seconds)"

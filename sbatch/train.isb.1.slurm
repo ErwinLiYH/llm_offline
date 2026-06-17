@@ -42,6 +42,7 @@ srun --ntasks=1 "${ENV_BIN}/torchrun" \
     --nproc_per_node=4 \
     train.py \
     --config "${CONFIG_PATH}" \
+    --experiment_id "${SLURM_JOB_ID}" \
     --parallel_backend ddp
 
 echo "Job ${SLURM_JOB_ID} finished at $(date --iso-8601=seconds)"
