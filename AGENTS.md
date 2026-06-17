@@ -22,7 +22,7 @@ Training:
 - `micromamba run -n llm_offline python train.py --config config.yaml`
 - Tokenize/cache only, then exit before optimizer/training setup: `micromamba run -n llm_offline python train.py --config config.yaml --tokenize-only`
 - DDP single-node multi-GPU: `micromamba run -n llm_offline torchrun --standalone --nproc_per_node=<num_gpus> train.py --config config.yaml --parallel_backend ddp`
-- Training progress is written to per-epoch `progress/<uuid>.txt` files; `train.py` prints each epoch's path, prints the final progress line and deletes that epoch file on successful epoch completion, and leaves it behind on failure.
+- Training progress is written to one run-scoped `progress/<experiment_id>.txt` file; `train.py` prints the file path once, updates it across epochs, prints the final progress line and deletes the file on successful training completion, and leaves it behind on failure. In partitioned training, shard loading is also reflected in this file as a `loading data partition ...` status.
 - At startup, `train.py` saves the resolved runtime config to `exp_configs/<experiment_id>/config.yaml`, Git metadata to `git.yaml`, and the text dirty worktree patch to `dirty.patch` before model loading and dataset construction.
 
 Evaluation:

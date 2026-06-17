@@ -1318,6 +1318,32 @@ def _run_validation(
     return val_loss / max(val_batches, 1)
 
 
+def _create_training_progress_path(config: dict, dist_context: DistributedContext) -> str | None:
+    if not dist_context.is_main_process:
+        return None
+    experiment_id = str(config.get("experiment_id") or uuid.uuid4().hex[:8])
+    progress_path = os.path.join("progress", f"{experiment_id}.txt")
+    os.makedirs(os.path.dirname(progress_path), exist_ok=True)
+    print(f"[train] Training progress in file: {os.path.abspath(progress_path)}")
+    return progress_path
+
+
+def _finish_training_progress(progress_path: str | None) -> None:
+    if progress_path is None:
+        return
+    try:
+        with open(progress_path, "r", encoding="utf-8") as progress_file:
+            final_progress = progress_file.read().rstrip("\n")
+    except FileNotFoundError:
+        return
+    if final_progress:
+        print(final_progress, flush=True)
+    try:
+        os.unlink(progress_path)
+    except FileNotFoundError:
+        pass
+
+
 def _maybe_prompt_eval_step_interval(
     config: dict,
     train_loader_or_batches,
@@ -1640,15 +1666,28 @@ def _run_training_partitioned(
     )
     loss_context = _build_loss_context(config, tokenizer)
     should_run_eval = bool(config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants)
+    progress_path = _create_training_progress_path(config, dist_context)
     for epoch in range(1, num_epochs + 1):
         progress_context = (
-            FileProgress(interval_seconds=progress_interval_seconds)
+            FileProgress(
+                path=progress_path,
+                interval_seconds=progress_interval_seconds,
+                cleanup_on_success=False,
+                print_on_success=False,
+            )
             if dist_context.is_main_process
             else contextlib.nullcontext(None)
         )
         with progress_context as progress:
             if progress is not None:
-                print(f"[train] Epoch {epoch}/{num_epochs} progress in file: {progress.path.resolve()}")
+                progress.update(
+                    f"Epoch {epoch}/{num_epochs} [starting]",
+                    0,
+                    train_batches_per_epoch,
+                    time.monotonic(),
+                    extra="starting epoch",
+                    force=True,
+                )
             model.train()
             unpatch_continuous_action_forward(raw_model)
             unpatch_mtp_bin_forward(raw_model)
@@ -1674,6 +1713,17 @@ def _run_training_partitioned(
                     f"[train] Epoch {epoch}/{num_epochs}: loading partition "
                     f"{partition_index + 1}/{partition_count}",
                 )
+                loading_start = train_start if train_start is not None else time.monotonic()
+                if progress is not None:
+                    progress.update(
+                        f"Epoch {epoch}/{num_epochs} "
+                        f"[loading data partition {partition_index + 1}/{partition_count}]",
+                        epoch_batch_step,
+                        train_batches_per_epoch,
+                        loading_start,
+                        extra="loading data ...",
+                        force=True,
+                    )
                 train_loader, _ = _build_partition_data_loaders(
                     config,
                     tokenizer,
@@ -1948,6 +1998,7 @@ def _run_training_partitioned(
         FastLanguageModel.for_training(raw_model)
         ensure_continuous_action_decoder(raw_model, config)
         ensure_mtp_bin_decoder(raw_model, config)
+    return progress_path
 
 
 def _run_training(
@@ -2045,19 +2096,23 @@ def _run_training(
     )
     loss_context = _build_loss_context(config, tokenizer)
     should_run_eval = bool(config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants)
+    progress_path = _create_training_progress_path(config, dist_context)
     for epoch in range(1, num_epochs + 1):
         sampler = getattr(train_loader, "sampler", None)
         if hasattr(sampler, "set_epoch"):
             sampler.set_epoch(epoch)
 
         progress_context = (
-            FileProgress(interval_seconds=progress_interval_seconds)
+            FileProgress(
+                path=progress_path,
+                interval_seconds=progress_interval_seconds,
+                cleanup_on_success=False,
+                print_on_success=False,
+            )
             if dist_context.is_main_process
             else contextlib.nullcontext(None)
         )
         with progress_context as progress:
-            if progress is not None:
-                print(f"[train] Epoch {epoch}/{num_epochs} progress in file: {progress.path.resolve()}")
             model.train()
             unpatch_continuous_action_forward(raw_model)
             unpatch_mtp_bin_forward(raw_model)
@@ -2072,6 +2127,15 @@ def _run_training(
             epoch_step_eval_count = 0
             train_start = time.monotonic()
             train_desc = f"Epoch {epoch}/{num_epochs} [train]"
+            if progress is not None:
+                progress.update(
+                    train_desc,
+                    0,
+                    train_total,
+                    train_start,
+                    extra="starting epoch",
+                    force=True,
+                )
             optimizer.zero_grad(set_to_none=True)
             for step, batch in enumerate(train_loader, start=1):
                 global_batch_step += 1
@@ -2324,6 +2388,7 @@ def _run_training(
         FastLanguageModel.for_training(raw_model)
         ensure_continuous_action_decoder(raw_model, config)
         ensure_mtp_bin_decoder(raw_model, config)
+    return progress_path
 
 
 
@@ -2484,7 +2549,7 @@ def train_with_selection(
         _maybe_prompt_eval_step_interval(config, train_batches_per_epoch, dist_context)
         wandb_logger = init_wandb_logger(config, dist_context)
         try:
-            _run_training_partitioned(
+            progress_path = _run_training_partitioned(
                 config,
                 model,
                 tokenizer,
@@ -2504,6 +2569,7 @@ def train_with_selection(
             if dist_context.is_main_process:
                 _save_checkpoint(config, unwrap_model(model), tokenizer, checkpoint_dir)
             barrier(dist_context)
+            _finish_training_progress(progress_path)
         finally:
             wandb_logger.finish()
         return
@@ -2517,7 +2583,7 @@ def train_with_selection(
     _maybe_prompt_eval_step_interval(config, train_loader, dist_context)
     wandb_logger = init_wandb_logger(config, dist_context)
     try:
-        _run_training(
+        progress_path = _run_training(
             config,
             model,
             train_loader,
@@ -2535,6 +2601,7 @@ def train_with_selection(
         if dist_context.is_main_process:
             _save_checkpoint(config, unwrap_model(model), tokenizer, checkpoint_dir)
         barrier(dist_context)
+        _finish_training_progress(progress_path)
     finally:
         wandb_logger.finish()
 

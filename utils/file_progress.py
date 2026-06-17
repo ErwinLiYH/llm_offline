@@ -107,12 +107,21 @@ class FileProgress:
             return True
         return (time.monotonic() - self._last_write_time) >= self.interval_seconds
 
-    def update(self, desc: str, current: int, total: int, start_time: float, *, extra: str = ""):
+    def update(
+        self,
+        desc: str,
+        current: int,
+        total: int,
+        start_time: float,
+        *,
+        extra: str = "",
+        force: bool = False,
+    ):
         if self._closed:
             raise RuntimeError("Cannot update a closed FileProgress.")
         total = max(int(total), 1)
         current = min(max(int(current), 0), total)
-        if not self._should_write(current, total):
+        if not force and not self._should_write(current, total):
             return
 
         line = self._render(desc, current, total, start_time, extra=extra)
