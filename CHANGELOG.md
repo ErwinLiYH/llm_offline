@@ -1229,4 +1229,19 @@ type: project
 **分区加载状态可见化：**
 - 分区训练在每个 train shard 加载前会强制刷新 progress 文件为 `loading data partition i/N` 状态，并附带 `loading data ...` 说明
 - `FileProgress.update(...)` 新增 `force` 参数，用于绕过刷新间隔立即写入 epoch-start 和 loading 状态；默认调用语义保持不变
-- `AGENTS.md` 同步更新训练 progress 文件路径、成功清理和分区 loading 状态说明；`DESIGN.md` 无对应 progress 设计段落，本次不额外改动
+- `AGENTS.md` 同步更新训练 progress 文件路径、成功清理和分区 loading 状态说明；`DESIGN.md` 同步修正为当前 run-scoped progress 语义
+
+---
+
+## Train system resource monitor（2026-06-17）
+
+**latest-only 系统状态文件：**
+- 新增 `resource_monitor_enabled` 和 `resource_monitor_interval_seconds` 训练配置，默认关闭；启用后 rank0 每秒覆盖写 `sys_info/<experiment_id>.txt`
+- 监控覆盖普通训练和 `--tokenize-only`，从 experiment id 解析后开始，到正常结束时写入 `status: stopped`
+- 输出为当前 RAM/swap 和所有 GPU 的 latest 状态，不追加历史、不写入 W&B；DDP 下只由 rank0 采样整机状态
+
+**轻量采样实现：**
+- 新增 `utils/resource_monitor.py`，RAM/swap 直接读取 `/proc/meminfo`，GPU 使用结构化 `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`
+- 写文件使用临时文件加 `os.replace()` 原子覆盖，避免读取到半行状态
+- GPU 查询失败或不可用时只在文件中记录 `gpu_error`，不影响训练主流程
+- `config.yaml` / `config.antmaze.yaml`、`AGENTS.md`、`DESIGN.md` 和 `.gitignore` 同步更新；新增单测覆盖解析、渲染、后台写入和停止状态

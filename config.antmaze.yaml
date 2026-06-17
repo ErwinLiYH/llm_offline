@@ -16,6 +16,10 @@ wandb_entity: null         # optional W&B entity/team; null uses the SDK default
 wandb_mode: null           # optional: online | offline | disabled; null uses the SDK default
 wandb_log_interval: 10     # log train loss every n global train batches
 
+## System resource monitor
+resource_monitor_enabled: false        # true = write latest RAM/GPU status to sys_info/<experiment_id>.txt
+resource_monitor_interval_seconds: 1.0 # sample interval when resource_monitor_enabled=true
+
 ## Parallel training
 parallel_backend: single          # single | ddp; use torchrun with --parallel_backend ddp for multi-GPU
 ddp_find_unused_parameters: false # keep false for LoRA/Unsloth unless DDP reports unused parameters

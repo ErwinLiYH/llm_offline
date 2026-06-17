@@ -43,6 +43,7 @@ local_datasets/
 # Logs
 logs/
 progress/
+sys_info/
 *.log
 wandb/
 runs/
@@ -70,6 +71,7 @@ tests/
 tests/*
 !tests/test_eval_parallel.py
 !tests/test_antmaze_support.py
+!tests/test_resource_monitor.py
 scripts/
 exp_configs/
 local_references/

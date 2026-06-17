@@ -249,6 +249,8 @@ dataloader_config:
   persistent_workers: true
   prefetch_factor: 2
   non_blocking: true
+resource_monitor_enabled: false
+resource_monitor_interval_seconds: 1.0
 
 # LoRA 参数
 lora_r: 16
@@ -337,7 +339,9 @@ checkpoints/
 
 `model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。`selection_tag` 已经包含训练选择语义，因此路径里不再单独重复 `train_mode`。
 
-训练 batch 进度不再通过终端 carriage return 渲染，而是按 epoch 写入独立的单行快照文件 `progress/<uuid>.txt`；每个 epoch 开始时 `train.py` 打印该路径，epoch 正常结束时打印最终进度行并删除该文件，异常退出时保留最后一次进度。
+训练 batch 进度不再通过终端 carriage return 渲染，而是写入 run 级别的单行快照文件 `progress/<experiment_id>.txt`；`train.py` 启动训练 loop 时打印一次路径，跨 epoch 持续覆盖更新，训练成功完成最终 checkpoint/barrier 后打印最终进度行并删除该文件，异常退出时保留最后一次进度。`dataset_load_partitions > 1` 时，每个 train shard 加载前会把同一 progress 文件刷新为 `loading data partition i/N` 状态。
+
+可选的系统资源监控由 `resource_monitor_enabled` 控制，默认关闭；启用后 rank0 启动轻量后台线程，每 `resource_monitor_interval_seconds` 秒覆盖写 `sys_info/<experiment_id>.txt`，记录当前 RAM/swap 和所有 GPU 的显存、利用率、温度、功耗。RAM/swap 来自 `/proc/meminfo`，GPU 来自 `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`；GPU 查询失败只在文件中记录 `gpu_error`，不影响训练。DDP 下只由 rank0 采样整机状态，避免多 rank 重复写同一份机器信息；该文件是 latest-only，不保存历史序列，也不写入 W&B。
 
 ---
 
@@ -680,9 +684,10 @@ micromamba run -n llm_offline python train.py --config config.yaml --tokenize-on
 7. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 8. **DataLoader 与设备搬运**：`dataloader_config` 统一控制 train/val loader 的 `num_workers`、`pin_memory`、`persistent_workers` 和 `prefetch_factor`，以及 batch tensor 搬到训练设备时的 `non_blocking`。`persistent_workers` / `prefetch_factor` 仅在 `num_workers > 0` 时合法；`pin_memory: true` 配合 `non_blocking: true` 可让 CUDA H2D copy 具备异步重叠条件。DDP 下每个 rank 独立创建相同数量的 DataLoader workers
 9. **DDP 并行训练与评估**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint 和 validation 仍只由 rank0 执行；`eval_distribute_variants: true` 时训练期和 standalone rollout 把 variants 轮转分配到各 rank，由所属 rank 写对应 result、step logs 和视频，rank0 聚合结果并写 W&B
-10. **W&B 指标**：启用 `wandb_enabled` 时，batch 级日志除 `train/loss` / `train/learning_rate` 外，还记录动作模式相关 loss parts：L1 模式记录 `train/l1`，Gaussian 模式记录 `train/nll`、`train/mae`、`train/std`，其中 `nll` 是 squashed-Gaussian NLL，`mae` 是 `tanh(latent_mean)` 与目标动作的 action-space MAE，`std` 是 state-independent policy std 的均值；Student-t 模式记录 `train/tnll`、`train/mae`、`train/scale`、`train/mean_l1_aux`、`train/mean_l1_weight`、`train/df`，`mtp_bin` 记录 `train/base_loss`、`train/sampler_loss`、`train/lcm_loss`，bin soft-label 模式记录 `train/action_loss`、`train/stop_loss`。所有 action-bin 模式（`bin`、`gaussian_bin`、`mtp_bin`）还记录 `train/bin_l1`，即 greedy 预测 bin center 与目标 bin center 在连续动作单位上的 MAE。DDP 下这些指标先跨 rank 平均，再由 rank0 写入。
-11. **Official normalized score**：`score.py` 复用 `utils/eval_rollout.py` 中的 prompt 渲染、history、模型动作生成、parse retry 和 fallback 逻辑，但结果 schema 与路径独立于 `evaluate.py`。remote PointMaze reference 使用静态 Minari metadata；local reference 使用显式 goal cell、固定 score env fingerprint 和本地 JSON 校验，避免在 goal/horizon/reward type 变动后误复用旧 reference
-12. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
+10. **系统资源监控**：`resource_monitor_enabled: true` 时，仅 rank0 启动后台线程每 `resource_monitor_interval_seconds` 秒覆盖写 `sys_info/<experiment_id>.txt`。该 latest-only 文件记录 RAM/swap 和全部 GPU 状态；RAM/swap 读取 `/proc/meminfo`，GPU 使用结构化 `nvidia-smi --query-gpu`，查询失败只写入 `gpu_error`，不阻断训练。
+11. **W&B 指标**：启用 `wandb_enabled` 时，batch 级日志除 `train/loss` / `train/learning_rate` 外，还记录动作模式相关 loss parts：L1 模式记录 `train/l1`，Gaussian 模式记录 `train/nll`、`train/mae`、`train/std`，其中 `nll` 是 squashed-Gaussian NLL，`mae` 是 `tanh(latent_mean)` 与目标动作的 action-space MAE，`std` 是 state-independent policy std 的均值；Student-t 模式记录 `train/tnll`、`train/mae`、`train/scale`、`train/mean_l1_aux`、`train/mean_l1_weight`、`train/df`，`mtp_bin` 记录 `train/base_loss`、`train/sampler_loss`、`train/lcm_loss`，bin soft-label 模式记录 `train/action_loss`、`train/stop_loss`。所有 action-bin 模式（`bin`、`gaussian_bin`、`mtp_bin`）还记录 `train/bin_l1`，即 greedy 预测 bin center 与目标 bin center 在连续动作单位上的 MAE。DDP 下这些指标先跨 rank 平均，再由 rank0 写入。
+12. **Official normalized score**：`score.py` 复用 `utils/eval_rollout.py` 中的 prompt 渲染、history、模型动作生成、parse retry 和 fallback 逻辑，但结果 schema 与路径独立于 `evaluate.py`。remote PointMaze reference 使用静态 Minari metadata；local reference 使用显式 goal cell、固定 score env fingerprint 和本地 JSON 校验，避免在 goal/horizon/reward type 变动后误复用旧 reference
+13. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
 
 ---
 

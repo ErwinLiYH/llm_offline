@@ -86,6 +86,7 @@ from utils.lr_scheduler import (
     set_optimizer_lr,
 )
 from utils.prompt_loader import load_template_names
+from utils.resource_monitor import ResourceMonitor, resource_monitor_path
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 from utils.wandb_logging import (
     WandbLogger,
@@ -1342,6 +1343,23 @@ def _finish_training_progress(progress_path: str | None) -> None:
         os.unlink(progress_path)
     except FileNotFoundError:
         pass
+
+
+def _create_resource_monitor(config: dict, dist_context: DistributedContext) -> ResourceMonitor:
+    enabled = _as_bool(config.get("resource_monitor_enabled", False))
+    interval_seconds = float(config.get("resource_monitor_interval_seconds", 1.0))
+    if interval_seconds <= 0:
+        raise ValueError(
+            "resource_monitor_interval_seconds must be > 0, "
+            f"got {interval_seconds}"
+        )
+    config["resource_monitor_enabled"] = enabled
+    config["resource_monitor_interval_seconds"] = interval_seconds
+    return ResourceMonitor(
+        resource_monitor_path(str(config["experiment_id"])),
+        interval_seconds=interval_seconds,
+        enabled=enabled and dist_context.is_main_process,
+    )
 
 
 def _maybe_prompt_eval_step_interval(
@@ -2615,6 +2633,7 @@ def main():
     config["tokenize_only"] = bool(args.tokenize_only)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)
+    resource_monitor = None
     try:
         if "episode_keep_ratio" in config:
             raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
@@ -2625,6 +2644,14 @@ def main():
             experiment_id = config.get("experiment_id")
         experiment_id = broadcast_object(experiment_id, dist_context)
         config["experiment_id"] = experiment_id
+
+        resource_monitor = _create_resource_monitor(config, dist_context)
+        resource_monitor.start()
+        if resource_monitor.enabled:
+            rank_zero_print(
+                dist_context,
+                f"[sys-info] Writing latest system status to: {resource_monitor.path.resolve()}",
+            )
 
         normalize_prompt_config(config)
         dataloader_config = resolve_dataloader_config(config)
@@ -2751,6 +2778,8 @@ def main():
                 train_selection,
                 dist_context,
             )
+            if resource_monitor is not None:
+                resource_monitor.stop(final_status="stopped")
             return
 
         model.to(device)
@@ -2772,7 +2801,11 @@ def main():
             device,
             dist_context,
         )
+        if resource_monitor is not None:
+            resource_monitor.stop(final_status="stopped")
     finally:
+        if resource_monitor is not None:
+            resource_monitor.stop(final_status=None)
         cleanup_distributed(dist_context)
 
 
