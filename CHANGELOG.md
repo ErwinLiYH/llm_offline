@@ -1284,6 +1284,7 @@ type: project
 
 **训练恢复入口：**
 - `train.py` 新增 `resume_from_checkpoint` 配置项和 `--resume_from_checkpoint` CLI 覆盖；值为 `null`、空值或注释掉时保持普通新训练流程
+- 所有 AntMaze Isambard 训练脚本 `sbatch/train.isb.ant*.slurm` 支持可选脚本参数 `--resume <checkpoint_dir>` / `--resume_from_checkpoint <checkpoint_dir>`；不传参数时保持普通训练
 - 非空路径触发 resume 时，从 checkpoint 目录加载 LoRA adapter、tokenizer、continuous/MTP sidecar decoder，并读取 `trainer_state.pt` 恢复训练状态；旧 checkpoint 若没有 `trainer_state.pt` 会直接报错
 - resume 输出仍使用当前 run 的新 `experiment_id`，适合 Slurm 重新提交；checkpoint state 记录来源 checkpoint 路径和来源 `experiment_id`
 
