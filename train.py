@@ -52,7 +52,11 @@ from model.mtp_bin import (
     unpatch_mtp_bin_forward,
     uses_mtp_bin,
 )
-from model.policy import load_model_and_tokenizer, get_model_slug
+from model.policy import (
+    load_model_and_tokenizer,
+    load_model_and_tokenizer_for_training_checkpoint,
+    get_model_slug,
+)
 from utils.action_bins import (
     action_bin_equivalent_l1,
     gaussian_action_loss,
@@ -114,6 +118,12 @@ def parse_args():
         "--tokenize-only",
         action="store_true",
         help="Build/load all selected train/val tokenized dataset caches, then exit before training.",
+    )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Resume training from a checkpoint directory containing trainer_state.pt.",
     )
     return parser.parse_args()
 
@@ -1448,6 +1458,7 @@ def _maybe_prompt_eval_step_interval(
 
 
 _STEP_EVAL_EPOCH_SKIP_RATIO = 0.25
+TRAINER_STATE_FILENAME = "trainer_state.pt"
 
 
 def _initial_epoch_step_eval_at(eval_step_interval: int) -> int | None:
@@ -1521,6 +1532,197 @@ def _step_eval_checkpoint_only_reason(
         f"step_eval_skip={step_eval_skip}: step eval trigger {trigger_count} "
         "this epoch is checkpoint-only"
     )
+
+
+def _trainer_state_path(checkpoint_dir: str) -> str:
+    return os.path.join(checkpoint_dir, TRAINER_STATE_FILENAME)
+
+
+def _load_trainer_state(checkpoint_dir: str | None) -> dict | None:
+    if not checkpoint_dir:
+        return None
+    state_path = _trainer_state_path(checkpoint_dir)
+    if not os.path.exists(state_path):
+        raise FileNotFoundError(
+            f"Cannot resume from {checkpoint_dir}: missing {TRAINER_STATE_FILENAME}. "
+            "Resume is supported only for checkpoints saved with trainer state."
+        )
+    return torch.load(state_path, map_location="cpu")
+
+
+def _optimizer_param_group_signature(optimizer: torch.optim.Optimizer) -> list[dict]:
+    signature = []
+    for group in optimizer.param_groups:
+        signature.append(
+            {
+                "param_count": len(group.get("params", [])),
+                "weight_decay": float(group.get("weight_decay", 0.0) or 0.0),
+            }
+        )
+    return signature
+
+
+def _partition_stats_signature(partition_stats: list[dict] | None) -> list[dict]:
+    if not partition_stats:
+        return []
+    return [
+        {
+            "partition_index": int(stat["partition_index"]),
+            "train_batches": int(stat["train_batches"]),
+            "train_samples": int(stat["train_samples"]),
+        }
+        for stat in partition_stats
+    ]
+
+
+def _resume_compat_metadata(
+    *,
+    config: dict,
+    selected_variants: list[str],
+    dist_context: DistributedContext,
+    optimizer: torch.optim.Optimizer,
+    train_batches_per_epoch: int,
+    partition_count: int,
+    partition_stats: list[dict] | None,
+) -> dict:
+    return {
+        "train_variants": list(selected_variants),
+        "world_size": int(dist_context.world_size),
+        "batch_size": int(config["batch_size"]),
+        "gradient_accumulation_steps": int(config.get("gradient_accumulation_steps", 1)),
+        "action_token_mode": get_action_token_mode(config),
+        "action_dim": int(config.get("action_dim", 0) or 0),
+        "dataset_load_partitions": int(partition_count),
+        "train_batches_per_epoch": int(train_batches_per_epoch),
+        "optimizer_param_groups": _optimizer_param_group_signature(optimizer),
+        "partition_stats": _partition_stats_signature(partition_stats),
+    }
+
+
+def _validate_resume_compatibility(saved: dict, current: dict) -> None:
+    mismatches = []
+    for key, current_value in current.items():
+        saved_value = saved.get(key)
+        if saved_value != current_value:
+            mismatches.append((key, saved_value, current_value))
+    if mismatches:
+        lines = [
+            "Resume checkpoint is incompatible with the current training setup:"
+        ]
+        for key, saved_value, current_value in mismatches:
+            lines.append(f"  {key}: checkpoint={saved_value!r}, current={current_value!r}")
+        raise ValueError("\n".join(lines))
+
+
+def _scheduler_metadata(
+    *,
+    scheduler_type: str,
+    base_learning_rate: float,
+    warmup_steps: int,
+    lr_decay_steps: int,
+    min_lr_ratio: float,
+    total_training_steps: int,
+    updates_per_epoch: int,
+    optimizer_step: int,
+) -> dict:
+    return {
+        "scheduler_type": scheduler_type,
+        "base_learning_rate": float(base_learning_rate),
+        "warmup_steps": int(warmup_steps),
+        "lr_decay_steps": int(lr_decay_steps),
+        "min_lr_ratio": float(min_lr_ratio),
+        "total_training_steps": int(total_training_steps),
+        "updates_per_epoch": int(updates_per_epoch),
+        "optimizer_step": int(optimizer_step),
+    }
+
+
+def _loop_state(
+    *,
+    epoch: int,
+    completed_epoch_batch_step: int,
+    train_batches_per_epoch: int,
+    global_batch_step: int,
+    epoch_step_eval_count: int,
+    next_step_eval_at: int | None,
+    partition_order_position: int | None = None,
+    partition_index: int | None = None,
+    completed_partition_batch_step: int | None = None,
+) -> dict:
+    return {
+        "current_epoch": int(epoch),
+        "completed_epoch_batch_step": int(completed_epoch_batch_step),
+        "train_batches_per_epoch": int(train_batches_per_epoch),
+        "global_batch_step": int(global_batch_step),
+        "epoch_step_eval_count": int(epoch_step_eval_count),
+        "next_step_eval_at": next_step_eval_at,
+        "partition_order_position": partition_order_position,
+        "partition_index": partition_index,
+        "completed_partition_batch_step": completed_partition_batch_step,
+    }
+
+
+def _build_trainer_state(
+    *,
+    config: dict,
+    optimizer: torch.optim.Optimizer,
+    scheduler_meta: dict,
+    loop_state: dict,
+    compat_metadata: dict,
+) -> dict:
+    source_checkpoint = config.get("resume_from_checkpoint")
+    return {
+        "version": 1,
+        "optimizer_state_dict": optimizer.state_dict(),
+        "lr_scheduler": dict(scheduler_meta),
+        "loop_state": dict(loop_state),
+        "compat": dict(compat_metadata),
+        "source_checkpoint_path": str(source_checkpoint) if source_checkpoint else None,
+        "source_experiment_id": config.get("resume_source_experiment_id"),
+        "experiment_id": config.get("experiment_id"),
+    }
+
+
+def _resume_epoch_plan(
+    *,
+    additional_epochs: int,
+    train_batches_per_epoch: int,
+    resume_loop_state: dict | None,
+) -> tuple[int, int, int, int]:
+    if additional_epochs < 0:
+        raise ValueError(f"num_epochs must be >= 0 when resuming, got {additional_epochs}")
+    if resume_loop_state is None:
+        return 1, int(additional_epochs), 0, 0
+
+    resume_epoch = int(resume_loop_state["current_epoch"])
+    completed = int(resume_loop_state.get("completed_epoch_batch_step", 0) or 0)
+    if completed < 0 or completed > int(train_batches_per_epoch):
+        raise ValueError(
+            "Invalid checkpoint loop state: completed_epoch_batch_step="
+            f"{completed}, train_batches_per_epoch={train_batches_per_epoch}"
+        )
+    end_epoch = resume_epoch + int(additional_epochs)
+    start_epoch = resume_epoch if completed < int(train_batches_per_epoch) else resume_epoch + 1
+    return start_epoch, end_epoch, resume_epoch, completed
+
+
+def _completed_optimizer_steps_in_epoch(
+    completed_epoch_batch_step: int,
+    gradient_accumulation_steps: int,
+    train_batches_per_epoch: int,
+) -> int:
+    completed = int(completed_epoch_batch_step)
+    if completed <= 0:
+        return 0
+    if completed >= int(train_batches_per_epoch):
+        return int(math.ceil(int(train_batches_per_epoch) / int(gradient_accumulation_steps)))
+    if completed % int(gradient_accumulation_steps) != 0:
+        raise ValueError(
+            "Cannot resume from a checkpoint saved mid gradient-accumulation window: "
+            f"completed_epoch_batch_step={completed}, "
+            f"gradient_accumulation_steps={gradient_accumulation_steps}"
+        )
+    return completed // int(gradient_accumulation_steps)
 
 
 def _build_loss_context(config: dict, tokenizer) -> dict:
@@ -1641,7 +1843,7 @@ def _run_training_partitioned(
             f"non_decay_params={optimizer_info['non_decay_param_count']}",
         )
 
-    num_epochs = config["num_epochs"]
+    num_epochs = int(config["num_epochs"])
     gradient_accumulation_steps = int(config.get("gradient_accumulation_steps", 1))
     if gradient_accumulation_steps < 1:
         raise ValueError(
@@ -1679,8 +1881,42 @@ def _run_training_partitioned(
             min_lr_ratio=min_lr_ratio,
         ),
     )
+    compat_metadata = _resume_compat_metadata(
+        config=config,
+        selected_variants=selected_variants,
+        dist_context=dist_context,
+        optimizer=optimizer,
+        train_batches_per_epoch=train_batches_per_epoch,
+        partition_count=partition_count,
+        partition_stats=partition_stats,
+    )
+    resume_trainer_state = _load_trainer_state(config.get("resume_from_checkpoint"))
+    resume_loop_state = None
     optimizer_step = 0
     global_batch_step = 0
+    if resume_trainer_state is not None:
+        _validate_resume_compatibility(resume_trainer_state.get("compat", {}), compat_metadata)
+        optimizer.load_state_dict(resume_trainer_state["optimizer_state_dict"])
+        saved_scheduler = resume_trainer_state["lr_scheduler"]
+        lr_scheduler_type = normalize_lr_scheduler_type(saved_scheduler["scheduler_type"])
+        base_learning_rate = float(saved_scheduler["base_learning_rate"])
+        warmup_steps = int(saved_scheduler["warmup_steps"])
+        lr_decay_steps = int(saved_scheduler["lr_decay_steps"])
+        min_lr_ratio = float(saved_scheduler["min_lr_ratio"])
+        total_training_steps = int(saved_scheduler["total_training_steps"])
+        optimizer_step = int(saved_scheduler["optimizer_step"])
+        resume_loop_state = resume_trainer_state["loop_state"]
+        global_batch_step = int(resume_loop_state["global_batch_step"])
+        initial_lr = get_optimizer_lr(optimizer)
+        rank_zero_print(
+            dist_context,
+            "[train] Resuming partitioned training from "
+            f"{config['resume_from_checkpoint']} at epoch "
+            f"{resume_loop_state['current_epoch']} batch "
+            f"{resume_loop_state['completed_epoch_batch_step']}/"
+            f"{train_batches_per_epoch}, optimizer_step={optimizer_step}, "
+            f"global_batch_step={global_batch_step}",
+        )
     eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
     if eval_step_interval < 0:
         raise ValueError(f"eval_step_interval must be >= 0, got {eval_step_interval}")
@@ -1692,6 +1928,21 @@ def _run_training_partitioned(
     current_env_steps = 0.0
     global_effective_batch_size = (
         int(config["batch_size"]) * gradient_accumulation_steps * dist_context.world_size
+    )
+    start_epoch, end_epoch, resume_epoch, resume_completed_epoch_step = _resume_epoch_plan(
+        additional_epochs=num_epochs,
+        train_batches_per_epoch=train_batches_per_epoch,
+        resume_loop_state=resume_loop_state,
+    )
+    scheduler_meta = _scheduler_metadata(
+        scheduler_type=lr_scheduler_type,
+        base_learning_rate=base_learning_rate,
+        warmup_steps=warmup_steps,
+        lr_decay_steps=lr_decay_steps,
+        min_lr_ratio=min_lr_ratio,
+        total_training_steps=total_training_steps,
+        updates_per_epoch=updates_per_epoch,
+        optimizer_step=optimizer_step,
     )
     rank_zero_print(
         dist_context,
@@ -1713,7 +1964,18 @@ def _run_training_partitioned(
     loss_context = _build_loss_context(config, tokenizer)
     should_run_eval = bool(config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants)
     progress_path = _create_training_progress_path(config, dist_context)
-    for epoch in range(1, num_epochs + 1):
+    last_loop_state = _loop_state(
+        epoch=resume_epoch,
+        completed_epoch_batch_step=resume_completed_epoch_step,
+        train_batches_per_epoch=train_batches_per_epoch,
+        global_batch_step=global_batch_step,
+        epoch_step_eval_count=int((resume_loop_state or {}).get("epoch_step_eval_count", 0) or 0),
+        next_step_eval_at=(resume_loop_state or {}).get("next_step_eval_at"),
+        partition_order_position=(resume_loop_state or {}).get("partition_order_position"),
+        partition_index=(resume_loop_state or {}).get("partition_index"),
+        completed_partition_batch_step=(resume_loop_state or {}).get("completed_partition_batch_step"),
+    )
+    for epoch in range(start_epoch, end_epoch + 1):
         progress_context = (
             FileProgress(
                 path=progress_path,
@@ -1727,7 +1989,7 @@ def _run_training_partitioned(
         with progress_context as progress:
             if progress is not None:
                 progress.update(
-                    f"Epoch {epoch}/{num_epochs} [starting]",
+                    f"Epoch {epoch}/{end_epoch} [starting]",
                     0,
                     train_batches_per_epoch,
                     time.monotonic(),
@@ -1742,27 +2004,62 @@ def _run_training_partitioned(
             ensure_mtp_bin_decoder(raw_model, config)
             total_loss = 0.0
             num_batches = 0
-            epoch_optimizer_step = 0
-            epoch_batch_step = 0
-            next_step_eval_at = _initial_epoch_step_eval_at(eval_step_interval)
-            epoch_step_eval_count = 0
+            active_resume = resume_loop_state if epoch == resume_epoch else None
+            completed_epoch_step = (
+                int(active_resume.get("completed_epoch_batch_step", 0) or 0)
+                if active_resume is not None
+                else 0
+            )
+            epoch_optimizer_step = _completed_optimizer_steps_in_epoch(
+                completed_epoch_step,
+                gradient_accumulation_steps,
+                train_batches_per_epoch,
+            )
+            epoch_batch_step = completed_epoch_step
+            next_step_eval_at = (
+                active_resume.get("next_step_eval_at")
+                if active_resume is not None
+                else _initial_epoch_step_eval_at(eval_step_interval)
+            )
+            epoch_step_eval_count = (
+                int(active_resume.get("epoch_step_eval_count", 0) or 0)
+                if active_resume is not None
+                else 0
+            )
             train_start = None
-            train_desc = f"Epoch {epoch}/{num_epochs} [train]"
+            train_desc = f"Epoch {epoch}/{end_epoch} [train]"
             optimizer.zero_grad(set_to_none=True)
-            for partition_index in _partition_order(
+            partition_order = _partition_order(
                 partition_count,
                 epoch,
                 int(config.get("sampling_seed", 0)),
-            ):
+            )
+            resume_partition_order_position = (
+                active_resume.get("partition_order_position")
+                if active_resume is not None
+                else None
+            )
+            resume_completed_partition_step = int(
+                (active_resume or {}).get("completed_partition_batch_step", 0) or 0
+            )
+            for partition_order_position, partition_index in enumerate(partition_order):
+                if active_resume is not None and completed_epoch_step >= train_batches_per_epoch:
+                    break
+                if (
+                    active_resume is not None
+                    and resume_partition_order_position is not None
+                    and partition_order_position < int(resume_partition_order_position)
+                ):
+                    continue
                 rank_zero_print(
                     dist_context,
-                    f"[train] Epoch {epoch}/{num_epochs}: loading partition "
+                    f"[train] Epoch {epoch}/{end_epoch}: loading partition "
                     f"{partition_index + 1}/{partition_count}",
                 )
                 loading_start = train_start if train_start is not None else time.monotonic()
                 if progress is not None:
                     progress.update(
-                        f"Epoch {epoch}/{num_epochs} "
+                        f"Epoch {epoch}/{end_epoch} "
                         f"[loading data partition {partition_index + 1}/{partition_count}]",
                         epoch_batch_step,
                         train_batches_per_epoch,
@@ -1782,8 +2079,19 @@ def _run_training_partitioned(
                 sampler = getattr(train_loader, "sampler", None)
                 if hasattr(sampler, "set_epoch"):
                     sampler.set_epoch(epoch * partition_count + partition_index)
+                else:
+                    torch.manual_seed(
+                        int(config.get("sampling_seed", 0)) + epoch * partition_count + partition_index
+                    )
 
-                for batch in train_loader:
+                for partition_batch_step, batch in enumerate(train_loader, start=1):
+                    if (
+                        active_resume is not None
+                        and resume_partition_order_position is not None
+                        and partition_order_position == int(resume_partition_order_position)
+                        and partition_batch_step <= resume_completed_partition_step
+                    ):
+                        continue
                     if train_start is None:
                         train_start = time.monotonic()
                     epoch_batch_step += 1
@@ -1940,7 +2248,32 @@ def _run_training_partitioned(
                                     f"optimizer_step={optimizer_step}  "
                                     f"reason={checkpoint_only_reason}"
                                 )
-                            _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
+                            scheduler_meta["optimizer_step"] = optimizer_step
+                            step_loop_state = _loop_state(
+                                epoch=epoch,
+                                completed_epoch_batch_step=epoch_batch_step,
+                                train_batches_per_epoch=train_batches_per_epoch,
+                                global_batch_step=global_batch_step,
+                                epoch_step_eval_count=epoch_step_eval_count,
+                                next_step_eval_at=next_step_eval_at,
+                                partition_order_position=partition_order_position,
+                                partition_index=partition_index,
+                                completed_partition_batch_step=partition_batch_step,
+                            )
+                            last_loop_state = step_loop_state
+                            _save_checkpoint(
+                                config,
+                                raw_model,
+                                tokenizer,
+                                step_ckpt_dir,
+                                trainer_state=_build_trainer_state(
+                                    config=config,
+                                    optimizer=optimizer,
+                                    scheduler_meta=scheduler_meta,
+                                    loop_state=step_loop_state,
+                                    compat_metadata=compat_metadata,
+                                ),
+                            )
                         if checkpoint_only_reason is None:
                             step_val_loss = broadcast_object(
                                 step_val_loss,
@@ -1990,13 +2323,13 @@ def _run_training_partitioned(
                     device,
                     loss_context,
                     progress,
-                    desc=f"Epoch {epoch}/{num_epochs} [val]",
-                    warning_label=f"epoch {epoch}/{num_epochs}",
+                    desc=f"Epoch {epoch}/{end_epoch} [val]",
+                    warning_label=f"epoch {epoch}/{end_epoch}",
                 )
 
         if dist_context.is_main_process:
             print(
-                f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  "
+                f"[epoch {epoch}/{end_epoch}] train_loss={train_loss:.4f}  "
                 f"val_loss={_format_loss_value(val_loss)}"
             )
             if wandb_logger.enabled:
@@ -2015,8 +2348,33 @@ def _run_training_partitioned(
                 )
 
         epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
+        scheduler_meta["optimizer_step"] = optimizer_step
+        epoch_loop_state = _loop_state(
+            epoch=epoch,
+            completed_epoch_batch_step=train_batches_per_epoch,
+            train_batches_per_epoch=train_batches_per_epoch,
+            global_batch_step=global_batch_step,
+            epoch_step_eval_count=epoch_step_eval_count,
+            next_step_eval_at=next_step_eval_at,
+            partition_order_position=len(partition_order),
+            partition_index=None,
+            completed_partition_batch_step=None,
+        )
+        last_loop_state = epoch_loop_state
         if dist_context.is_main_process:
-            _save_checkpoint(config, raw_model, tokenizer, epoch_ckpt_dir)
+            _save_checkpoint(
+                config,
+                raw_model,
+                tokenizer,
+                epoch_ckpt_dir,
+                trainer_state=_build_trainer_state(
+                    config=config,
+                    optimizer=optimizer,
+                    scheduler_meta=scheduler_meta,
+                    loop_state=epoch_loop_state,
+                    compat_metadata=compat_metadata,
+                ),
+            )
         val_loss = broadcast_object(val_loss, dist_context)
         if should_run_eval:
             _run_eval(
@@ -2044,6 +2402,23 @@ def _run_training_partitioned(
         FastLanguageModel.for_training(raw_model)
         ensure_continuous_action_decoder(raw_model, config)
         ensure_mtp_bin_decoder(raw_model, config)
+    final_ckpt_dir = get_checkpoint_dir(config, selection_tag)
+    scheduler_meta["optimizer_step"] = optimizer_step
+    if dist_context.is_main_process:
+        _save_checkpoint(
+            config,
+            raw_model,
+            tokenizer,
+            final_ckpt_dir,
+            trainer_state=_build_trainer_state(
+                config=config,
+                optimizer=optimizer,
+                scheduler_meta=scheduler_meta,
+                loop_state=last_loop_state,
+                compat_metadata=compat_metadata,
+            ),
+        )
+    barrier(dist_context)
     return progress_path
 
 
@@ -2053,6 +2428,7 @@ def _run_training(
     train_loader,
     val_loader,
     device,
+    selected_variants: list[str],
     selection_tag: str,
     progress_interval_seconds: float,
     dist_context: DistributedContext,
@@ -2078,7 +2454,7 @@ def _run_training(
             f"non_decay_params={optimizer_info['non_decay_param_count']}",
         )
 
-    num_epochs = config["num_epochs"]
+    num_epochs = int(config["num_epochs"])
     gradient_accumulation_steps = int(config.get("gradient_accumulation_steps", 1))
     if gradient_accumulation_steps < 1:
         raise ValueError(
@@ -2112,8 +2488,43 @@ def _run_training(
             min_lr_ratio=min_lr_ratio,
         ),
     )
+    train_total = len(train_loader)
+    compat_metadata = _resume_compat_metadata(
+        config=config,
+        selected_variants=selected_variants,
+        dist_context=dist_context,
+        optimizer=optimizer,
+        train_batches_per_epoch=train_total,
+        partition_count=1,
+        partition_stats=None,
+    )
+    resume_trainer_state = _load_trainer_state(config.get("resume_from_checkpoint"))
+    resume_loop_state = None
     optimizer_step = 0
     global_batch_step = 0
+    if resume_trainer_state is not None:
+        _validate_resume_compatibility(resume_trainer_state.get("compat", {}), compat_metadata)
+        optimizer.load_state_dict(resume_trainer_state["optimizer_state_dict"])
+        saved_scheduler = resume_trainer_state["lr_scheduler"]
+        lr_scheduler_type = normalize_lr_scheduler_type(saved_scheduler["scheduler_type"])
+        base_learning_rate = float(saved_scheduler["base_learning_rate"])
+        warmup_steps = int(saved_scheduler["warmup_steps"])
+        lr_decay_steps = int(saved_scheduler["lr_decay_steps"])
+        min_lr_ratio = float(saved_scheduler["min_lr_ratio"])
+        total_training_steps = int(saved_scheduler["total_training_steps"])
+        optimizer_step = int(saved_scheduler["optimizer_step"])
+        resume_loop_state = resume_trainer_state["loop_state"]
+        global_batch_step = int(resume_loop_state["global_batch_step"])
+        initial_lr = get_optimizer_lr(optimizer)
+        rank_zero_print(
+            dist_context,
+            "[train] Resuming training from "
+            f"{config['resume_from_checkpoint']} at epoch "
+            f"{resume_loop_state['current_epoch']} batch "
+            f"{resume_loop_state['completed_epoch_batch_step']}/"
+            f"{train_total}, optimizer_step={optimizer_step}, "
+            f"global_batch_step={global_batch_step}",
+        )
     eval_step_interval = int(config.get("eval_step_interval", 0) or 0)
     if eval_step_interval < 0:
         raise ValueError(f"eval_step_interval must be >= 0, got {eval_step_interval}")
@@ -2125,6 +2536,21 @@ def _run_training(
     current_env_steps = 0.0
     global_effective_batch_size = (
         int(config["batch_size"]) * gradient_accumulation_steps * dist_context.world_size
+    )
+    start_epoch, end_epoch, resume_epoch, resume_completed_epoch_step = _resume_epoch_plan(
+        additional_epochs=num_epochs,
+        train_batches_per_epoch=train_total,
+        resume_loop_state=resume_loop_state,
+    )
+    scheduler_meta = _scheduler_metadata(
+        scheduler_type=lr_scheduler_type,
+        base_learning_rate=base_learning_rate,
+        warmup_steps=warmup_steps,
+        lr_decay_steps=lr_decay_steps,
+        min_lr_ratio=min_lr_ratio,
+        total_training_steps=total_training_steps,
+        updates_per_epoch=updates_per_epoch,
+        optimizer_step=optimizer_step,
     )
     rank_zero_print(
         dist_context,
@@ -2143,10 +2569,20 @@ def _run_training(
     loss_context = _build_loss_context(config, tokenizer)
     should_run_eval = bool(config.get("eval_num_episodes", 0) > 0 and tokenizer is not None and eval_variants)
     progress_path = _create_training_progress_path(config, dist_context)
-    for epoch in range(1, num_epochs + 1):
+    last_loop_state = _loop_state(
+        epoch=resume_epoch,
+        completed_epoch_batch_step=resume_completed_epoch_step,
+        train_batches_per_epoch=train_total,
+        global_batch_step=global_batch_step,
+        epoch_step_eval_count=int((resume_loop_state or {}).get("epoch_step_eval_count", 0) or 0),
+        next_step_eval_at=(resume_loop_state or {}).get("next_step_eval_at"),
+    )
+    for epoch in range(start_epoch, end_epoch + 1):
         sampler = getattr(train_loader, "sampler", None)
         if hasattr(sampler, "set_epoch"):
             sampler.set_epoch(epoch)
+        else:
+            torch.manual_seed(int(config.get("sampling_seed", 0)) + epoch)
 
         progress_context = (
             FileProgress(
@@ -2167,16 +2603,33 @@ def _run_training(
             ensure_mtp_bin_decoder(raw_model, config)
             total_loss = 0.0
             num_batches = 0
-            epoch_optimizer_step = 0
-            train_total = len(train_loader)
-            next_step_eval_at = _initial_epoch_step_eval_at(eval_step_interval)
-            epoch_step_eval_count = 0
+            active_resume = resume_loop_state if epoch == resume_epoch else None
+            completed_epoch_step = (
+                int(active_resume.get("completed_epoch_batch_step", 0) or 0)
+                if active_resume is not None
+                else 0
+            )
+            epoch_optimizer_step = _completed_optimizer_steps_in_epoch(
+                completed_epoch_step,
+                gradient_accumulation_steps,
+                train_total,
+            )
+            next_step_eval_at = (
+                active_resume.get("next_step_eval_at")
+                if active_resume is not None
+                else _initial_epoch_step_eval_at(eval_step_interval)
+            )
+            epoch_step_eval_count = (
+                int(active_resume.get("epoch_step_eval_count", 0) or 0)
+                if active_resume is not None
+                else 0
+            )
             train_start = time.monotonic()
-            train_desc = f"Epoch {epoch}/{num_epochs} [train]"
+            train_desc = f"Epoch {epoch}/{end_epoch} [train]"
             if progress is not None:
                 progress.update(
                     train_desc,
-                    0,
+                    completed_epoch_step,
                     train_total,
                     train_start,
                     extra="starting epoch",
@@ -2184,6 +2637,8 @@ def _run_training(
                 )
             optimizer.zero_grad(set_to_none=True)
             for step, batch in enumerate(train_loader, start=1):
+                if active_resume is not None and step <= completed_epoch_step:
+                    continue
                 global_batch_step += 1
                 loss, loss_parts = _compute_batch_loss(model, batch, device, loss_context)
                 should_step = step % gradient_accumulation_steps == 0 or step == train_total
@@ -2333,7 +2788,29 @@ def _run_training(
                                 f"optimizer_step={optimizer_step}  "
                                 f"reason={checkpoint_only_reason}"
                             )
-                        _save_checkpoint(config, raw_model, tokenizer, step_ckpt_dir)
+                        scheduler_meta["optimizer_step"] = optimizer_step
+                        step_loop_state = _loop_state(
+                            epoch=epoch,
+                            completed_epoch_batch_step=step,
+                            train_batches_per_epoch=train_total,
+                            global_batch_step=global_batch_step,
+                            epoch_step_eval_count=epoch_step_eval_count,
+                            next_step_eval_at=next_step_eval_at,
+                        )
+                        last_loop_state = step_loop_state
+                        _save_checkpoint(
+                            config,
+                            raw_model,
+                            tokenizer,
+                            step_ckpt_dir,
+                            trainer_state=_build_trainer_state(
+                                config=config,
+                                optimizer=optimizer,
+                                scheduler_meta=scheduler_meta,
+                                loop_state=step_loop_state,
+                                compat_metadata=compat_metadata,
+                            ),
+                        )
                     if checkpoint_only_reason is None:
                         step_val_loss = broadcast_object(
                             step_val_loss,
@@ -2380,13 +2857,13 @@ def _run_training(
                     device,
                     loss_context,
                     progress,
-                    desc=f"Epoch {epoch}/{num_epochs} [val]",
-                    warning_label=f"epoch {epoch}/{num_epochs}",
+                    desc=f"Epoch {epoch}/{end_epoch} [val]",
+                    warning_label=f"epoch {epoch}/{end_epoch}",
                 )
 
         if dist_context.is_main_process:
             print(
-                f"[epoch {epoch}/{num_epochs}] train_loss={train_loss:.4f}  "
+                f"[epoch {epoch}/{end_epoch}] train_loss={train_loss:.4f}  "
                 f"val_loss={_format_loss_value(val_loss)}"
             )
             if wandb_logger.enabled:
@@ -2405,8 +2882,30 @@ def _run_training(
                 )
 
         epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
+        scheduler_meta["optimizer_step"] = optimizer_step
+        epoch_loop_state = _loop_state(
+            epoch=epoch,
+            completed_epoch_batch_step=train_total,
+            train_batches_per_epoch=train_total,
+            global_batch_step=global_batch_step,
+            epoch_step_eval_count=epoch_step_eval_count,
+            next_step_eval_at=next_step_eval_at,
+        )
+        last_loop_state = epoch_loop_state
         if dist_context.is_main_process:
-            _save_checkpoint(config, raw_model, tokenizer, epoch_ckpt_dir)
+            _save_checkpoint(
+                config,
+                raw_model,
+                tokenizer,
+                epoch_ckpt_dir,
+                trainer_state=_build_trainer_state(
+                    config=config,
+                    optimizer=optimizer,
+                    scheduler_meta=scheduler_meta,
+                    loop_state=epoch_loop_state,
+                    compat_metadata=compat_metadata,
+                ),
+            )
         val_loss = broadcast_object(val_loss, dist_context)
         if should_run_eval:
             _run_eval(
@@ -2434,11 +2933,28 @@ def _run_training(
         FastLanguageModel.for_training(raw_model)
         ensure_continuous_action_decoder(raw_model, config)
         ensure_mtp_bin_decoder(raw_model, config)
+    final_ckpt_dir = get_checkpoint_dir(config, selection_tag)
+    scheduler_meta["optimizer_step"] = optimizer_step
+    if dist_context.is_main_process:
+        _save_checkpoint(
+            config,
+            raw_model,
+            tokenizer,
+            final_ckpt_dir,
+            trainer_state=_build_trainer_state(
+                config=config,
+                optimizer=optimizer,
+                scheduler_meta=scheduler_meta,
+                loop_state=last_loop_state,
+                compat_metadata=compat_metadata,
+            ),
+        )
+    barrier(dist_context)
     return progress_path
 
 
 
-def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
+def _save_checkpoint(config, model, tokenizer, checkpoint_dir, trainer_state: dict | None = None):
     model = unwrap_model(model)
     os.makedirs(checkpoint_dir, exist_ok=True)
     model.save_pretrained(checkpoint_dir)
@@ -2450,6 +2966,8 @@ def _save_checkpoint(config, model, tokenizer, checkpoint_dir):
     config_dst = os.path.join(checkpoint_dir, "config.yaml")
     with open(config_dst, "w") as f:
         yaml.dump(config, f)
+    if trainer_state is not None:
+        torch.save(trainer_state, _trainer_state_path(checkpoint_dir))
 
     adapter_cfg_path = os.path.join(checkpoint_dir, "adapter_config.json")
     if os.path.exists(adapter_cfg_path):
@@ -2611,10 +3129,6 @@ def train_with_selection(
                 wandb_logger=wandb_logger,
             )
 
-            checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
-            if dist_context.is_main_process:
-                _save_checkpoint(config, unwrap_model(model), tokenizer, checkpoint_dir)
-            barrier(dist_context)
             _finish_training_progress(progress_path)
         finally:
             wandb_logger.finish()
@@ -2635,6 +3149,7 @@ def train_with_selection(
             train_loader,
             val_loader,
             device,
+            selected_variants=train_selection.selected_variants,
             selection_tag=train_selection.selection_tag,
             progress_interval_seconds=progress_interval,
             dist_context=dist_context,
@@ -2643,10 +3158,6 @@ def train_with_selection(
             wandb_logger=wandb_logger,
         )
 
-        checkpoint_dir = get_checkpoint_dir(config, train_selection.selection_tag)
-        if dist_context.is_main_process:
-            _save_checkpoint(config, unwrap_model(model), tokenizer, checkpoint_dir)
-        barrier(dist_context)
         _finish_training_progress(progress_path)
     finally:
         wandb_logger.finish()
@@ -2662,6 +3173,11 @@ def main():
         if not experiment_id_override:
             raise ValueError("--experiment_id must not be empty when provided")
         config["experiment_id"] = experiment_id_override
+    if args.resume_from_checkpoint is not None:
+        resume_override = str(args.resume_from_checkpoint).strip()
+        if not resume_override:
+            raise ValueError("--resume_from_checkpoint must not be empty when provided")
+        config["resume_from_checkpoint"] = resume_override
     config["train_config_source"] = args.config
     config["tokenize_only"] = bool(args.tokenize_only)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
@@ -2670,6 +3186,20 @@ def main():
     try:
         if "episode_keep_ratio" in config:
             raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
+        resume_from_checkpoint = config.get("resume_from_checkpoint")
+        if resume_from_checkpoint:
+            resume_from_checkpoint = os.path.abspath(str(resume_from_checkpoint))
+            config["resume_from_checkpoint"] = resume_from_checkpoint
+            if args.tokenize_only:
+                raise ValueError("--tokenize-only cannot be combined with resume_from_checkpoint")
+            saved_config_path = os.path.join(resume_from_checkpoint, "config.yaml")
+            if not os.path.exists(saved_config_path):
+                raise FileNotFoundError(
+                    f"Cannot resume from {resume_from_checkpoint}: missing config.yaml"
+                )
+            with open(saved_config_path) as saved_config_file:
+                saved_checkpoint_config = yaml.safe_load(saved_config_file) or {}
+            config["resume_source_experiment_id"] = saved_checkpoint_config.get("experiment_id")
 
         if dist_context.is_main_process:
             experiment_id = ensure_experiment_id(config)
@@ -2813,7 +3343,14 @@ def main():
             print(f"[train] Experiment dirty patch saved: {exp_snapshot_paths['patch']}")
         barrier(dist_context)
 
-        model, tokenizer = load_model_and_tokenizer(config)
+        if config.get("resume_from_checkpoint"):
+            model, tokenizer = load_model_and_tokenizer_for_training_checkpoint(
+                config["resume_from_checkpoint"],
+                config,
+                load_in_4bit=config.get("load_in_4bit"),
+            )
+        else:
+            model, tokenizer = load_model_and_tokenizer(config)
         if args.tokenize_only:
             prepare_tokenized_data(
                 config,

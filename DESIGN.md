@@ -240,6 +240,7 @@ prompt_templete_index: ["0"]  # 使用的 prompt 文件名（不含 .txt）
 # 训练超参数
 learning_rate: 1e-4
 num_epochs: 3
+# resume_from_checkpoint: checkpoints/.../step50000  # null/注释掉 = 从 model_name 开始新训练；非空 = 恢复训练状态并把 num_epochs 解释为额外完整 epoch 数
 batch_size: 32
 gradient_accumulation_steps: 1
 max_length: 512
@@ -323,7 +324,8 @@ checkpoints/
                     ├── adapter_model.safetensors
                     ├── tokenizer.json
                     ├── tokenizer_config.json
-                    └── config.yaml
+                    ├── config.yaml
+                    └── trainer_state.pt  # 新 checkpoint 额外保存训练恢复状态；旧 checkpoint 可能没有
 ```
 
 **示例：**
@@ -338,6 +340,51 @@ checkpoints/
 | Llama-3.2-1B 单独训练 umaze 变种 | `checkpoints/pointmaze/Llama-3.2-1B/umaze/<experiment_id>/final/` |
 
 `model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。`selection_tag` 已经包含训练选择语义，因此路径里不再单独重复 `train_mode`。`experiment_id` 可在配置中指定、由训练启动自动生成，或通过 `train.py --experiment_id <id>` 覆盖；CLI 覆盖发生在 DDP 广播、资源监控和运行配置快照之前。
+
+#### 1.1 训练恢复（resume）
+
+训练配置可通过 `resume_from_checkpoint` 从已有 checkpoint 继续训练：
+
+```yaml
+resume_from_checkpoint: checkpoints/pointmaze/Qwen3-0.6B/open/<old_experiment_id>/step50000
+experiment_id: <new_experiment_id>
+num_epochs: 2
+```
+
+也可以通过 CLI 覆盖：
+
+```bash
+micromamba run -n llm_offline python train.py \
+  --config config.yaml \
+  --experiment_id <new_experiment_id> \
+  --resume_from_checkpoint checkpoints/.../step50000
+```
+
+`resume_from_checkpoint: null`、空值或注释掉时不触发 resume，训练会从当前 `model_name` 新建模型、LoRA/decoder、optimizer 和 LR schedule。非空路径触发 resume 时，`train.py` 会从该 checkpoint 加载 LoRA adapter、tokenizer、continuous/MTP sidecar decoder，并读取 `trainer_state.pt` 恢复 optimizer、学习率计划和训练 loop 位置；如果缺少 `trainer_state.pt` 会直接报错，因此旧 checkpoint 只能用于 eval/score 或普通模型加载，不能精确 resume。
+
+resume 语义中，`num_epochs` 表示“额外训练多少个完整 epoch”，而不是总 epoch 数：
+
+- 从 `ep3` resume 且 `num_epochs: 2`：训练 epoch `4, 5`
+- 从 epoch 3 中间的 `step<N>` resume 且 `num_epochs: 2`：先补完 epoch `3`，再训练 `4, 5`
+- 从 epoch 中间的 `step<N>` resume 且 `num_epochs: 0`：只补完当前 epoch
+
+触发 resume 后训练日志会打印：
+
+```text
+[train] Resuming training from <checkpoint> at epoch K batch B/T, optimizer_step=..., global_batch_step=...
+```
+
+分区训练会打印 `Resuming partitioned training ...`，并恢复当前 epoch 的 partition order、active partition 和 partition-local batch 位置。新的输出仍写入当前 run 的 `experiment_id` 路径；checkpoint state 会记录来源 checkpoint 路径和来源 `experiment_id`。
+
+`trainer_state.pt` 的主要字段包括：
+
+- `optimizer_state_dict`：AdamW optimizer 完整状态
+- `lr_scheduler`：scheduler type、base LR、warmup/decay steps、`min_lr_ratio`、原始 `total_training_steps`、`updates_per_epoch` 和已完成 optimizer step；resume 后继续原始 LR horizon，超过原 horizon 时 linear/cosine 保持在 `min_lr_ratio`
+- `loop_state`：当前 epoch、已完成 epoch-local batch step、全局 batch step、epoch 内 step-eval trigger 计数、下一次 step-eval 触发点，以及分区训练的 partition 位置
+- `compat`：训练 variants、world size、batch size、gradient accumulation、action mode、action dim、partition stats、每 epoch batch 数和 optimizer param group 签名
+- `source_checkpoint_path` / `source_experiment_id` / `experiment_id`：resume 来源与当前 run 标识
+
+resume 时会校验 `compat` 中的训练关键配置；例如改变 batch size、world size、训练 variants、action mode、partition 设置或 optimizer param groups 都会报错，避免静默接到不同训练轨迹上。当前配置中的 `model_name` 不会被 `resume_from_checkpoint` 字段覆盖；实际模型权重来自 checkpoint 路径，但为了路径和 metadata 一致，resume 配置应保持与源 checkpoint 相同的 `model_name`。
 
 训练 batch 进度不再通过终端 carriage return 渲染，而是写入 run 级别的单行快照文件 `progress/<experiment_id>.txt`；`train.py` 启动训练 loop 时打印一次路径，跨 epoch 持续覆盖更新，训练成功完成最终 checkpoint/barrier 后打印最终进度行并删除该文件，异常退出时保留最后一次进度。`dataset_load_partitions > 1` 时，每个 train shard 加载前会把同一 progress 文件刷新为 `loading data partition i/N` 状态。
 

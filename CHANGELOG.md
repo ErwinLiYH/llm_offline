@@ -1277,3 +1277,34 @@ type: project
 **AntMaze Isambard 配置：**
 - 新增 `configs/train/config.isb.ant.4.yaml`，使用 `simple_mtp_bin`、`bin_full_sensing`、`action_num_bins: 50`、`new_token: false` 和 `mtp_lcm_weight: 0.1`
 - 新增 `sbatch/train.isb.ant.4.slurm`，沿用现有 4-GPU DDP Isambard 训练脚本风格，Slurm job/output 前缀为 `ant4`
+
+---
+
+## Training resume state（2026-06-19）
+
+**训练恢复入口：**
+- `train.py` 新增 `resume_from_checkpoint` 配置项和 `--resume_from_checkpoint` CLI 覆盖；值为 `null`、空值或注释掉时保持普通新训练流程
+- 非空路径触发 resume 时，从 checkpoint 目录加载 LoRA adapter、tokenizer、continuous/MTP sidecar decoder，并读取 `trainer_state.pt` 恢复训练状态；旧 checkpoint 若没有 `trainer_state.pt` 会直接报错
+- resume 输出仍使用当前 run 的新 `experiment_id`，适合 Slurm 重新提交；checkpoint state 记录来源 checkpoint 路径和来源 `experiment_id`
+
+**additional-epoch 语义：**
+- resume 时 `num_epochs` 表示“额外训练多少个完整 epoch”，不是总 epoch 数
+- 从 `epK` resume 且 `num_epochs: N` 时训练 `K+1 ... K+N`
+- 从 epoch `K` 中间的 `step<N>` resume 时先补完 epoch `K`，再训练 `K+1 ... K+N`
+- 从中间 `step<N>` resume 且 `num_epochs: 0` 时只补完当前 epoch
+
+**`trainer_state.pt` 内容：**
+- 每个 step、epoch 和 final checkpoint 额外保存 `trainer_state.pt`
+- 保存 optimizer state、原始 LR scheduler horizon（type、base LR、warmup/decay steps、min LR ratio、total planned updates、optimizer step）、loop state（epoch、epoch-local/global batch step、step-eval trigger、partition 位置）和 compatibility metadata
+- resume 后继续使用源 checkpoint 保存的原始 LR 计划，不按新配置中的 additional `num_epochs` 重新计算；超过原始 horizon 时 linear/cosine 保持在 `min_lr_ratio`
+- resume 时校验 train variants、world size、batch size、gradient accumulation、action mode、action dim、partition stats、每 epoch batch 数和 optimizer param group 签名，不一致直接报错
+
+**训练 loop 行为：**
+- 普通 dataloader resume 会跳过当前 epoch 中已完成的 batch；分区训练 resume 会恢复 epoch partition order、active partition 和 partition-local batch 位置
+- step checkpoint 仍只在 optimizer step 后保存，因此不恢复半个 gradient accumulation 窗口
+- 触发 resume 后日志打印 `Resuming training from ...` 或 `Resuming partitioned training from ...`，包含 epoch、已完成 batch、optimizer step 和 global batch step
+
+**文档与验证：**
+- `DESIGN.md` 新增 resume 配置、命令示例、additional-epoch 规则、`trainer_state.pt` 字段说明和兼容性限制
+- 新增 `tests/test_resume_training_state.py`，覆盖 epoch target 计算、step checkpoint 的 `num_epochs: 0` 行为、optimizer-boundary 校验、compatibility failure 和 LR horizon 继续使用
+- 已通过 `mamba run -n llm_offline python -m pytest tests/test_resume_training_state.py tests/test_lr_scheduler.py`

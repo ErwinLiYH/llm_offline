@@ -258,6 +258,89 @@ def load_model_and_tokenizer(config: dict):
     return model, tokenizer
 
 
+def load_model_and_tokenizer_for_training_checkpoint(
+    model_path: str,
+    config: dict,
+    load_in_4bit: bool | None = None,
+):
+    """Load a LoRA checkpoint for continued training.
+
+    Evaluation loading intentionally leaves the model in inference mode. Resume
+    needs the same checkpoint/decoder loading path but returns a trainable model.
+    """
+    saved_config_path = os.path.join(model_path, "config.yaml")
+    if not os.path.exists(saved_config_path):
+        raise FileNotFoundError(
+            f"Cannot resume training from {model_path}: missing config.yaml"
+        )
+    with open(saved_config_path) as f:
+        saved_config = yaml.safe_load(f) or {}
+
+    max_seq_length = saved_config.get("max_length", config.get("max_length", 2048))
+    if load_in_4bit is None:
+        load_in_4bit = config.get("load_in_4bit", saved_config.get("load_in_4bit", False))
+
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=model_path,
+        max_seq_length=max_seq_length,
+        dtype=None,
+        load_in_4bit=load_in_4bit,
+        trust_remote_code=True,
+    )
+    _restore_chat_template(tokenizer, model_path, saved_config.get("model_name"))
+    _prepare_action_tokens(model, tokenizer, saved_config, resize_embeddings=False)
+
+    if uses_continuous_actions(saved_config):
+        if "action_dim" not in saved_config:
+            raise ValueError(
+                "Checkpoint config.yaml uses a continuous action mode but does not contain action_dim."
+            )
+        gaussian_log_std_min = None
+        gaussian_log_std_max = None
+        if saved_config.get("action_token_mode") in {"parallel_gaussian", "parallel_t"}:
+            gaussian_log_std_min, gaussian_log_std_max = resolve_gaussian_log_std_bounds(saved_config)
+        load_continuous_action_decoder(
+            model,
+            model_path,
+            expected_action_dim=int(saved_config["action_dim"]),
+            expected_action_query_len=saved_config.get("action_query_len"),
+            expected_action_head_num_blocks=saved_config.get("action_head_num_blocks"),
+            expected_action_head_dropout=saved_config.get("action_head_dropout"),
+            expected_policy_type=resolve_continuous_policy_type(saved_config),
+            expected_gaussian_log_std_min=gaussian_log_std_min,
+            expected_gaussian_log_std_max=gaussian_log_std_max,
+        )
+    if uses_mtp_bin(saved_config):
+        if "action_dim" not in saved_config:
+            raise ValueError(
+                "Checkpoint config.yaml uses an MTP action-bin mode but does not contain action_dim."
+            )
+        mtp_mode = resolve_mtp_decoder_mode(saved_config)
+        load_mtp_bin_decoder(
+            model,
+            model_path,
+            expected_action_dim=int(saved_config["action_dim"]),
+            expected_mtp_k=(
+                resolve_mtp_k(
+                    int(saved_config["action_dim"]),
+                    saved_config.get("mtp_k"),
+                )
+                if mtp_mode == "mtp_bin"
+                else None
+            ),
+            expected_mode=mtp_mode,
+        )
+
+    model.train()
+    unpatch_continuous_action_forward(model)
+    unpatch_mtp_bin_forward(model)
+    FastLanguageModel.for_training(model)
+    ensure_continuous_action_decoder(model, saved_config)
+    ensure_mtp_bin_decoder(model, saved_config)
+    model.print_trainable_parameters()
+    return model, tokenizer
+
+
 def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
     """Load a model for evaluation using Unsloth.
 
