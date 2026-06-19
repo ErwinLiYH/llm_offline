@@ -11,8 +11,13 @@ Visual maze (# = wall, . = open):
 
 Structure: {structure_desc_en}
 
-The observation contains the torso xy position and goal, torso pose and velocity,
-and eight leg-joint angles and velocities.
+Observation semantics:
+  x, y        - 2D torso position in the maze (achieved_goal)
+  gx, gy      - 2D goal position (desired_goal)
+  z, quat     - torso height and quaternion orientation [w, x, y, z]
+  linear      - torso linear velocity [vx, vy, vz]
+  angular     - torso angular velocity [wx, wy, wz]
+  q, dq       - eight leg-joint angles and velocities in observation order
 
 Output exactly eight action tokens and nothing else. The tokens control, in order:
 back-right hip, back-right ankle, front-left hip, front-left ankle,
@@ -23,6 +28,7 @@ with no spaces, commas, explanation, or newline.
 {history_block_en}
 ## Current Status
 
+Current observation:
 {obs_text}
 
 Wall sensing:

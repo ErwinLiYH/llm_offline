@@ -11,8 +11,13 @@ Visual maze (# = wall, . = open):
 
 Structure: {structure_desc_en}
 
-The observation contains the torso xy position and goal, torso pose and velocity,
-and eight leg-joint angles and velocities.
+Observation semantics:
+  x, y        - 2D torso position in the maze (achieved_goal)
+  gx, gy      - 2D goal position (desired_goal)
+  z, quat     - torso height and quaternion orientation [w, x, y, z]
+  linear      - torso linear velocity [vx, vy, vz]
+  angular     - torso angular velocity [wx, wy, wz]
+  q, dq       - eight leg-joint angles and velocities in observation order
 
 The action has eight torque components in this order:
 back-right hip, back-right ankle, front-left hip, front-left ankle,
@@ -25,6 +30,7 @@ Do not output spaces, brackets, explanations, units, or extra lines.
 {history_block_en}
 ## Current Status
 
+Current observation:
 {obs_text}
 
 Location sensing:

@@ -1308,3 +1308,16 @@ type: project
 - `DESIGN.md` 新增 resume 配置、命令示例、additional-epoch 规则、`trainer_state.pt` 字段说明和兼容性限制
 - 新增 `tests/test_resume_training_state.py`，覆盖 epoch target 计算、step checkpoint 的 `num_epochs: 0` 行为、optimizer-boundary 校验、compatibility failure 和 LR horizon 继续使用
 - 已通过 `mamba run -n llm_offline python -m pytest tests/test_resume_training_state.py tests/test_lr_scheduler.py`
+
+---
+
+## AntMaze observation prompt cleanup（2026-06-19）
+
+**结构化 AntMaze 观测文本：**
+- `data/antmaze/formatting.py` 的 `obs_text` 改为更接近 PointMaze 的固定分组结构：`Position`、`Goal`、`Torso`、`Velocity`、`Joints`、`JointVel`
+- 关节角和关节速度从逐个 `name=value` 展开改为紧凑数组 `q=[...]` / `dq=[...]`，减少 prompt 长度
+- AntMaze `obs_text` 数值统一保留两位小数，降低无意义精度和 token 开销
+
+**同步 prompt 描述：**
+- 所有 `prompts/antmaze/*.txt` 的 observation 说明改为 `Observation semantics:` 小节，明确 `x/y`、`gx/gy`、`z/quat`、`linear/angular`、`q/dq` 的含义
+- 当前状态标题统一为 `Current observation:`，去掉额外的 `(Ant state summary)` 描述

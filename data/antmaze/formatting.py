@@ -11,18 +11,6 @@ _ACTION_PATTERN = re.compile(
     r"(?<![\d,])[-+]?\d+(?:\s*,\s*[-+]?\d+){7}(?!\s*,\s*[-+]?\d)"
 )
 
-_JOINT_NAMES = (
-    "front_left_hip",
-    "front_left_ankle",
-    "front_right_hip",
-    "front_right_ankle",
-    "back_left_hip",
-    "back_left_ankle",
-    "back_right_hip",
-    "back_right_ankle",
-)
-
-
 def _format_visual_map(maze_map: list[list[object]]) -> str:
     return "\n".join(
         "  " + " ".join("#" if cell == 1 else "." for cell in row)
@@ -46,11 +34,8 @@ def prepare_eval_prompt_vars(prompt_vars: dict, env) -> dict:
     return resolved
 
 
-def _format_values(names: tuple[str, ...], values: np.ndarray) -> str:
-    return ", ".join(
-        f"{name}={float(value):.4f}"
-        for name, value in zip(names, values, strict=True)
-    )
+def _format_vector(values: np.ndarray) -> str:
+    return "[" + ", ".join(f"{float(value):.2f}" for value in values) + "]"
 
 
 def format_history_observation(obs) -> np.ndarray:
@@ -94,18 +79,16 @@ def format_obs(obs, meta: dict) -> dict:
     joint_velocities = state[19:27]
     return {
         "obs_text": (
-            f"  Torso xy: ({float(achieved_goal[0]):.4f}, {float(achieved_goal[1]):.4f})\n"
-            f"  Goal xy:  ({float(desired_goal[0]):.4f}, {float(desired_goal[1]):.4f})\n"
-            f"  Torso height: {float(state[0]):.4f}\n"
-            "  Torso quaternion (w,x,y,z): "
-            f"({float(state[1]):.4f}, {float(state[2]):.4f}, "
-            f"{float(state[3]):.4f}, {float(state[4]):.4f})\n"
-            f"  Joint angles: {_format_values(_JOINT_NAMES, joint_angles)}\n"
-            "  Torso linear velocity (vx,vy,vz): "
-            f"({float(state[13]):.4f}, {float(state[14]):.4f}, {float(state[15]):.4f})\n"
-            "  Torso angular velocity (wx,wy,wz): "
-            f"({float(state[16]):.4f}, {float(state[17]):.4f}, {float(state[18]):.4f})\n"
-            f"  Joint velocities: {_format_values(_JOINT_NAMES, joint_velocities)}"
+            f"  Position: (x={float(achieved_goal[0]):.2f}, y={float(achieved_goal[1]):.2f})\n"
+            f"  Goal:     (gx={float(desired_goal[0]):.2f}, gy={float(desired_goal[1]):.2f})\n"
+            f"  Torso:   z={float(state[0]):.2f}, "
+            f"quat=[{float(state[1]):.2f}, {float(state[2]):.2f}, "
+            f"{float(state[3]):.2f}, {float(state[4]):.2f}]\n"
+            "  Velocity: "
+            f"linear=[{float(state[13]):.2f}, {float(state[14]):.2f}, {float(state[15]):.2f}], "
+            f"angular=[{float(state[16]):.2f}, {float(state[17]):.2f}, {float(state[18]):.2f}]\n"
+            f"  Joints:   q={_format_vector(joint_angles)}\n"
+            f"  JointVel: dq={_format_vector(joint_velocities)}"
         ),
         **build_sensing(achieved_goal, desired_goal, meta),
     }
