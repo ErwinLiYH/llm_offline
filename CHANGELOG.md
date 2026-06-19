@@ -1257,3 +1257,23 @@ type: project
 **Isambard sbatch 脚本：**
 - 所有调用 `train.py` 的训练与 tokenize-only Slurm 脚本都会传入 `--experiment_id "${SLURM_JOB_ID}"`，使 Slurm job id 成为实验 ID，便于将 scheduler 日志、checkpoint、result 和 runtime snapshot 对齐
 - 新增 `sbatch/train.isb.ant.1.slurm`，用于通过 DDP 运行 `configs/train/config.isb.ant.1.yaml`
+
+---
+
+## simple_mtp_bin action mode（2026-06-19）
+
+**简化版 MTP action-bin 解码：**
+- 新增 `action_token_mode: simple_mtp_bin`，作为独立 action-bin 模式；动作 query 数固定等于 `action_dim`，不需要配置 `action_query_len`、`mtp_k` 或 `mtp_quadratic_decoding`
+- 训练样本构造为 `prompt + A0..A(D-2) + Q0..Q(D-1)`：NTP 路径继续训练 `Pn->A0, A0->A1, ...`，MTP 路径训练 `Q0->A0, Q1->A1, ...`
+- query 侧可看完整 prompt 和所有 query，但不能看 teacher-forced action prefix，避免泄漏真实动作；simple 模式的 sampler head 使用 learned `simple_prev_embedding`，不喂真实 action token
+- loss 保持 `base_loss + sampler_loss + mtp_lcm_weight * lcm_loss`，其中 simple 模式下 `base_loss` 只覆盖 NTP 位置，`sampler_loss` 覆盖 query 输出，LCM 将 `Qi` 对齐到预测同一 `Ai` 的 NTP anchor hidden
+- 训练和 W&B 指标新增 `mtp_bin_l1` 与 `ntp_bin_l1`，分别记录纯 MTP query 输出和纯 NTP 路径的等效连续 MAE；原有 `bin_l1` 保留为合并 action-bin 预测的等效 MAE
+
+**Eval 与 checkpoint 行为：**
+- `simple_mtp_bin` eval 不调用 `generate()`，也不做 quadratic verifier loop；每步一次 forward，直接执行 `Q0..Q(D-1)` 的纯 MTP greedy bin 输出
+- 第一版仅支持 `action_sampling: false`；开启 sampling 会直接报错
+- `mtp_bin_decoder.pt` payload 新增 `mode` 字段，加载时校验 `mtp_bin` / `simple_mtp_bin`，避免两种 decoder 混用；旧 `mtp_bin` checkpoint 仍按默认 mode 兼容加载
+
+**AntMaze Isambard 配置：**
+- 新增 `configs/train/config.isb.ant.4.yaml`，使用 `simple_mtp_bin`、`bin_full_sensing`、`action_num_bins: 50`、`new_token: false` 和 `mtp_lcm_weight: 0.1`
+- 新增 `sbatch/train.isb.ant.4.slurm`，沿用现有 4-GPU DDP Isambard 训练脚本风格，Slurm job/output 前缀为 `ant4`

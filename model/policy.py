@@ -18,6 +18,7 @@ from model.continuous_action import (
 from model.mtp_bin import (
     ensure_mtp_bin_decoder,
     load_mtp_bin_decoder,
+    resolve_mtp_decoder_mode,
     resolve_mtp_k,
     unpatch_mtp_bin_forward,
     uses_mtp_bin,
@@ -316,16 +317,22 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
     if uses_mtp_bin(saved_config):
         if "action_dim" not in saved_config:
             raise ValueError(
-                "Checkpoint config.yaml uses mtp_bin but does not contain action_dim."
+                "Checkpoint config.yaml uses an MTP action-bin mode but does not contain action_dim."
             )
+        mtp_mode = resolve_mtp_decoder_mode(saved_config)
         load_mtp_bin_decoder(
             model,
             model_path,
             expected_action_dim=int(saved_config["action_dim"]),
-            expected_mtp_k=resolve_mtp_k(
-                int(saved_config["action_dim"]),
-                saved_config.get("mtp_k"),
+            expected_mtp_k=(
+                resolve_mtp_k(
+                    int(saved_config["action_dim"]),
+                    saved_config.get("mtp_k"),
+                )
+                if mtp_mode == "mtp_bin"
+                else None
             ),
+            expected_mode=mtp_mode,
         )
 
     model.eval()

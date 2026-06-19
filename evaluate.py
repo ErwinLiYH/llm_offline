@@ -191,6 +191,7 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
         action_config["max_length"] = saved_config["max_length"]
     if action_config["action_token_mode"] in {
         "mtp_bin",
+        "simple_mtp_bin",
         "parallel_l1",
         "parallel_gaussian",
         "parallel_t",
@@ -204,6 +205,8 @@ def _load_checkpoint_action_config(model_path: str) -> dict:
             int(action_config["action_dim"]),
             saved_config.get("mtp_k"),
         )
+    if action_config["action_token_mode"] == "simple_mtp_bin":
+        action_config.pop("mtp_k", None)
     if action_config["action_token_mode"] in {"parallel_l1", "parallel_gaussian", "parallel_t"}:
         action_config["action_query_len"] = resolve_action_query_len(
             int(action_config["action_dim"]),

@@ -44,6 +44,7 @@ from model.mtp_bin import (
     ensure_mtp_bin_decoder,
     mtp_bin_action_loss,
     mtp_bin_equivalent_l1,
+    mtp_bin_equivalent_l1_by_path,
     resolve_mtp_k,
     resolve_mtp_lcm_weight,
     resolve_mtp_quadratic_decoding,
@@ -1022,7 +1023,7 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
     attention_mask = batch["attention_mask"].to(device, non_blocking=non_blocking)
     labels = batch["labels"].to(device, non_blocking=non_blocking)
 
-    if loss_context["action_token_mode"] == "mtp_bin":
+    if loss_context["action_token_mode"] in {"mtp_bin", "simple_mtp_bin"}:
         action_bin_labels = batch["action_bin_labels"].to(
             device, non_blocking=non_blocking
         )
@@ -1056,6 +1057,7 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
             ),
             loss_context["bin_token_ids"],
             lcm_weight=loss_context["mtp_lcm_weight"],
+            base_loss_on_queries=loss_context["action_token_mode"] != "simple_mtp_bin",
         )
         metrics["bin_l1"] = mtp_bin_equivalent_l1(
             outputs,
@@ -1065,6 +1067,17 @@ def _compute_batch_loss(model, batch, device, loss_context: dict):
             loss_context["action_num_bins"],
             loss_context["action_bin_min"],
             loss_context["action_bin_max"],
+        )
+        metrics.update(
+            mtp_bin_equivalent_l1_by_path(
+                outputs,
+                action_bin_labels,
+                action_query_mask,
+                loss_context["bin_token_ids"],
+                loss_context["action_num_bins"],
+                loss_context["action_bin_min"],
+                loss_context["action_bin_max"],
+            )
         )
         return loss, metrics
 
@@ -1202,7 +1215,12 @@ def _format_loss_extra(loss, loss_parts, *, display_loss: float | None = None) -
     def _append_bin_l1(text: str) -> str:
         if "bin_l1" not in loss_parts:
             return text
-        return f"{text} bin_l1={float(loss_parts['bin_l1']):.6f}"
+        extra = f"{text} bin_l1={float(loss_parts['bin_l1']):.6f}"
+        if "mtp_bin_l1" in loss_parts:
+            extra = f"{extra} mtp_bin_l1={float(loss_parts['mtp_bin_l1']):.6f}"
+        if "ntp_bin_l1" in loss_parts:
+            extra = f"{extra} ntp_bin_l1={float(loss_parts['ntp_bin_l1']):.6f}"
+        return extra
 
     if "bin_l1" in loss_parts and "action_loss" not in loss_parts:
         return _append_bin_l1(f"loss={loss_value:.4f}")
@@ -1273,6 +1291,10 @@ def _loss_parts_to_wandb_metrics(loss_parts, *, prefix: str) -> dict[str, float]
         metrics[f"{prefix}/stop_loss"] = float(loss_parts["stop_loss"])
     if "bin_l1" in loss_parts:
         metrics[f"{prefix}/bin_l1"] = float(loss_parts["bin_l1"])
+    if "mtp_bin_l1" in loss_parts:
+        metrics[f"{prefix}/mtp_bin_l1"] = float(loss_parts["mtp_bin_l1"])
+    if "ntp_bin_l1" in loss_parts:
+        metrics[f"{prefix}/ntp_bin_l1"] = float(loss_parts["ntp_bin_l1"])
     return metrics
 
 
@@ -1515,11 +1537,11 @@ def _build_loss_context(config: dict, tokenizer) -> dict:
     mtp_lcm_weight = None
     student_t_df = None
     continuous_mean_l1_weight = 0.0
-    if action_token_mode in {"bin", "gaussian_bin", "mtp_bin"}:
+    if action_token_mode in {"bin", "gaussian_bin", "mtp_bin", "simple_mtp_bin"}:
         bin_token_ids = get_action_bin_token_ids(tokenizer, config)
         action_num_bins = get_action_num_bins(config)
         action_bin_min, action_bin_max = get_action_bin_range(config)
-    if action_token_mode == "mtp_bin":
+    if action_token_mode in {"mtp_bin", "simple_mtp_bin"}:
         mtp_lcm_weight = resolve_mtp_lcm_weight(config)
     if action_token_mode == "gaussian_bin":
         action_sigma = float(config.get("action_soft_label_sigma", 1.0))
@@ -2681,6 +2703,9 @@ def main():
             config["mtp_k"] = resolve_mtp_k(action_dim, config.get("mtp_k"))
             config["mtp_lcm_weight"] = resolve_mtp_lcm_weight(config)
             config["mtp_quadratic_decoding"] = resolve_mtp_quadratic_decoding(config)
+        elif action_token_mode == "simple_mtp_bin":
+            config.pop("mtp_k", None)
+            config["mtp_lcm_weight"] = resolve_mtp_lcm_weight(config)
         if uses_continuous_actions(config):
             config["action_query_len"] = resolve_action_query_len(
                 action_dim,
@@ -2762,12 +2787,19 @@ def main():
                 continuous_decoder_info,
             )
         if uses_mtp_bin(config):
-            rank_zero_print(
-                dist_context,
-                "[train] Resolved mtp_bin decoder: "
-                f"mtp_k={config['mtp_k']}, mtp_lcm_weight={config['mtp_lcm_weight']}, "
-                f"mtp_quadratic_decoding={config['mtp_quadratic_decoding']}",
-            )
+            if action_token_mode == "simple_mtp_bin":
+                rank_zero_print(
+                    dist_context,
+                    "[train] Resolved simple_mtp_bin decoder: "
+                    f"action_queries={action_dim}, mtp_lcm_weight={config['mtp_lcm_weight']}",
+                )
+            else:
+                rank_zero_print(
+                    dist_context,
+                    "[train] Resolved mtp_bin decoder: "
+                    f"mtp_k={config['mtp_k']}, mtp_lcm_weight={config['mtp_lcm_weight']}, "
+                    f"mtp_quadratic_decoding={config['mtp_quadratic_decoding']}",
+                )
         rank_zero_print(
             dist_context,
             "[train] Parallel setup: "

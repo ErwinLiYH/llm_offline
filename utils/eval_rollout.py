@@ -15,6 +15,7 @@ from model.mtp_bin import (
     _module_weight_dtype,
     resolve_mtp_k,
     resolve_mtp_quadratic_decoding,
+    uses_simple_mtp_bin,
     uses_mtp_bin,
 )
 from utils.action_bins import (
@@ -342,6 +343,113 @@ def _build_mtp_eval_tensors(
     }
 
 
+def _build_simple_mtp_eval_tensors(
+    prompt_input_ids: torch.Tensor,
+    prompt_attention_mask: torch.Tensor,
+    *,
+    action_dim: int,
+    device: torch.device,
+) -> dict[str, torch.Tensor | int]:
+    if prompt_input_ids.dim() != 2 or prompt_input_ids.shape[0] != 1:
+        raise ValueError("simple_mtp_bin eval currently expects a single prompt batch.")
+    query_ids = torch.zeros((1, action_dim), device=device, dtype=prompt_input_ids.dtype)
+    query_attention = torch.ones_like(query_ids, dtype=prompt_attention_mask.dtype)
+    input_ids = torch.cat([prompt_input_ids, query_ids], dim=1)
+    attention_mask = torch.cat([prompt_attention_mask, query_attention], dim=1)
+
+    seq_len = input_ids.shape[1]
+    prompt_len = int(prompt_input_ids.shape[1])
+    source_pos = prompt_len - 1
+    if source_pos < 0:
+        raise ValueError("simple_mtp_bin eval requires a non-empty prompt.")
+    action_query_mask = torch.zeros((1, seq_len), device=device, dtype=torch.bool)
+    action_query_offsets = torch.full((1, seq_len), -1, device=device, dtype=torch.long)
+    action_query_source_positions = torch.full((1, seq_len), -1, device=device, dtype=torch.long)
+    action_query_anchor_positions = torch.full((1, seq_len), -1, device=device, dtype=torch.long)
+    action_query_prev_token_ids = torch.zeros((1, seq_len), device=device, dtype=torch.long)
+    position_ids = torch.arange(seq_len, device=device, dtype=torch.long).unsqueeze(0)
+    for dim_idx in range(action_dim):
+        pos = prompt_len + dim_idx
+        action_query_mask[0, pos] = True
+        action_query_offsets[0, pos] = dim_idx
+        action_query_source_positions[0, pos] = source_pos
+        action_query_anchor_positions[0, pos] = source_pos + dim_idx
+        position_ids[0, pos] = source_pos + dim_idx
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "position_ids": position_ids,
+        "action_query_mask": action_query_mask,
+        "action_query_offsets": action_query_offsets,
+        "action_query_source_positions": action_query_source_positions,
+        "action_query_anchor_positions": action_query_anchor_positions,
+        "action_query_prev_token_ids": action_query_prev_token_ids,
+        "source_pos": source_pos,
+    }
+
+
+def generate_simple_mtp_bin_action(
+    model,
+    tokenizer,
+    prompt: str,
+    device: torch.device,
+    *,
+    action_dim: int,
+    config: dict,
+    action_codec,
+    collect_probabilities: bool,
+    action_generation_config: dict,
+) -> tuple[str, list[int], list[list[float]]]:
+    if action_codec is None:
+        raise RuntimeError("simple_mtp_bin eval requires an initialized action codec.")
+    if action_generation_config.get("action_sampling", False):
+        raise ValueError("simple_mtp_bin eval currently requires action_sampling: false.")
+    _get_mtp_decoder(model)
+    action_dim = int(action_dim)
+
+    tokenizer_kwargs = {
+        "text": build_generation_prompt(tokenizer, prompt),
+        "return_tensors": "pt",
+        "add_special_tokens": False,
+    }
+    if config.get("max_length") is not None:
+        tokenizer_kwargs["max_length"] = max(int(config["max_length"]) - action_dim, 1)
+        tokenizer_kwargs["truncation"] = True
+    encoded = tokenizer(**tokenizer_kwargs)
+    prompt_input_ids = encoded.input_ids.to(device)
+    prompt_attention_mask = encoded.attention_mask.to(device)
+    bin_token_ids = torch.tensor(action_codec.model_token_ids, device=device, dtype=torch.long)
+
+    tensors = _build_simple_mtp_eval_tensors(
+        prompt_input_ids,
+        prompt_attention_mask,
+        action_dim=action_dim,
+        device=device,
+    )
+    with torch.no_grad():
+        output = model(
+            input_ids=tensors["input_ids"],
+            attention_mask=tensors["attention_mask"],
+            position_ids=tensors["position_ids"],
+            action_query_mask=tensors["action_query_mask"],
+            action_query_offsets=tensors["action_query_offsets"],
+            action_query_source_positions=tensors["action_query_source_positions"],
+            action_query_prev_token_ids=tensors["action_query_prev_token_ids"],
+            mtp_bin=True,
+        )
+    query_logits = output.sampler_logits.float().index_select(dim=-1, index=bin_token_ids)
+    selected_bins = [int(value) for value in query_logits.argmax(dim=-1).detach().cpu().tolist()]
+    selected_token_ids = action_codec.token_ids_for_bins(selected_bins)
+    distributions = []
+    if collect_probabilities:
+        distributions = [
+            [float(value) for value in row]
+            for row in torch.softmax(query_logits.float(), dim=-1).detach().cpu().tolist()
+        ]
+    return action_codec.display_text_for_bins(selected_bins), selected_token_ids, distributions
+
+
 def generate_mtp_bin_action(
     model,
     tokenizer,
@@ -598,17 +706,30 @@ def generate_valid_action(
 
     if uses_mtp_bin(config):
         t0 = time.perf_counter()
-        generated, generated_token_ids, distributions = generate_mtp_bin_action(
-            model,
-            tokenizer,
-            prompt,
-            device,
-            action_dim=action_dim,
-            config=config,
-            action_codec=action_context.action_codec,
-            collect_probabilities=action_context.collect_bin_probabilities,
-            action_generation_config=action_context.action_generation_config,
-        )
+        if uses_simple_mtp_bin(config):
+            generated, generated_token_ids, distributions = generate_simple_mtp_bin_action(
+                model,
+                tokenizer,
+                prompt,
+                device,
+                action_dim=action_dim,
+                config=config,
+                action_codec=action_context.action_codec,
+                collect_probabilities=action_context.collect_bin_probabilities,
+                action_generation_config=action_context.action_generation_config,
+            )
+        else:
+            generated, generated_token_ids, distributions = generate_mtp_bin_action(
+                model,
+                tokenizer,
+                prompt,
+                device,
+                action_dim=action_dim,
+                config=config,
+                action_codec=action_context.action_codec,
+                collect_probabilities=action_context.collect_bin_probabilities,
+                action_generation_config=action_context.action_generation_config,
+            )
         action_time_seconds = time.perf_counter() - t0
         generated_probability_logs = []
         if action_context.collect_bin_probabilities:

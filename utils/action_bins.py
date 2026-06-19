@@ -18,6 +18,7 @@ VALID_ACTION_TOKEN_MODES = {
     "bin",
     "gaussian_bin",
     "mtp_bin",
+    "simple_mtp_bin",
     "parallel_l1",
     "parallel_gaussian",
     "parallel_t",
@@ -46,11 +47,11 @@ def get_action_token_mode(config: dict) -> str:
 
 
 def uses_action_bins(config: dict) -> bool:
-    return get_action_token_mode(config) in {"bin", "gaussian_bin", "mtp_bin"}
+    return get_action_token_mode(config) in {"bin", "gaussian_bin", "mtp_bin", "simple_mtp_bin"}
 
 
 def uses_mtp_bins(config: dict) -> bool:
-    return get_action_token_mode(config) == "mtp_bin"
+    return get_action_token_mode(config) in {"mtp_bin", "simple_mtp_bin"}
 
 
 def uses_continuous_actions(config: dict) -> bool:

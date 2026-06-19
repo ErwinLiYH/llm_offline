@@ -26,7 +26,7 @@ from data.pointmaze.variants import (
     get_pointmaze_variant_type,
     resolve_local_dataset_path,
 )
-from model.mtp_bin import resolve_mtp_k, uses_mtp_bin
+from model.mtp_bin import resolve_mtp_k, uses_mtp_bin, uses_simple_mtp_bin
 from utils.action_bins import (
     get_action_bin_range,
     get_action_bin_codec,
@@ -244,6 +244,79 @@ def _build_mtp_bin_sample(
     }
 
 
+def _build_simple_mtp_bin_sample(
+    prompt_input_ids: list[int],
+    prompt_attention_mask: list[int],
+    action_token_ids: list[int],
+    action_bin_indices: list[int],
+    config: dict,
+) -> dict:
+    action_dim = int(config.get("action_dim", len(action_bin_indices)))
+    if len(action_bin_indices) != action_dim:
+        raise ValueError(
+            "Goal-maze simple_mtp_bin action labels do not match action_dim: "
+            f"labels={len(action_bin_indices)}, action_dim={action_dim}."
+        )
+    if len(action_token_ids) != action_dim:
+        raise ValueError(
+            "Goal-maze simple_mtp_bin action token IDs do not match action_dim: "
+            f"token_ids={len(action_token_ids)}, action_dim={action_dim}."
+        )
+    if not prompt_input_ids:
+        raise ValueError("simple_mtp_bin requires a non-empty generation prompt.")
+
+    action_prefix_ids = [int(token_id) for token_id in action_token_ids[:-1]]
+    base_input_ids = list(prompt_input_ids) + action_prefix_ids
+    base_attention = list(prompt_attention_mask) + [1] * len(action_prefix_ids)
+    base_len = len(base_input_ids)
+    prompt_last_pos = len(prompt_input_ids) - 1
+
+    input_ids = list(base_input_ids)
+    attention_mask = list(base_attention)
+    labels = [-100] * base_len
+    action_bin_labels = [-1] * base_len
+    action_query_mask = [False] * base_len
+    action_query_offsets = [-1] * base_len
+    action_query_source_positions = [-1] * base_len
+    action_query_anchor_positions = [-1] * base_len
+    action_query_prev_token_ids = [0] * base_len
+    position_ids = list(range(base_len))
+
+    def source_position_for_target(target_idx: int) -> int:
+        if int(target_idx) == 0:
+            return prompt_last_pos
+        return len(prompt_input_ids) + int(target_idx) - 1
+
+    for target_idx, bin_idx in enumerate(action_bin_indices):
+        action_bin_labels[source_position_for_target(target_idx)] = int(bin_idx)
+
+    for target_idx, bin_idx in enumerate(action_bin_indices):
+        anchor_pos = source_position_for_target(target_idx)
+        input_ids.append(0)
+        attention_mask.append(1)
+        labels.append(-100)
+        action_bin_labels.append(int(bin_idx))
+        action_query_mask.append(True)
+        action_query_offsets.append(int(target_idx))
+        action_query_source_positions.append(int(prompt_last_pos))
+        action_query_anchor_positions.append(int(anchor_pos))
+        action_query_prev_token_ids.append(0)
+        position_ids.append(int(position_ids[anchor_pos]))
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+        "action_bin_labels": action_bin_labels,
+        "position_ids": position_ids,
+        "action_query_mask": action_query_mask,
+        "action_query_offsets": action_query_offsets,
+        "action_query_source_positions": action_query_source_positions,
+        "action_query_anchor_positions": action_query_anchor_positions,
+        "action_query_prev_token_ids": action_query_prev_token_ids,
+    }
+
+
 def _tokenize_pointmaze_sample(
     prompt: str,
     action_text: str,
@@ -278,20 +351,25 @@ def _tokenize_pointmaze_sample(
 
     if uses_mtp_bin(config):
         if _POINTMAZE_WORKER_ACTION_CODEC is None:
-            raise RuntimeError("Goal-maze mtp_bin codec was not initialized.")
+            raise RuntimeError("Goal-maze MTP action-bin codec was not initialized.")
         if expected_action_bin_indices is None:
-            raise RuntimeError("Missing expected action-bin labels for goal-maze mtp_bin.")
+            raise RuntimeError("Missing expected action-bin labels for goal-maze MTP mode.")
         if expected_action_token_ids is None:
-            raise RuntimeError("Missing expected action-bin token IDs for goal-maze mtp_bin.")
+            raise RuntimeError("Missing expected action-bin token IDs for goal-maze MTP mode.")
         action_dim = int(config.get("action_dim", len(expected_action_bin_indices)))
-        mtp_k = resolve_mtp_k(action_dim, config.get("mtp_k"))
         action_prefix_len = max(action_dim - 1, 0)
-        action_query_count = sum(min(mtp_k, action_dim - 1 - idx) for idx in range(action_dim))
+        if uses_simple_mtp_bin(config):
+            action_query_count = action_dim
+            mtp_k = None
+        else:
+            mtp_k = resolve_mtp_k(action_dim, config.get("mtp_k"))
+            action_query_count = sum(min(mtp_k, action_dim - 1 - idx) for idx in range(action_dim))
         prompt_budget = int(config["max_length"]) - action_prefix_len - action_query_count
         if prompt_budget <= 0:
             raise ValueError(
-                "mtp_bin requires max_length to fit prompt, action prefix, and AQT tokens: "
-                f"max_length={config['max_length']}, action_dim={action_dim}, mtp_k={mtp_k}."
+                "MTP action-bin modes require max_length to fit prompt, action prefix, and AQT tokens: "
+                f"max_length={config['max_length']}, action_dim={action_dim}, "
+                f"action_query_count={action_query_count}, mtp_k={mtp_k}."
             )
         prompt_enc = tok(
             text=prompt_text,
@@ -301,6 +379,14 @@ def _tokenize_pointmaze_sample(
         )
         prompt_input_ids = list(prompt_enc["input_ids"])
         prompt_attention_mask = list(prompt_enc["attention_mask"])
+        if uses_simple_mtp_bin(config):
+            return _build_simple_mtp_bin_sample(
+                prompt_input_ids,
+                prompt_attention_mask,
+                expected_action_token_ids,
+                expected_action_bin_indices,
+                config,
+            )
         return _build_mtp_bin_sample(
             prompt_input_ids,
             prompt_attention_mask,
