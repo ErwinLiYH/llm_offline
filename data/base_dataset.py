@@ -64,6 +64,9 @@ class DatasetBuildRequest:
     max_data_num: int | None = None
     dataset_partition_count: int = 1
     dataset_partition_index: int | None = None
+    episode_segments: list[dict[str, Any]] | None = None
+    episode_payloads: list[dict[str, Any]] | None = None
+    partition_plan_hash: str | None = None
 
     # Prompt selection. `prompt_templete_index` is the historical config spelling.
     prompt_template_count: int = 1

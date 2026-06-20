@@ -36,9 +36,9 @@ train_varients: [large-play, large-diverse]
 prompt_templete_index: ["bin_full_sensing"]
 
 ## Data
-dataset_workers: 16
+dataset_workers: 4            # tokenization worker processes per rank
 dataset_cache_dir: /scratch/u6mx/yl1118.u6mx/dataset_cache
-dataset_load_partitions: 2
+dataset_load_partitions: 4    # >1 splits train tokenized data into shard caches; DDP requires >= world_size and divisible by world_size
 dataloader_config:
   num_workers: 0
   pin_memory: false

@@ -288,7 +288,7 @@ action_head_weight_decay: 0.0 # 仅 continuous action MLP Linear weights 的 Ada
 
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
-dataset_load_partitions: 1  # >1 时只分区 tokenize/load train tokenized 数据；需要 dataset_cache_dir
+dataset_load_partitions: 1  # >1 时只分区 tokenize/load train tokenized 数据；需要 dataset_cache_dir；DDP 下必须 >= world_size 且能整除 world_size
 episode_keep_num: 5000  # 参与 train/val 划分的最大 episode 数；真实 episode 更少时使用全部，cache 命中后仍会重新生效
 balance_variant_episode_count: false  # 多 variant 时是否把 sampled episode pool 对齐到最小 variant
 sampling_seed: 0         # 控制 episode 随机抽样的可复现性
@@ -381,12 +381,12 @@ resume 语义中，`num_epochs` 表示“额外训练多少个完整 epoch”，
 - `optimizer_state_dict`：AdamW optimizer 完整状态
 - `lr_scheduler`：scheduler type、base LR、warmup/decay steps、`min_lr_ratio`、原始 `total_training_steps`、`updates_per_epoch` 和已完成 optimizer step；resume 后继续原始 LR horizon，超过原 horizon 时 linear/cosine 保持在 `min_lr_ratio`
 - `loop_state`：当前 epoch、已完成 epoch-local batch step、全局 batch step、epoch 内 step-eval trigger 计数、下一次 step-eval 触发点，以及分区训练的 partition 位置
-- `compat`：训练 variants、world size、batch size、gradient accumulation、action mode、action dim、partition stats、每 epoch batch 数和 optimizer param group 签名
+- `compat`：训练 variants、world size、batch size、gradient accumulation、action mode、action dim、partition stats、partition plan hash、round stats、每 epoch batch 数和 optimizer param group 签名
 - `source_checkpoint_path` / `source_experiment_id` / `experiment_id`：resume 来源与当前 run 标识
 
 resume 时会校验 `compat` 中的训练关键配置；例如改变 batch size、world size、训练 variants、action mode、partition 设置或 optimizer param groups 都会报错，避免静默接到不同训练轨迹上。当前配置中的 `model_name` 不会被 `resume_from_checkpoint` 字段覆盖；实际模型权重来自 checkpoint 路径，但为了路径和 metadata 一致，resume 配置应保持与源 checkpoint 相同的 `model_name`。
 
-训练 batch 进度不再通过终端 carriage return 渲染，而是写入 run 级别的单行快照文件 `progress/<experiment_id>.txt`；`train.py` 启动训练 loop 时打印一次路径，跨 epoch 持续覆盖更新，训练成功完成最终 checkpoint/barrier 后打印最终进度行并删除该文件，异常退出时保留最后一次进度。`dataset_load_partitions > 1` 时，每个 train shard 加载前会把同一 progress 文件刷新为 `loading data partition i/N` 状态。
+训练 batch 进度不再通过终端 carriage return 渲染，而是写入 run 级别的单行快照文件 `progress/<experiment_id>.txt`；`train.py` 启动训练 loop 时打印一次路径，跨 epoch 持续覆盖更新，训练成功完成最终 checkpoint/barrier 后打印最终进度行并删除该文件，异常退出时保留最后一次进度。`dataset_load_partitions > 1` 时，每个 train shard round 加载前会把同一 progress 文件刷新为 `loading data shard round i/N` 状态。
 
 可选的系统资源监控由 `resource_monitor_enabled` 控制，默认关闭；启用后 rank0 启动轻量后台线程，每 `resource_monitor_interval_seconds` 秒覆盖写 `sys_info/<experiment_id>.txt`，记录当前 RAM/swap 和所有 GPU 的显存、利用率、温度、功耗。RAM/swap 来自 `/proc/meminfo`，GPU 来自 `nvidia-smi --query-gpu=... --format=csv,noheader,nounits`；GPU 查询失败只在文件中记录 `gpu_error`，不影响训练。DDP 下只由 rank0 采样整机状态，避免多 rank 重复写同一份机器信息；该文件是 latest-only，不保存历史序列，也不写入 W&B。
 
@@ -424,12 +424,13 @@ dataset_cache/
 - `.pkl` 按 `episode_idx -> tokenized samples` 保存；非分区模式仍使用兼容旧 hash 的共享 train/val cache，分区模式则使用 train shard cache 和单独的完整 val cache
 - `.jsonl` 每行包含 `episode_idx`、`timestep`、`prompt` 和 `action`，供人工抽检数据质量
 - 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
-- `dataset_load_partitions > 1` 时必须设置 `dataset_cache_dir`。原始轨迹仍按现有逻辑一次性加载并完成 episode 级 train/val selection；随后每个 variant 的 train episode 会按 `sampling_seed` 确定性打乱并切成固定 shard，每次只 tokenize/load 一个 train tokenized shard，训练完释放后再加载下一个 shard。val split 不分区，启动时构建一次完整 val loader 并在训练期间复用。一个 epoch 仍表示跑完所有 train shard，epoch 间只打乱 shard 访问顺序，shard cache 可稳定复用。
+- `dataset_load_partitions > 1` 时必须设置 `dataset_cache_dir`。原始轨迹由 rank0 按现有逻辑加载并完成 episode 级 train/val selection；随后每个 variant 的 train timesteps 会按 `sampling_seed` 确定性打乱并切成固定 shard，必要时把 episode 拆成 `[start_t, end_t)` segment。segment worker 会拿完整 episode 上下文，但只 emit 指定 timestep 范围，因此 history prompt 可以引用 segment 前的历史。DDP 下要求 `dataset_load_partitions >= world_size` 且能被 `world_size` 整除；每 `world_size` 个 shard 组成一个 round，rank `r` 只处理本 round 的第 `r` 个 shard。val split 不分区，只由 rank0 构建完整 val loader 并在训练期间复用。
+- 每个 DDP round 会按 round 内最大本地 batch 数计算 `target_batches`。每个 rank 的本地 DataLoader 使用确定性 padding/replacement sampler 对齐到同一个 `target_batches`，padding 只从当前本地 shard 内采样。一个 epoch 仍表示跑完所有 train shard round，epoch 间只打乱 round 访问顺序，shard cache 可稳定复用。
 - `episode_keep_num`、`train_data_ratio`、`sampling_seed` 和 `balance_variant_episode_count` 不写入 cache 文件名；cache 命中后会重新按当前配置选择 episode 并切分 train/val
 - 如果现有 cache 不覆盖当前 sampled episodes，则忽略旧 cache，重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
 - `max_data_num` 截断发生在最终 dataset 组装之后，只影响本次训练返回的数据，不影响 cache 内容和 cache 命中判断
 - cache 文件名是 32 位 sha256 前缀；hash payload 包含 variant/data signature、tokenizer/max length、`prompt_templete_index` 解析后的 prompt 名称、prompt 模板内容、variant prompt vars、`history_num/history_stride` 和 action 编码配置，避免不同 tokenization 或 prompt 配置误复用同一份 tokenized 数据。源码文件 hash 不进入 payload；若代码改动影响 tokenization 语义，需要手动删除旧 cache。
-- 分区模式下，train shard cache hash payload 额外包含 split、`dataset_partition_count` 和 `dataset_partition_index`；完整 val cache 只包含 `split: val`，不包含 partition count/index；`dataset_load_partitions: 1` 保持旧 hash payload 兼容
+- 分区模式下，train shard cache hash payload 额外包含 split、`dataset_partition_count`、`dataset_partition_index`、`partition_plan_hash` 和 segment metadata；shard cache 保存 flat sample list 以及 segment metadata。完整 val cache 只包含 `split: val`，不包含 partition count/index；PointMaze/AntMaze cache format 已 bump，旧 cache 会通过新的 hash 自动失效重建。
 - action-bin 模式下，cache signature payload 和 metadata 额外记录 `new_token`、`mtp_k` 与 `action_token_schema_hash`。该 hash 由 `new_token`、真实 ABT token ids 和 display tokens 计算得到；若 cache metadata 与当前 signature 不一致，加载阶段直接报错，避免把旧 action-token 映射下的 tokenized samples 用到新训练里
 - `.jsonl` 中的 `action` 永远使用 display text，例如 `<act_24><act_37>`；`mtp_bin` 还会记录 `action_query`，用于查看 AQT 显示标记。`.pkl` 中保存的 `input_ids` 和 AQT metadata 才是模型实际训练使用的数据。`new_token: false` 时 display text 与真实 token ids 不是同一组文本 token
 
@@ -710,7 +711,7 @@ def validate_action(action) -> bool:
 micromamba run -n llm_offline python train.py --config config.yaml --tokenize-only
 ```
 
-该模式要求配置 `dataset_cache_dir`。`dataset_load_partitions: 1` 时构建或加载完整 train/val cache；`dataset_load_partitions > 1` 时依次准备完整 val cache 和所有 train partition cache。完成后打印 train/val sample 与 batch 汇总、每个 epoch 和全部 epochs 的 train batch steps，并按 `batch_size * world_size` 给出每个 batch step 的近似 global sample 数；摘要同时提醒 `eval_step_interval` 按 epoch-local batch step 计数并在每个 epoch 重置。随后在 DDP 包装、optimizer、W&B、validation、rollout 和训练循环之前退出。
+该模式要求配置 `dataset_cache_dir`。`dataset_load_partitions: 1` 时构建或加载完整 train/val cache；`dataset_load_partitions > 1` 时 rank0 规划 shard，rank0 准备完整 val cache，并在 DDP 下按 round scatter 当前 rank 需要的 shard payload，让各 rank 并行构建本地 shard cache。完成后打印 train/val sample 与 batch 汇总、每个 epoch 和全部 epochs 的 train batch steps，并按 `batch_size * world_size` 给出每个 batch step 的近似 global sample 数；摘要同时提醒 `eval_step_interval` 按 epoch-local batch step 计数并在每个 epoch 重置。随后在 DDP 包装、optimizer、W&B、validation、rollout 和训练循环之前退出。
 
 当前 `--tokenize-only` 仍复用正常的 `load_model_and_tokenizer()`，因此会加载 Unsloth 模型并可能占用 GPU；它只保证不进入训练，不提供 CPU-only tokenizer 路径。生成的 cache signature 不包含 DDP rank/world size，之后可直接由单卡或 DDP 训练复用。
 

@@ -76,9 +76,10 @@ from utils.distributed import (
     rank_zero_print,
     reduce_mean,
     resolve_parallel_backend,
+    scatter_object,
     unwrap_model,
 )
-from utils.distributed_sampler import DistributedWeightedSampler
+from utils.distributed_sampler import DistributedWeightedSampler, LocalShardPaddingSampler
 from utils.experiment_config import save_experiment_config_snapshot
 from utils.file_progress import FileProgress
 from utils.lr_scheduler import (
@@ -255,7 +256,10 @@ def resolve_step_eval_skip(config: dict) -> int:
     return step_eval_skip
 
 
-def resolve_dataset_load_partitions(config: dict) -> int:
+def resolve_dataset_load_partitions(
+    config: dict,
+    dist_context: DistributedContext | None = None,
+) -> int:
     partitions = int(config.get("dataset_load_partitions", 1) or 1)
     if partitions < 1:
         raise ValueError(f"dataset_load_partitions must be >= 1, got {partitions}")
@@ -264,6 +268,18 @@ def resolve_dataset_load_partitions(config: dict) -> int:
             "dataset_load_partitions > 1 requires dataset_cache_dir so train tokenized shards "
             "can be written and reloaded without keeping all samples in memory."
         )
+    if (
+        partitions > 1
+        and dist_context is not None
+        and dist_context.is_distributed
+    ):
+        world_size = int(dist_context.world_size)
+        if partitions < world_size or partitions % world_size != 0:
+            raise ValueError(
+                "DDP partitioned training requires dataset_load_partitions to be "
+                f">= world_size and divisible by world_size; got "
+                f"dataset_load_partitions={partitions}, world_size={world_size}."
+            )
     return partitions
 
 
@@ -455,7 +471,16 @@ def get_eval_variant_results_dir(
 
 
 
-def build_dataset_request(config: dict, tokenizer, variant: str, split: str) -> DatasetBuildRequest:
+def build_dataset_request(
+    config: dict,
+    tokenizer,
+    variant: str,
+    split: str,
+    *,
+    episode_segments: list[dict] | None = None,
+    episode_payloads: list[dict] | None = None,
+    partition_plan_hash: str | None = None,
+) -> DatasetBuildRequest:
     return DatasetBuildRequest(
         variant=variant,
         split=split,
@@ -467,6 +492,9 @@ def build_dataset_request(config: dict, tokenizer, variant: str, split: str) -> 
         max_data_num=config.get("max_data_num"),
         dataset_partition_count=config.get("dataset_partition_count", 1),
         dataset_partition_index=config.get("dataset_partition_index"),
+        episode_segments=episode_segments,
+        episode_payloads=episode_payloads,
+        partition_plan_hash=partition_plan_hash,
         prompt_template_count=config.get("prompt_template_count", 1),
         prompt_templete_index=config.get("prompt_templete_index"),
         train_data_ratio=config.get("train_data_ratio", 0.9),
@@ -718,6 +746,317 @@ def _build_partition_data_loaders(
     )
 
 
+def _build_partition_plan_requests(
+    config: dict,
+    tokenizer,
+    selected_variants: list[str],
+    dist_context: DistributedContext,
+) -> list[DatasetBuildRequest]:
+    dataset_cls = get_dataset(config["env_family"])
+    dataset_config = dict(config)
+    dataset_config["balanced_train_episode_count"] = _resolve_balanced_train_episode_count(
+        config, dataset_cls, selected_variants, dist_context
+    )
+    return [
+        build_dataset_request(dataset_config, tokenizer, variant, "train")
+        for variant in selected_variants
+    ]
+
+
+def _compute_partition_round_stats(
+    partition_stats: list[dict],
+    *,
+    world_size: int,
+    batch_size: int,
+) -> list[dict]:
+    if world_size < 1:
+        raise ValueError(f"world_size must be >= 1, got {world_size}")
+    if len(partition_stats) % world_size != 0:
+        raise ValueError(
+            "partition_stats length must be divisible by world_size: "
+            f"partitions={len(partition_stats)}, world_size={world_size}"
+        )
+    rounds = []
+    for round_index, start in enumerate(range(0, len(partition_stats), world_size)):
+        shard_stats = partition_stats[start : start + world_size]
+        shard_batches = [
+            int(math.ceil(int(stat["train_samples"]) / int(batch_size)))
+            for stat in shard_stats
+        ]
+        target_batches = max(shard_batches)
+        rounds.append(
+            {
+                "round_index": round_index,
+                "partition_indices": [int(stat["partition_index"]) for stat in shard_stats],
+                "target_batches": int(target_batches),
+                "target_samples": int(target_batches) * int(batch_size),
+                "shard_train_batches": shard_batches,
+                "shard_train_samples": [
+                    int(stat["train_samples"]) for stat in shard_stats
+                ],
+            }
+        )
+    return rounds
+
+
+def _partition_plan_metadata(plan: dict, *, dist_context: DistributedContext, batch_size: int) -> dict:
+    partition_stats = [
+        {
+            "partition_index": int(shard["partition_index"]),
+            "train_samples": int(shard["sample_count"]),
+            "train_batches": int(math.ceil(int(shard["sample_count"]) / int(batch_size))),
+            "train_steps": int(shard["step_count"]),
+        }
+        for shard in plan["shards"]
+    ]
+    round_stats = _compute_partition_round_stats(
+        partition_stats,
+        world_size=int(dist_context.world_size),
+        batch_size=int(batch_size),
+    )
+    return {
+        "env_family": plan["env_family"],
+        "partition_count": int(plan["partition_count"]),
+        "plan_hash": plan["plan_hash"],
+        "variants": list(plan["variants"]),
+        "selections": list(plan["selections"]),
+        "shards": list(plan["shards"]),
+        "partition_stats": partition_stats,
+        "round_stats": round_stats,
+    }
+
+
+def _prepare_partition_plan(
+    config: dict,
+    tokenizer,
+    selected_variants: list[str],
+    dist_context: DistributedContext,
+    *,
+    partition_count: int,
+) -> tuple[dict | None, dict]:
+    full_plan = None
+    metadata = None
+    if dist_context.is_main_process:
+        dataset_cls = get_dataset(config["env_family"])
+        if not hasattr(dataset_cls, "plan_train_shards"):
+            raise ValueError(
+                f"Dataset family {config['env_family']!r} does not support partitioned shard planning."
+            )
+        plan_requests = _build_partition_plan_requests(
+            config,
+            tokenizer,
+            selected_variants,
+            dist_context,
+        )
+        full_plan = dataset_cls.plan_train_shards(
+            plan_requests,
+            partition_count=partition_count,
+        )
+        metadata = _partition_plan_metadata(
+            full_plan,
+            dist_context=dist_context,
+            batch_size=int(config["batch_size"]),
+        )
+    metadata = broadcast_object(metadata, dist_context)
+    if metadata is None:
+        raise RuntimeError("Failed to broadcast partition shard plan metadata.")
+    return full_plan, metadata
+
+
+def _round_order(round_count: int, epoch: int, sampling_seed: int) -> list[int]:
+    generator = torch.Generator()
+    generator.manual_seed(int(sampling_seed) + int(epoch))
+    return torch.randperm(round_count, generator=generator).tolist()
+
+
+def _assignment_for_round(full_plan: dict, plan_metadata: dict, round_index: int) -> list[dict]:
+    dataset_cls = get_dataset(full_plan["env_family"])
+    round_stat = plan_metadata["round_stats"][round_index]
+    assignments = []
+    shards_by_index = {
+        int(shard["partition_index"]): shard
+        for shard in full_plan["shards"]
+    }
+    for rank_offset, partition_index in enumerate(round_stat["partition_indices"]):
+        shard = shards_by_index[int(partition_index)]
+        segments_by_variant = {
+            variant: list(segments)
+            for variant, segments in shard["segments_by_variant"].items()
+        }
+        payloads_by_variant = {}
+        for variant, segments in segments_by_variant.items():
+            episodes = full_plan["episodes_by_variant"][variant]
+            payloads_by_variant[variant] = dataset_cls.payloads_for_segments(episodes, segments)
+        assignments.append(
+            {
+                "round_index": int(round_index),
+                "rank_offset": int(rank_offset),
+                "partition_index": int(partition_index),
+                "partition_count": int(plan_metadata["partition_count"]),
+                "target_batches": int(round_stat["target_batches"]),
+                "target_samples": int(round_stat["target_samples"]),
+                "plan_hash": plan_metadata["plan_hash"],
+                "segments_by_variant": segments_by_variant,
+                "episode_payloads_by_variant": payloads_by_variant,
+            }
+        )
+    return assignments
+
+
+def _scatter_round_assignment(
+    full_plan: dict | None,
+    plan_metadata: dict,
+    round_index: int,
+    dist_context: DistributedContext,
+) -> dict:
+    assignments = None
+    if dist_context.is_main_process:
+        if full_plan is None:
+            raise RuntimeError("Main process is missing the full partition plan.")
+        assignments = _assignment_for_round(full_plan, plan_metadata, round_index)
+    assignment = scatter_object(assignments, dist_context)
+    if assignment is None:
+        raise RuntimeError("Failed to scatter partition round assignment.")
+    return assignment
+
+
+def _partition_shard_config(config: dict, assignment: dict) -> dict:
+    shard_config = dict(config)
+    shard_config["dataset_partition_count"] = int(assignment["partition_count"])
+    shard_config["dataset_partition_index"] = int(assignment["partition_index"])
+    return shard_config
+
+
+def _build_partition_shard_train_loader(
+    config: dict,
+    tokenizer,
+    selected_variants: list[str],
+    dist_context: DistributedContext,
+    *,
+    assignment: dict,
+    sampler_seed: int,
+):
+    dataset_cls = get_dataset(config["env_family"])
+    shard_config = _partition_shard_config(config, assignment)
+    dataset_requests = []
+    dataset_jobs = []
+    for variant in selected_variants:
+        segments = list(assignment["segments_by_variant"].get(variant, []))
+        if not segments:
+            continue
+        payloads = list(assignment["episode_payloads_by_variant"].get(variant, []))
+        dataset_jobs.append((variant, "train"))
+        dataset_requests.append(
+            build_dataset_request(
+                shard_config,
+                tokenizer,
+                variant,
+                "train",
+                episode_segments=segments,
+                episode_payloads=payloads,
+                partition_plan_hash=assignment["plan_hash"],
+            )
+        )
+    if not dataset_requests:
+        raise ValueError(
+            "Selected train dataset shard is empty; reduce dataset_load_partitions "
+            "or increase episode_keep_num."
+        )
+
+    datasets = dataset_cls.build_batch(dataset_requests)
+    train_datasets = [
+        dataset
+        for (_, split), dataset in zip(dataset_jobs, datasets)
+        if split == "train" and len(dataset) > 0
+    ]
+    if not train_datasets:
+        raise ValueError(
+            "Selected train dataset shard is empty after tokenization; reduce dataset_load_partitions "
+            "or increase episode_keep_num."
+        )
+    collate_fn = dataset_cls.collate_fn
+    target_samples = int(assignment["target_samples"])
+
+    if len(train_datasets) == 1 and len(selected_variants) == 1:
+        train_dataset = train_datasets[0]
+        if not dist_context.is_distributed:
+            loader = _build_dataloader(
+                shard_config,
+                train_dataset,
+                shuffle=True,
+                collate_fn=collate_fn,
+            )
+            rank_zero_print(
+                dist_context,
+                f"[train] Shard train samples: {len(train_dataset)}, "
+                f"train_batches={len(loader)}",
+            )
+            return loader
+        sampler = LocalShardPaddingSampler(
+            len(train_dataset),
+            num_samples=target_samples,
+            seed=sampler_seed,
+            shuffle=True,
+        )
+        loader = _build_dataloader(
+            shard_config,
+            train_dataset,
+            sampler=sampler,
+            collate_fn=collate_fn,
+        )
+        rank_zero_print(
+            dist_context,
+            f"[train] Shard train samples: {len(train_dataset)}, "
+            f"target_batches={assignment['target_batches']}",
+        )
+        return loader
+
+    weights = []
+    for ds in train_datasets:
+        n = len(ds)
+        if n < 1:
+            continue
+        w = 1.0 / n
+        weights.extend([w] * n)
+    combined_train = ConcatDataset(train_datasets)
+    if not dist_context.is_distributed:
+        sampler = WeightedRandomSampler(
+            weights=weights,
+            num_samples=len(combined_train),
+            replacement=True,
+        )
+        loader = _build_dataloader(
+            shard_config,
+            combined_train,
+            sampler=sampler,
+            collate_fn=collate_fn,
+        )
+        rank_zero_print(
+            dist_context,
+            f"[train] Joint shard train samples: {len(combined_train)}, "
+            f"train_batches={len(loader)}",
+        )
+        return loader
+    sampler = LocalShardPaddingSampler(
+        len(combined_train),
+        num_samples=target_samples,
+        seed=sampler_seed,
+        weights=weights,
+    )
+    loader = _build_dataloader(
+        shard_config,
+        combined_train,
+        sampler=sampler,
+        collate_fn=collate_fn,
+    )
+    rank_zero_print(
+        dist_context,
+        f"[train] Joint shard train samples: {len(combined_train)}, "
+        f"target_batches={assignment['target_batches']}",
+    )
+    return loader
+
+
 def _loader_sample_count(loader) -> int:
     if loader is None:
         return 0
@@ -738,17 +1077,33 @@ def _prewarm_partition_caches(
     dist_context: DistributedContext,
     *,
     partition_count: int,
-) -> tuple[object, list[dict]]:
-    rank_zero_print(dist_context, "[train] Preparing full validation dataset")
-    _, val_loader = _build_partition_data_loaders(
+) -> tuple[object, list[dict], dict | None, dict]:
+    full_plan, plan_metadata = _prepare_partition_plan(
         config,
         tokenizer,
         selected_variants,
         dist_context,
         partition_count=partition_count,
-        partition_index=0,
-        splits=("val",),
     )
+    rank_zero_print(
+        dist_context,
+        "[train] Prepared train shard plan: "
+        f"partitions={plan_metadata['partition_count']}, "
+        f"rounds={len(plan_metadata['round_stats'])}, "
+        f"plan_hash={plan_metadata['plan_hash']}",
+    )
+
+    val_loader = None
+    if dist_context.is_main_process:
+        rank_zero_print(dist_context, "[train] Preparing full validation dataset on rank0")
+        _, val_loader = _build_data_loaders_once(
+            config,
+            tokenizer,
+            selected_variants,
+            dist_context,
+            splits=("val",),
+        )
+    barrier(dist_context)
     val_batches = len(val_loader) if val_loader is not None else 0
     val_samples = _loader_sample_count(val_loader)
     rank_zero_print(
@@ -757,37 +1112,47 @@ def _prewarm_partition_caches(
         f"val_samples={val_samples}, val_batches={val_batches}",
     )
 
-    stats = []
-    for partition_index in range(partition_count):
+    stats = list(plan_metadata["partition_stats"])
+    for round_stat in plan_metadata["round_stats"]:
+        round_index = int(round_stat["round_index"])
+        assignment = _scatter_round_assignment(
+            full_plan,
+            plan_metadata,
+            round_index,
+            dist_context,
+        )
         rank_zero_print(
             dist_context,
-            f"[train] Preparing train dataset partition {partition_index + 1}/{partition_count}",
+            f"[train] Preparing train shard round {round_index + 1}/"
+            f"{len(plan_metadata['round_stats'])}: "
+            f"partitions={round_stat['partition_indices']}, "
+            f"target_batches={round_stat['target_batches']}",
         )
-        train_loader, _ = _build_partition_data_loaders(
+        train_loader = _build_partition_shard_train_loader(
             config,
             tokenizer,
             selected_variants,
             dist_context,
-            partition_count=partition_count,
-            partition_index=partition_index,
-            splits=("train",),
+            assignment=assignment,
+            sampler_seed=int(config.get("sampling_seed", 0)) + int(assignment["partition_index"]),
         )
-        stat = {
-            "partition_index": partition_index,
-            "train_batches": len(train_loader) if train_loader is not None else 0,
+        local_stat = {
+            "partition_index": int(assignment["partition_index"]),
+            "train_batches": len(train_loader),
             "train_samples": _loader_sample_count(train_loader),
+            "target_batches": int(assignment["target_batches"]),
         }
+        gathered_stats = all_gather_objects(local_stat, dist_context)
         rank_zero_print(
             dist_context,
-            "[train] Prepared train partition "
-            f"{partition_index + 1}/{partition_count}: "
-            f"train_samples={stat['train_samples']}, train_batches={stat['train_batches']}",
+            "[train] Prepared train shard round "
+            f"{round_index + 1}/{len(plan_metadata['round_stats'])}: "
+            f"local_stats={gathered_stats}",
         )
-        stats.append(stat)
         train_loader = None
         _release_loaders()
         barrier(dist_context)
-    return val_loader, stats
+    return val_loader, stats, full_plan, plan_metadata
 
 
 def _partition_order(partition_count: int, epoch: int, sampling_seed: int) -> list[int]:
@@ -1605,8 +1970,29 @@ def _partition_stats_signature(partition_stats: list[dict] | None) -> list[dict]
             "partition_index": int(stat["partition_index"]),
             "train_batches": int(stat["train_batches"]),
             "train_samples": int(stat["train_samples"]),
+            **(
+                {"train_steps": int(stat["train_steps"])}
+                if "train_steps" in stat
+                else {}
+            ),
         }
         for stat in partition_stats
+    ]
+
+
+def _round_stats_signature(round_stats: list[dict] | None) -> list[dict]:
+    if not round_stats:
+        return []
+    return [
+        {
+            "round_index": int(stat["round_index"]),
+            "partition_indices": [int(index) for index in stat["partition_indices"]],
+            "target_batches": int(stat["target_batches"]),
+            "target_samples": int(stat["target_samples"]),
+            "shard_train_batches": [int(value) for value in stat["shard_train_batches"]],
+            "shard_train_samples": [int(value) for value in stat["shard_train_samples"]],
+        }
+        for stat in round_stats
     ]
 
 
@@ -1619,8 +2005,10 @@ def _resume_compat_metadata(
     train_batches_per_epoch: int,
     partition_count: int,
     partition_stats: list[dict] | None,
+    partition_plan_hash: str | None = None,
+    round_stats: list[dict] | None = None,
 ) -> dict:
-    return {
+    metadata = {
         "train_variants": list(selected_variants),
         "world_size": int(dist_context.world_size),
         "batch_size": int(config["batch_size"]),
@@ -1632,6 +2020,10 @@ def _resume_compat_metadata(
         "optimizer_param_groups": _optimizer_param_group_signature(optimizer),
         "partition_stats": _partition_stats_signature(partition_stats),
     }
+    if int(partition_count) > 1:
+        metadata["partition_plan_hash"] = partition_plan_hash
+        metadata["round_stats"] = _round_stats_signature(round_stats)
+    return metadata
 
 
 def _validate_resume_compatibility(saved: dict, current: dict) -> None:
@@ -1857,6 +2249,8 @@ def _run_training_partitioned(
     *,
     partition_count: int,
     partition_stats: list[dict],
+    full_partition_plan: dict | None,
+    partition_plan_metadata: dict,
     eval_variants=None,
     wandb_logger: WandbLogger | None = None,
 ):
@@ -1885,7 +2279,8 @@ def _run_training_partitioned(
             "gradient_accumulation_steps must be >= 1, "
             f"got {gradient_accumulation_steps}"
         )
-    train_batches_per_epoch = sum(int(stat["train_batches"]) for stat in partition_stats)
+    round_stats = list(partition_plan_metadata["round_stats"])
+    train_batches_per_epoch = sum(int(stat["target_batches"]) for stat in round_stats)
     val_batches_per_epoch = len(val_loader) if val_loader is not None else 0
     if train_batches_per_epoch < 1:
         raise ValueError("Partitioned training has zero train batches.")
@@ -1924,6 +2319,8 @@ def _run_training_partitioned(
         train_batches_per_epoch=train_batches_per_epoch,
         partition_count=partition_count,
         partition_stats=partition_stats,
+        partition_plan_hash=partition_plan_metadata["plan_hash"],
+        round_stats=round_stats,
     )
     resume_trainer_state = _load_trainer_state(config.get("resume_from_checkpoint"))
     resume_loop_state = None
@@ -2064,8 +2461,8 @@ def _run_training_partitioned(
             train_start = None
             train_desc = f"Epoch {epoch}/{end_epoch} [train]"
             optimizer.zero_grad(set_to_none=True)
-            partition_order = _partition_order(
-                partition_count,
+            round_order = _round_order(
+                len(round_stats),
                 epoch,
                 int(config.get("sampling_seed", 0)),
             )
@@ -2077,7 +2474,7 @@ def _run_training_partitioned(
             resume_completed_partition_step = int(
                 (active_resume or {}).get("completed_partition_batch_step", 0) or 0
             )
-            for partition_order_position, partition_index in enumerate(partition_order):
+            for partition_order_position, round_index in enumerate(round_order):
                 if active_resume is not None and completed_epoch_step >= train_batches_per_epoch:
                     break
                 if (
@@ -2086,30 +2483,43 @@ def _run_training_partitioned(
                     and partition_order_position < int(resume_partition_order_position)
                 ):
                     continue
+                round_stat = round_stats[int(round_index)]
+                assignment = _scatter_round_assignment(
+                    full_partition_plan,
+                    partition_plan_metadata,
+                    int(round_index),
+                    dist_context,
+                )
+                partition_index = int(assignment["partition_index"])
                 rank_zero_print(
                     dist_context,
-                    f"[train] Epoch {epoch}/{end_epoch}: loading partition "
-                    f"{partition_index + 1}/{partition_count}",
+                    f"[train] Epoch {epoch}/{end_epoch}: loading shard round "
+                    f"{int(round_index) + 1}/{len(round_stats)} "
+                    f"partitions={round_stat['partition_indices']} "
+                    f"target_batches={round_stat['target_batches']}",
                 )
                 loading_start = train_start if train_start is not None else time.monotonic()
                 if progress is not None:
                     progress.update(
                         f"Epoch {epoch}/{end_epoch} "
-                        f"[loading data partition {partition_index + 1}/{partition_count}]",
+                        f"[loading data shard round {int(round_index) + 1}/{len(round_stats)}]",
                         epoch_batch_step,
                         train_batches_per_epoch,
                         loading_start,
                         extra="loading data ...",
                         force=True,
                     )
-                train_loader, _ = _build_partition_data_loaders(
+                train_loader = _build_partition_shard_train_loader(
                     config,
                     tokenizer,
                     selected_variants,
                     dist_context,
-                    partition_count=partition_count,
-                    partition_index=partition_index,
-                    splits=("train",),
+                    assignment=assignment,
+                    sampler_seed=(
+                        int(config.get("sampling_seed", 0))
+                        + epoch * partition_count
+                        + partition_index
+                    ),
                 )
                 sampler = getattr(train_loader, "sampler", None)
                 if hasattr(sampler, "set_epoch"):
@@ -2175,6 +2585,7 @@ def _run_training_partitioned(
                     loss_extra += (
                         f" lr={current_lr:.2e} opt_step={epoch_optimizer_step}/{updates_per_epoch} "
                         f"batch_step={global_batch_step} accum={accum_step}/{gradient_accumulation_steps} "
+                        f"round={int(round_index) + 1}/{len(round_stats)} "
                         f"partition={partition_index + 1}/{partition_count}"
                     )
                     if progress is not None:
@@ -2408,7 +2819,7 @@ def _run_training_partitioned(
             global_batch_step=global_batch_step,
             epoch_step_eval_count=epoch_step_eval_count,
             next_step_eval_at=next_step_eval_at,
-            partition_order_position=len(partition_order),
+            partition_order_position=len(round_order),
             partition_index=None,
             completed_partition_batch_step=None,
         )
@@ -3098,7 +3509,7 @@ def prepare_tokenized_data(
         raise ValueError("--tokenize-only requires dataset_cache_dir")
 
     selected_variants = train_selection.selected_variants
-    partition_count = resolve_dataset_load_partitions(config)
+    partition_count = resolve_dataset_load_partitions(config, dist_context)
     rank_zero_print(
         dist_context,
         "[tokenize-only] Preparing tokenized dataset caches for variants: "
@@ -3106,7 +3517,7 @@ def prepare_tokenized_data(
     )
 
     if partition_count > 1:
-        val_loader, partition_stats = _prewarm_partition_caches(
+        val_loader, partition_stats, _full_plan, plan_metadata = _prewarm_partition_caches(
             config,
             tokenizer,
             selected_variants,
@@ -3115,7 +3526,9 @@ def prepare_tokenized_data(
         )
         val_samples = _loader_sample_count(val_loader)
         train_samples = sum(int(stat["train_samples"]) for stat in partition_stats)
-        train_batches = sum(int(stat["train_batches"]) for stat in partition_stats)
+        train_batches = sum(
+            int(stat["target_batches"]) for stat in plan_metadata["round_stats"]
+        )
         val_batches = len(val_loader) if val_loader is not None else 0
         _release_loaders(val_loader)
         rank_zero_print(
@@ -3172,17 +3585,19 @@ def train_with_selection(
     rank_zero_print(dist_context, f"[train] Resolved train tag: {train_selection.selection_tag}")
     rank_zero_print(dist_context, f"[train] Resolved eval variants: {eval_selection.selected_variants}")
 
-    dataset_load_partitions = resolve_dataset_load_partitions(config)
+    dataset_load_partitions = resolve_dataset_load_partitions(config, dist_context)
     progress_interval = float(config.get("progress_interval_seconds", 5.0))
     if dataset_load_partitions > 1:
-        val_loader, partition_stats = _prewarm_partition_caches(
+        val_loader, partition_stats, full_plan, plan_metadata = _prewarm_partition_caches(
             config,
             tokenizer,
             train_selection.selected_variants,
             dist_context,
             partition_count=dataset_load_partitions,
         )
-        train_batches_per_epoch = sum(int(stat["train_batches"]) for stat in partition_stats)
+        train_batches_per_epoch = sum(
+            int(stat["target_batches"]) for stat in plan_metadata["round_stats"]
+        )
         _maybe_prompt_eval_step_interval(config, train_batches_per_epoch, dist_context)
         wandb_logger = init_wandb_logger(config, dist_context)
         try:
@@ -3198,6 +3613,8 @@ def train_with_selection(
                 dist_context=dist_context,
                 partition_count=dataset_load_partitions,
                 partition_stats=partition_stats,
+                full_partition_plan=full_plan,
+                partition_plan_metadata=plan_metadata,
                 eval_variants=eval_selection.selected_variants,
                 wandb_logger=wandb_logger,
             )
@@ -3291,7 +3708,7 @@ def main():
 
         normalize_prompt_config(config)
         dataloader_config = resolve_dataloader_config(config)
-        config["dataset_load_partitions"] = resolve_dataset_load_partitions(config)
+        config["dataset_load_partitions"] = resolve_dataset_load_partitions(config, dist_context)
         resolve_step_eval_skip(config)
         available_variants = get_available_variants(config["env_family"])
         train_selection = resolve_train_selection(config, available_variants)
@@ -3359,6 +3776,11 @@ def main():
             f"persistent_workers={dataloader_config['persistent_workers']}, "
             f"prefetch_factor={dataloader_config['prefetch_factor']}, "
             f"non_blocking={dataloader_config['non_blocking']}",
+        )
+        rank_zero_print(
+            dist_context,
+            "[train] Dataset tokenization workers per rank: "
+            f"{int(config.get('dataset_workers', 8))}",
         )
         if uses_continuous_actions(config):
             continuous_decoder_info = (

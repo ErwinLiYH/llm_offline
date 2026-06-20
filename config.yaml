@@ -36,9 +36,9 @@ train_varients: [open-dense, umaze-dense, medium-dense, large-dense, local-layou
 prompt_templete_index: ["parallel_loca_sensing"]  # prompt file names without .txt used for each training split
 
 ## Data
-dataset_workers: 3            # processes for parallel episode tokenization
+dataset_workers: 3            # tokenization worker processes per rank
 dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable
-dataset_load_partitions: 1    # >1 splits train tokenized data into episode shards; requires dataset_cache_dir
+dataset_load_partitions: 1    # >1 splits train tokenized data into shard caches; DDP requires >= world_size and divisible by world_size
 dataloader_config:
   num_workers: 0              # prepare train/val batches in the training process
   pin_memory: false           # match the pre-dataloader_config behavior

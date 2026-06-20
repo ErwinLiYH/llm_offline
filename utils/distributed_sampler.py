@@ -63,3 +63,77 @@ class DistributedWeightedSampler(Sampler[int]):
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
+
+
+class LocalShardPaddingSampler(Sampler[int]):
+    """Deterministically pad one local shard to a fixed sample count.
+
+    Unlike DistributedSampler, this sampler never draws from outside the local
+    shard. Without weights it visits each local sample once per epoch before
+    adding replacement padding. With weights it mirrors weighted replacement
+    sampling for multi-variant balancing.
+    """
+
+    def __init__(
+        self,
+        dataset_size: int,
+        *,
+        num_samples: int,
+        seed: int = 0,
+        weights: Sequence[float] | None = None,
+        shuffle: bool = True,
+    ):
+        self.dataset_size = int(dataset_size)
+        if self.dataset_size < 1:
+            raise ValueError(f"dataset_size must be >= 1, got {self.dataset_size}")
+        self.num_samples = int(num_samples)
+        if self.num_samples < 1:
+            raise ValueError(f"num_samples must be >= 1, got {self.num_samples}")
+        self.seed = int(seed)
+        self.shuffle = bool(shuffle)
+        self.epoch = 0
+        self.weights = None
+        if weights is not None:
+            self.weights = torch.as_tensor(list(weights), dtype=torch.double)
+            if self.weights.ndim != 1 or self.weights.numel() != self.dataset_size:
+                raise ValueError(
+                    "weights must be a 1D sequence with one value per local shard sample"
+                )
+            if torch.any(self.weights < 0):
+                raise ValueError("weights must be non-negative")
+            if float(self.weights.sum().item()) <= 0.0:
+                raise ValueError("at least one local shard weight must be positive")
+
+    def __iter__(self) -> Iterator[int]:
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        if self.weights is not None:
+            indices = torch.multinomial(
+                self.weights,
+                self.num_samples,
+                replacement=True,
+                generator=generator,
+            ).tolist()
+            return iter(indices)
+
+        if self.shuffle:
+            base = torch.randperm(self.dataset_size, generator=generator).tolist()
+        else:
+            base = list(range(self.dataset_size))
+        if self.num_samples <= self.dataset_size:
+            return iter(base[: self.num_samples])
+
+        padding_count = self.num_samples - self.dataset_size
+        padding = torch.randint(
+            low=0,
+            high=self.dataset_size,
+            size=(padding_count,),
+            generator=generator,
+        ).tolist()
+        return iter(base + padding)
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)

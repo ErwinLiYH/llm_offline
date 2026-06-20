@@ -89,6 +89,28 @@ def broadcast_object(value: Any, context: DistributedContext, *, src: int = 0) -
     return values[0]
 
 
+def scatter_object(values: list[Any] | None, context: DistributedContext, *, src: int = 0) -> Any:
+    if not context.is_distributed:
+        if isinstance(values, list):
+            if not values:
+                raise ValueError("scatter_object requires at least one value in single-process mode")
+            return values[0]
+        return values
+    if context.rank == src:
+        if values is None:
+            raise ValueError("scatter_object source rank requires a value list")
+        if len(values) != context.world_size:
+            raise ValueError(
+                f"scatter_object source expected {context.world_size} values, got {len(values)}"
+            )
+        scatter_values = values
+    else:
+        scatter_values = None
+    output = [None]
+    dist.scatter_object_list(output, scatter_values, src=src)
+    return output[0]
+
+
 def all_gather_objects(value: Any, context: DistributedContext) -> list[Any]:
     if not context.is_distributed:
         return [value]

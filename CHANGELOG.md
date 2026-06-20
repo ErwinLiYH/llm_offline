@@ -1227,7 +1227,7 @@ type: project
 - 成功完成最终 checkpoint 和 barrier 后才打印最后一条 progress 并删除文件；训练失败时保留该文件，便于查看卡住或失败前的最后状态
 
 **分区加载状态可见化：**
-- 分区训练在每个 train shard 加载前会强制刷新 progress 文件为 `loading data partition i/N` 状态，并附带 `loading data ...` 说明
+- 分区训练在每个 train shard round 加载前会强制刷新 progress 文件为 `loading data shard round i/N` 状态，并附带 `loading data ...` 说明
 - `FileProgress.update(...)` 新增 `force` 参数，用于绕过刷新间隔立即写入 epoch-start 和 loading 状态；默认调用语义保持不变
 - `AGENTS.md` 同步更新训练 progress 文件路径、成功清理和分区 loading 状态说明；`DESIGN.md` 同步修正为当前 run-scoped progress 语义
 
@@ -1334,3 +1334,13 @@ type: project
 **日志与结果输出：**
 - step/epoch validation 控制台输出新增 `val_mae`，W&B 新增 `val/mae`
 - 训练期 rollout eval 的 `result.json` 保留原有 `val_loss` 字段，并在有 continuous validation MAE 时新增 `val_metrics: {"mae": ...}` 和顶层 `val_mae`
+
+---
+
+## DDP partition shard loading（2026-06-20）
+
+- `dataset_workers` 语义明确为每 rank 的 tokenization worker 数量。
+- `dataset_load_partitions > 1` 在 DDP 下要求 `>= world_size` 且能被 `world_size` 整除。
+- 分区训练改为 rank0 规划全局 train shard，按 DDP round scatter 当前 rank 需要的 episode segment payload；val split 保持 rank0-only 且不分区。
+- train shard cache 改为 flat shard samples + segment metadata，cache signature 包含 partition index/count、segment plan 和 `partition_plan_hash`；PointMaze/AntMaze cache format bump 到 v3。
+- 每个 DDP round 使用本地 shard padding/replacement sampler 对齐到共同 `target_batches`，resume compat metadata 记录 plan hash 与 round stats。

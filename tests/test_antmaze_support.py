@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import pickle
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -475,6 +477,57 @@ class AntMazeSupportTest(unittest.TestCase):
         for dataset in (train_dataset, val_dataset):
             sample = dataset[0]
             self.assertEqual(int((sample["action_bin_labels"] >= 0).sum()), 8)
+
+    def test_segment_shard_cache_uses_flat_samples_and_metadata(self):
+        episodes = _fake_episodes()
+        segment = {
+            "segment_key": 7,
+            "episode_idx": 0,
+            "start_t": 1,
+            "end_t": 2,
+            "episode_len": 2,
+            "step_count": 1,
+            "sample_count": 1,
+            "variant": "umaze",
+        }
+        payload = {
+            "episode_idx": 0,
+            "observations": episodes[0].observations,
+            "actions": episodes[0].actions,
+        }
+
+        with tempfile.TemporaryDirectory() as tokenizer_dir, tempfile.TemporaryDirectory() as cache_dir:
+            tokenizer = _make_test_tokenizer(tokenizer_dir)
+            request = DatasetBuildRequest(
+                variant="umaze",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                num_workers=1,
+                cache_dir=cache_dir,
+                dataset_partition_count=2,
+                dataset_partition_index=0,
+                episode_segments=[segment],
+                episode_payloads=[payload],
+                partition_plan_hash="plan-test",
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=8,
+            )
+            dataset = AntMazeDataset.build_batch([request])[0]
+
+            cache_paths = list(Path(cache_dir).glob("*.pkl"))
+            self.assertEqual(len(cache_paths), 1)
+            with open(cache_paths[0], "rb") as f:
+                cache = pickle.load(f)
+
+        self.assertEqual(len(dataset), 1)
+        self.assertIn("samples", cache)
+        self.assertNotIn("episodes", cache)
+        self.assertEqual(len(cache["samples"]), 1)
+        self.assertEqual(cache["metadata"]["episode_segments"], [segment])
+        self.assertEqual(cache["metadata"]["partition_plan_hash"], "plan-test")
 
 
 if __name__ == "__main__":

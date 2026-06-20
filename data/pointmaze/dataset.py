@@ -444,8 +444,17 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
     job_id = str(payload["job_id"])
     config = configs[job_id]
     episode_idx = int(payload["episode_idx"])
+    segment_key = int(payload.get("segment_key", episode_idx))
     observation_arrays = payload["observations"]
     actions = payload["actions"]
+    segment_start = int(payload.get("segment_start", 0))
+    segment_end = int(payload.get("segment_end", len(actions)))
+    if segment_start < 0 or segment_end < segment_start or segment_end > len(actions):
+        raise ValueError(
+            "Invalid goal-maze episode segment: "
+            f"episode={episode_idx}, segment=[{segment_start}, {segment_end}), "
+            f"episode_len={len(actions)}"
+        )
     templates = config["templates"]
     prompt_vars = config["prompt_vars"]
     include_text_records = bool(payload.get("include_text_records", False))
@@ -459,11 +468,12 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
         _POINTMAZE_WORKER_DONE,
         worker_total,
         _POINTMAZE_WORKER_START_TIME,
-        extra=f"episode={episode_idx} steps={len(actions)}",
+        extra=f"episode={episode_idx} segment=[{segment_start},{segment_end})",
     )
 
     results = []
-    for t, action in enumerate(actions):
+    for t in range(segment_start, segment_end):
+        action = actions[t]
         obs = {
             key: np.asarray(values[t], dtype=np.float32)
             for key, values in observation_arrays.items()
@@ -522,6 +532,8 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
                 text_record = {
                     "episode_idx": episode_idx,
                     "timestep": t,
+                    "segment_start": segment_start,
+                    "segment_end": segment_end,
                     "prompt": prompt,
                     "action": action_texts["display_text"],
                 }
@@ -535,7 +547,7 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
                     )
                 if uses_continuous_actions(config):
                     text_record["action_values"] = token_sample["action_values"]
-            results.append((episode_idx, text_record, token_sample))
+            results.append((segment_key, text_record, token_sample))
 
     _POINTMAZE_WORKER_DONE += 1
     sub_progress.update(
@@ -543,7 +555,7 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
         _POINTMAZE_WORKER_DONE,
         worker_total,
         _POINTMAZE_WORKER_START_TIME,
-        extra=f"episode={episode_idx} samples={len(results)}",
+        extra=f"episode={episode_idx} segment=[{segment_start},{segment_end}) samples={len(results)}",
     )
     sub_progress.increment_total(1)
     return results
@@ -798,6 +810,135 @@ def _apply_selection_partition(selection: dict, config) -> dict:
     return partitioned
 
 
+def _normalize_episode_segments(value) -> tuple[dict, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"episode_segments must be a list of segment dicts, got {type(value).__name__}")
+    segments = []
+    seen_keys = set()
+    for idx, raw_segment in enumerate(value):
+        if not isinstance(raw_segment, dict):
+            raise ValueError(
+                f"episode_segments[{idx}] must be a dict, got {type(raw_segment).__name__}"
+            )
+        segment_key = int(raw_segment.get("segment_key", idx))
+        if segment_key in seen_keys:
+            raise ValueError(f"episode_segments contains duplicate segment_key={segment_key}")
+        seen_keys.add(segment_key)
+        episode_idx = int(raw_segment["episode_idx"])
+        start_t = int(raw_segment.get("start_t", raw_segment.get("segment_start", 0)))
+        end_t = int(raw_segment.get("end_t", raw_segment.get("segment_end", 0)))
+        episode_len = int(raw_segment.get("episode_len", end_t))
+        if episode_idx < 0:
+            raise ValueError(f"episode_idx must be >= 0, got {episode_idx}")
+        if start_t < 0 or end_t <= start_t or end_t > episode_len:
+            raise ValueError(
+                "Invalid episode segment: "
+                f"episode_idx={episode_idx}, start_t={start_t}, end_t={end_t}, "
+                f"episode_len={episode_len}"
+            )
+        segment = {
+            "segment_key": segment_key,
+            "episode_idx": episode_idx,
+            "start_t": start_t,
+            "end_t": end_t,
+            "episode_len": episode_len,
+            "step_count": int(raw_segment.get("step_count", end_t - start_t)),
+            "sample_count": int(raw_segment.get("sample_count", end_t - start_t)),
+        }
+        if "variant" in raw_segment:
+            segment["variant"] = str(raw_segment["variant"])
+        segments.append(segment)
+    return tuple(segments)
+
+
+def _normalize_episode_payloads(value) -> tuple[dict, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"episode_payloads must be a list of payload dicts, got {type(value).__name__}")
+    return tuple(dict(payload) for payload in value)
+
+
+def split_episode_segments_for_partitions(
+    episode_indices: list[int],
+    step_counts: list[int],
+    *,
+    partition_count: int,
+    prompt_count: int = 1,
+    variant: str | None = None,
+    sampling_seed: int = 0,
+) -> list[list[dict]]:
+    if partition_count < 1:
+        raise ValueError(f"partition_count must be >= 1, got {partition_count}")
+    if prompt_count < 1:
+        raise ValueError(f"prompt_count must be >= 1, got {prompt_count}")
+    if not episode_indices:
+        raise ValueError("Cannot shard an empty train split.")
+
+    shuffled = list(episode_indices)
+    rng = np.random.default_rng(
+        _variant_sampling_seed(f"{variant or 'variant'}:train:segment-partition", sampling_seed)
+    )
+    rng.shuffle(shuffled)
+    total_steps = sum(int(step_counts[idx]) for idx in shuffled)
+    if total_steps < partition_count:
+        raise ValueError(
+            "dataset_load_partitions exceeds selected train timesteps: "
+            f"partitions={partition_count}, train_timesteps={total_steps}. "
+            "Reduce dataset_load_partitions or increase episode_keep_num."
+        )
+
+    shards = [[] for _ in range(partition_count)]
+    current_episode_pos = 0
+    current_episode_offset = 0
+    segment_key = 0
+    remaining_steps = total_steps
+
+    for shard_idx in range(partition_count):
+        remaining_shards = partition_count - shard_idx
+        target_steps = int(math.ceil(remaining_steps / remaining_shards))
+        shard_steps = 0
+        while shard_steps < target_steps and current_episode_pos < len(shuffled):
+            episode_idx = int(shuffled[current_episode_pos])
+            episode_len = int(step_counts[episode_idx])
+            take = min(target_steps - shard_steps, episode_len - current_episode_offset)
+            if take <= 0:
+                current_episode_pos += 1
+                current_episode_offset = 0
+                continue
+            start_t = current_episode_offset
+            end_t = start_t + take
+            segment = {
+                "segment_key": segment_key,
+                "episode_idx": episode_idx,
+                "start_t": start_t,
+                "end_t": end_t,
+                "episode_len": episode_len,
+                "step_count": take,
+                "sample_count": take * prompt_count,
+            }
+            if variant is not None:
+                segment["variant"] = variant
+            shards[shard_idx].append(segment)
+            segment_key += 1
+            shard_steps += take
+            remaining_steps -= take
+            current_episode_offset = end_t
+            if current_episode_offset >= episode_len:
+                current_episode_pos += 1
+                current_episode_offset = 0
+
+    empty_shards = [idx for idx, segments in enumerate(shards) if not segments]
+    if empty_shards:
+        raise ValueError(
+            "Shard planner produced empty train shard(s): "
+            f"{empty_shards}. Reduce dataset_load_partitions or increase episode_keep_num."
+        )
+    return shards
+
+
 @dataclass(frozen=True)
 class PointMazeBuildConfig:
     variant: str
@@ -827,6 +968,9 @@ class PointMazeBuildConfig:
     mtp_k: int | None = None
     action_token_schema_hash: str = "text"
     progress_interval_seconds: float = 5.0
+    episode_segments: tuple[dict, ...] | None = None
+    episode_payloads: tuple[dict, ...] | None = None
+    partition_plan_hash: str | None = None
 
 
 @dataclass
@@ -848,7 +992,7 @@ class PointMazeDataset(BaseOfflineDataset):
     ENV_FAMILY = "pointmaze"
     VARIANTS = POINTMAZE_VARIANTS
     ACTION_DIM = 2
-    CACHE_FORMAT = "pointmaze_hash_signature_v2"
+    CACHE_FORMAT = "pointmaze_hash_signature_v3"
 
     def __init__(self, variant: str, split: str, samples: list[dict]):
         super().__init__()
@@ -863,6 +1007,132 @@ class PointMazeDataset(BaseOfflineDataset):
             episode_keep_num,
             episode_loader=cls._load_variant_episodes,
         )
+
+    @classmethod
+    def plan_train_shards(
+        cls,
+        requests: list[DatasetBuildRequest],
+        *,
+        partition_count: int,
+    ) -> dict:
+        if partition_count < 1:
+            raise ValueError(f"partition_count must be >= 1, got {partition_count}")
+        configs = [cls._normalize_request(request) for request in requests]
+        if not configs:
+            raise ValueError("plan_train_shards requires at least one train request")
+        variants = []
+        shards = [
+            {
+                "partition_index": partition_index,
+                "segments_by_variant": {},
+                "step_count": 0,
+                "sample_count": 0,
+            }
+            for partition_index in range(partition_count)
+        ]
+        selections = []
+        episodes_by_variant = {}
+
+        for config in configs:
+            cls._validate_config(config)
+            if config.split != "train":
+                raise ValueError("plan_train_shards accepts train requests only")
+            if config.variant in variants:
+                raise ValueError(f"Duplicate train shard planning request for variant={config.variant!r}")
+            variants.append(config.variant)
+            prompt_count = len(cls._resolve_prompt_names(config))
+            selection = select_variant_episode_indices(
+                variant=config.variant,
+                train_data_ratio=config.train_data_ratio,
+                episode_keep_num=config.episode_keep_num,
+                sampling_seed=config.sampling_seed,
+                balanced_train_target=config.balanced_train_episode_count,
+                episode_loader=cls._load_variant_episodes,
+            )
+            episodes = selection["episodes"]
+            step_counts = [len(episode.actions) for episode in episodes]
+            variant_shards = split_episode_segments_for_partitions(
+                list(selection["train_indices"]),
+                step_counts,
+                partition_count=partition_count,
+                prompt_count=prompt_count,
+                variant=config.variant,
+                sampling_seed=config.sampling_seed,
+            )
+            for partition_index, segments in enumerate(variant_shards):
+                shards[partition_index]["segments_by_variant"][config.variant] = segments
+                shards[partition_index]["step_count"] += sum(
+                    int(segment["step_count"]) for segment in segments
+                )
+                shards[partition_index]["sample_count"] += sum(
+                    int(segment["sample_count"]) for segment in segments
+                )
+            selection_summary = dict(selection)
+            selection_summary.pop("episodes", None)
+            selection_summary["prompt_count"] = prompt_count
+            selections.append(selection_summary)
+            episodes_by_variant[config.variant] = episodes
+
+        empty_shards = [
+            shard["partition_index"]
+            for shard in shards
+            if int(shard["sample_count"]) < 1
+        ]
+        if empty_shards:
+            raise ValueError(
+                "Shard planner produced empty combined train shard(s): "
+                f"{empty_shards}. Reduce dataset_load_partitions or increase episode_keep_num."
+            )
+
+        public_shards = []
+        for shard in shards:
+            public_shards.append(
+                {
+                    "partition_index": int(shard["partition_index"]),
+                    "segments_by_variant": {
+                        variant: list(segments)
+                        for variant, segments in shard["segments_by_variant"].items()
+                    },
+                    "step_count": int(shard["step_count"]),
+                    "sample_count": int(shard["sample_count"]),
+                }
+            )
+        plan_hash = cls._hash_json_payload(
+            {
+                "env_family": cls.ENV_FAMILY,
+                "partition_count": partition_count,
+                "variants": variants,
+                "selections": selections,
+                "shards": public_shards,
+            }
+        )
+        return {
+            "env_family": cls.ENV_FAMILY,
+            "partition_count": int(partition_count),
+            "variants": variants,
+            "plan_hash": plan_hash,
+            "selections": selections,
+            "shards": public_shards,
+            "episodes_by_variant": episodes_by_variant,
+        }
+
+    @staticmethod
+    def payloads_for_segments(episodes: list, segments: list[dict]) -> list[dict]:
+        payloads = []
+        for segment in segments:
+            episode_idx = int(segment["episode_idx"])
+            episode = episodes[episode_idx]
+            payloads.append(
+                {
+                    "episode_idx": episode_idx,
+                    "observations": {
+                        key: values
+                        for key, values in episode.observations.items()
+                    },
+                    "actions": episode.actions,
+                }
+            )
+        return payloads
 
     @classmethod
     def get_action_dim(cls, variants: list[str]) -> int:
@@ -902,15 +1172,39 @@ class PointMazeDataset(BaseOfflineDataset):
             variant_configs = [configs[idx] for idx in request_indices]
             cls._validate_variant_request_group(variant_configs)
             base_config = variant_configs[0]
-            selection = select_variant_episode_indices(
-                variant=base_config.variant,
-                train_data_ratio=base_config.train_data_ratio,
-                episode_keep_num=base_config.episode_keep_num,
-                sampling_seed=base_config.sampling_seed,
-                balanced_train_target=base_config.balanced_train_episode_count,
-                episode_loader=cls._load_variant_episodes,
-            )
-            selection = _apply_selection_partition(selection, base_config)
+            if base_config.episode_segments is not None:
+                train_indices = sorted(
+                    {int(segment["episode_idx"]) for segment in base_config.episode_segments}
+                )
+                train_steps = sum(int(segment["step_count"]) for segment in base_config.episode_segments)
+                selection = {
+                    "variant": variant,
+                    "total_episodes": len(train_indices),
+                    "total_steps": train_steps,
+                    "initial_train_target": len(train_indices),
+                    "initial_sampled_target": len(train_indices),
+                    "sampled_episode_count": len(train_indices),
+                    "balanced_train_target": base_config.balanced_train_episode_count,
+                    "train_indices": train_indices,
+                    "val_indices": [],
+                    "train_episode_count": len(train_indices),
+                    "val_episode_count": 0,
+                    "train_steps": train_steps,
+                    "val_steps": 0,
+                    "val_target": 0,
+                    "val_shortfall_reason": None,
+                    "segment_count": len(base_config.episode_segments),
+                }
+            else:
+                selection = select_variant_episode_indices(
+                    variant=base_config.variant,
+                    train_data_ratio=base_config.train_data_ratio,
+                    episode_keep_num=base_config.episode_keep_num,
+                    sampling_seed=base_config.sampling_seed,
+                    balanced_train_target=base_config.balanced_train_episode_count,
+                    episode_loader=cls._load_variant_episodes,
+                )
+                selection = _apply_selection_partition(selection, base_config)
             selection_for_summary = dict(selection)
             selection_for_summary.pop("episodes", None)
             selections_by_variant[variant] = selection_for_summary
@@ -1057,6 +1351,9 @@ class PointMazeDataset(BaseOfflineDataset):
             max_data_num=request.max_data_num,
             dataset_partition_count=dataset_partition_count,
             dataset_partition_index=dataset_partition_index,
+            episode_segments=_normalize_episode_segments(request.episode_segments),
+            episode_payloads=_normalize_episode_payloads(request.episode_payloads),
+            partition_plan_hash=request.partition_plan_hash,
             prompt_template_count=request.prompt_template_count,
             prompt_templete_index=cls._normalize_prompt_templete_index(request.prompt_templete_index),
             train_data_ratio=request.train_data_ratio,
@@ -1140,7 +1437,11 @@ class PointMazeDataset(BaseOfflineDataset):
         payload = {
             "env_family": cls.ENV_FAMILY,
             "cache_format": cls.CACHE_FORMAT,
-            "cache_kind": "episode_tokenized_samples",
+            "cache_kind": (
+                "shard_tokenized_samples"
+                if config.episode_segments is not None
+                else "episode_tokenized_samples"
+            ),
             "variant": config.variant,
             "variant_type": variant_type,
             "variant_metadata": variant_metadata,
@@ -1160,7 +1461,13 @@ class PointMazeDataset(BaseOfflineDataset):
             "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
         }
-        if config.dataset_partition_count > 1 and config.split == "train":
+        if config.episode_segments is not None:
+            payload["split"] = config.split
+            payload["dataset_partition_count"] = config.dataset_partition_count
+            payload["dataset_partition_index"] = config.dataset_partition_index
+            payload["partition_plan_hash"] = config.partition_plan_hash
+            payload["episode_segments"] = list(config.episode_segments)
+        elif config.dataset_partition_count > 1 and config.split == "train":
             payload["split"] = config.split
             payload["dataset_partition_count"] = config.dataset_partition_count
             payload["dataset_partition_index"] = config.dataset_partition_index
@@ -1185,6 +1492,8 @@ class PointMazeDataset(BaseOfflineDataset):
 
     @staticmethod
     def _selected_indices_for_config(config: PointMazeBuildConfig, selection: dict) -> list[int]:
+        if config.episode_segments is not None:
+            return [int(segment["segment_key"]) for segment in config.episode_segments]
         if config.dataset_partition_count > 1:
             if config.split == "train":
                 return list(selection["train_indices"])
@@ -1199,7 +1508,7 @@ class PointMazeDataset(BaseOfflineDataset):
         config: PointMazeBuildConfig,
         cache_path: str | None,
         selection: dict,
-    ) -> dict[int, list[dict]] | None:
+    ) -> dict[int, list[dict]] | list[dict] | None:
         if not cache_path or not os.path.exists(cache_path):
             return None
         with open(cache_path, "rb") as f:
@@ -1207,12 +1516,31 @@ class PointMazeDataset(BaseOfflineDataset):
         metadata = cache.get("metadata", {})
         expected_signature_hash = cls._cache_signature_hash(config)
         if metadata.get("cache_signature_hash") != expected_signature_hash:
-            raise ValueError(
+            print(
                 f"Dataset cache schema mismatch at {cache_path}: "
                 f"cache_signature_hash={metadata.get('cache_signature_hash')!r}, "
                 f"expected {expected_signature_hash!r}. "
-                "Remove the stale cache file or rebuild with matching tokenization settings."
+                "Rebuilding cache."
             )
+            return None
+        if config.episode_segments is not None:
+            cached_segments = metadata.get("episode_segments")
+            if cached_segments != list(config.episode_segments):
+                print(
+                    f"[dataset] Cache at {cache_path} has a different shard segment plan; rebuilding cache."
+                )
+                return None
+            samples = cache.get("samples")
+            if not isinstance(samples, list):
+                print(
+                    f"[dataset] Cache at {cache_path} is not a shard-sample cache; rebuilding cache."
+                )
+                return None
+            print(
+                f"[dataset] Loading cached tokenized shard from {cache_path} "
+                f"(segments={len(config.episode_segments)}, samples={len(samples)})"
+            )
+            return samples
         episode_samples = {
             int(episode_idx): samples
             for episode_idx, samples in cache.get("episodes", {}).items()
@@ -1245,27 +1573,52 @@ class PointMazeDataset(BaseOfflineDataset):
         templates = load_named_templates(cls.ENV_FAMILY, prompt_names)
         prompt_vars = meta["prompt_vars"]
 
-        all_episodes = selection["episodes"]
+        all_episodes = selection.get("episodes")
         episode_indices = cls._selected_indices_for_config(config, selection)
 
         job_id = f"{config.variant}:episodes:{len(episode_indices)}:{id(config)}"
-        human_readable_episode_indices = set(
-            episode_indices[:HUMAN_READABLE_CACHE_EPISODE_LIMIT]
-        ) if cache_path else set()
-        episode_payloads = [
-            {
-                "job_id": job_id,
-                "episode_idx": episode_idx,
-                "include_text_records": episode_idx in human_readable_episode_indices,
-                "observations": {
-                    key: values
-                    for key, values in episode.observations.items()
-                },
-                "actions": episode.actions,
-            }
-            for episode_idx in episode_indices
-            for episode in [all_episodes[episode_idx]]
-        ]
+        if config.episode_segments is not None:
+            human_readable_segment_keys = set(
+                episode_indices[:HUMAN_READABLE_CACHE_EPISODE_LIMIT]
+            ) if cache_path else set()
+            if config.episode_payloads is None:
+                raise ValueError("episode_payloads are required when episode_segments are provided")
+            if len(config.episode_payloads) != len(config.episode_segments):
+                raise ValueError(
+                    "episode_payloads must contain exactly one payload per episode segment: "
+                    f"payloads={len(config.episode_payloads)}, segments={len(config.episode_segments)}"
+                )
+            episode_payloads = []
+            for segment, payload in zip(config.episode_segments, config.episode_payloads):
+                payload = dict(payload)
+                segment_key = int(segment["segment_key"])
+                payload["job_id"] = job_id
+                payload["segment_key"] = segment_key
+                payload["segment_start"] = int(segment["start_t"])
+                payload["segment_end"] = int(segment["end_t"])
+                payload["include_text_records"] = segment_key in human_readable_segment_keys
+                episode_payloads.append(payload)
+            episode_indices = [int(segment["segment_key"]) for segment in config.episode_segments]
+        else:
+            if all_episodes is None:
+                raise ValueError("selection must include episodes when episode_payloads are not provided")
+            human_readable_episode_indices = set(
+                episode_indices[:HUMAN_READABLE_CACHE_EPISODE_LIMIT]
+            ) if cache_path else set()
+            episode_payloads = [
+                {
+                    "job_id": job_id,
+                    "episode_idx": episode_idx,
+                    "include_text_records": episode_idx in human_readable_episode_indices,
+                    "observations": {
+                        key: values
+                        for key, values in episode.observations.items()
+                    },
+                    "actions": episode.actions,
+                }
+                for episode_idx in episode_indices
+                for episode in [all_episodes[episode_idx]]
+            ]
         worker_config = {
             "env_family": cls.ENV_FAMILY,
             "variant": config.variant,
@@ -1338,6 +1691,29 @@ class PointMazeDataset(BaseOfflineDataset):
                     "dataset_partition_index must be in "
                     f"[0, {config.dataset_partition_count}), got {config.dataset_partition_index}"
                 )
+        if config.episode_segments is not None:
+            if config.split != "train":
+                raise ValueError("episode_segments are supported only for the train split")
+            if config.dataset_partition_count <= 1 or config.dataset_partition_index is None:
+                raise ValueError(
+                    "episode_segments require dataset_partition_count > 1 and dataset_partition_index"
+                )
+            if config.partition_plan_hash is None:
+                raise ValueError("partition_plan_hash is required when episode_segments are provided")
+            if config.episode_payloads is None:
+                raise ValueError("episode_payloads are required when episode_segments are provided")
+            if len(config.episode_payloads) != len(config.episode_segments):
+                raise ValueError(
+                    "episode_payloads must contain exactly one payload per episode segment: "
+                    f"payloads={len(config.episode_payloads)}, segments={len(config.episode_segments)}"
+                )
+            for segment, payload in zip(config.episode_segments, config.episode_payloads):
+                if int(payload.get("episode_idx", -1)) != int(segment["episode_idx"]):
+                    raise ValueError(
+                        "episode_payloads must be aligned with episode_segments: "
+                        f"payload episode_idx={payload.get('episode_idx')}, "
+                        f"segment episode_idx={segment['episode_idx']}"
+                    )
 
     @classmethod
     def _validate_variant_request_group(
@@ -1388,10 +1764,22 @@ class PointMazeDataset(BaseOfflineDataset):
         request_indices: list[int],
         configs: list[PointMazeBuildConfig],
         selection: dict,
-        episode_samples: dict[int, list[dict]],
+        episode_samples: dict[int, list[dict]] | list[dict],
     ):
         for request_idx in request_indices:
             config = configs[request_idx]
+            if config.episode_segments is not None:
+                if not isinstance(episode_samples, list):
+                    raise ValueError("Shard cache must be a flat sample list.")
+                samples = list(episode_samples)
+                if config.max_data_num is not None:
+                    samples = samples[: config.max_data_num]
+                    print(f"[dataset] max_data_num={config.max_data_num}: using {len(samples)} samples")
+                datasets[request_idx] = cls(config.variant, config.split, samples)
+                continue
+
+            if not isinstance(episode_samples, dict):
+                raise ValueError("Episode cache must be keyed by episode index.")
             if config.split == "train":
                 selected_indices = selection["train_indices"]
             elif config.split == "val":
@@ -1533,8 +1921,9 @@ class PointMazeDataset(BaseOfflineDataset):
         episode_results_list: list[list[tuple[int, dict | None, dict]]],
         *,
         cache_write_executor: ThreadPoolExecutor | None = None,
-    ) -> tuple[dict[int, list[dict]], list[tuple[Future, str, str]]]:
+    ) -> tuple[dict[int, list[dict]] | list[dict], list[tuple[Future, str, str]]]:
         episode_samples: dict[int, list[dict]] = {}
+        shard_samples: list[dict] = []
         text_records = []
         cache_write_futures = []
         for episode_results in episode_results_list:
@@ -1546,7 +1935,10 @@ class PointMazeDataset(BaseOfflineDataset):
                     text_records.append(text_record)
                 samples.append(token_sample)
             if episode_idx is not None:
-                episode_samples[episode_idx] = samples
+                if job.config.episode_segments is not None:
+                    shard_samples.extend(samples)
+                else:
+                    episode_samples[episode_idx] = samples
 
         if job.cache_path:
             os.makedirs(job.config.cache_dir, exist_ok=True)
@@ -1560,19 +1952,28 @@ class PointMazeDataset(BaseOfflineDataset):
                 if job.config.split == "train":
                     cache_partition_count = job.config.dataset_partition_count
                     cache_partition_index = job.config.dataset_partition_index
-            cache = {
-                "metadata": {
-                    "cache_format": cls.CACHE_FORMAT,
-                    "cache_signature_hash": cache_signature_hash,
-                    "cache_signature_payload": cache_signature_payload,
-                    "total_episodes": job.total_episodes,
-                    "episode_indices": job.episode_indices,
-                    "split": cache_split,
-                    "dataset_partition_count": cache_partition_count,
-                    "dataset_partition_index": cache_partition_index,
-                },
-                "episodes": episode_samples,
+            metadata = {
+                "cache_format": cls.CACHE_FORMAT,
+                "cache_signature_hash": cache_signature_hash,
+                "cache_signature_payload": cache_signature_payload,
+                "total_episodes": job.total_episodes,
+                "episode_indices": job.episode_indices,
+                "split": cache_split,
+                "dataset_partition_count": cache_partition_count,
+                "dataset_partition_index": cache_partition_index,
             }
+            if job.config.episode_segments is not None:
+                metadata["episode_segments"] = list(job.config.episode_segments)
+                metadata["partition_plan_hash"] = job.config.partition_plan_hash
+                cache = {
+                    "metadata": metadata,
+                    "samples": shard_samples,
+                }
+            else:
+                cache = {
+                    "metadata": metadata,
+                    "episodes": episode_samples,
+                }
             jsonl_path = job.cache_path.replace(".pkl", ".jsonl")
             if cache_write_executor is None:
                 cls._write_pickle_cache(job.cache_path, cache)
@@ -1595,6 +1996,8 @@ class PointMazeDataset(BaseOfflineDataset):
                     )
                 )
 
+        if job.config.episode_segments is not None:
+            return shard_samples, cache_write_futures
         return episode_samples, cache_write_futures
 
     @staticmethod

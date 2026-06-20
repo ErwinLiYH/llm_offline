@@ -73,6 +73,7 @@ tests/*
 !tests/test_antmaze_support.py
 !tests/test_resource_monitor.py
 !tests/test_resume_training_state.py
+!tests/test_partition_sharding.py
 scripts/
 exp_configs/
 local_references/
