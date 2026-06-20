@@ -1322,3 +1322,15 @@ type: project
 **同步 prompt 描述：**
 - 所有 `prompts/antmaze/*.txt` 的 observation 说明改为 `Observation semantics:` 小节，明确 `x/y`、`gx/gy`、`z/quat`、`linear/angular`、`q/dq` 的含义
 - 当前状态标题统一为 `Current observation:`，去掉额外的 `(Ant state summary)` 描述
+
+---
+
+## Parallel validation MAE（2026-06-20）
+
+**连续动作 validation 指标：**
+- `train.py` 的 validation 现在会为 `parallel_l1`、`parallel_gaussian` 和 `parallel_t` 聚合额外的 `mae` 指标
+- `parallel_l1` 的 `val_mae` 使用 validation L1 loss；`parallel_gaussian` 使用 action-space mean-action MAE；`parallel_t` 使用 Student-t mean-action MAE
+
+**日志与结果输出：**
+- step/epoch validation 控制台输出新增 `val_mae`，W&B 新增 `val/mae`
+- 训练期 rollout eval 的 `result.json` 保留原有 `val_loss` 字段，并在有 continuous validation MAE 时新增 `val_metrics: {"mae": ...}` 和顶层 `val_mae`

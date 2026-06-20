@@ -853,6 +853,12 @@ def _format_loss_value(value) -> str:
     return f"{value:.4f}"
 
 
+def _format_optional_metric(name: str, value) -> str:
+    if value is None:
+        return ""
+    return f"  {name}={_format_loss_value(value)}  "
+
+
 def _run_eval(
     config,
     model,
@@ -864,6 +870,7 @@ def _run_eval(
     train_loss,
     val_loss,
     checkpoint_dir: str,
+    val_metrics: dict | None = None,
     epoch: int | None = None,
     batch_step: int | None = None,
     epoch_step: int | None = None,
@@ -953,6 +960,9 @@ def _run_eval(
             result["prompt_template_name"] = prompt_name
             result["train_loss"] = train_loss
             result["val_loss"] = val_loss
+            result["val_metrics"] = val_metrics or {}
+            if val_metrics and "mae" in val_metrics:
+                result["val_mae"] = val_metrics["mae"]
             result["experiment_id"] = config["experiment_id"]
             result["result_path"] = result_path
             result["eval_type"] = eval_type
@@ -975,6 +985,7 @@ def _run_eval(
                 f"mean_steps={result['mean_episode_steps']:.1f}, "
                 f"train_loss={_format_loss_value(train_loss)}, "
                 f"val_loss={_format_loss_value(val_loss)}"
+                f"{_format_optional_metric('val_mae', (val_metrics or {}).get('mae'))}"
             )
 
             with open(result_path, "w") as f:
@@ -1308,6 +1319,18 @@ def _loss_parts_to_wandb_metrics(loss_parts, *, prefix: str) -> dict[str, float]
     return metrics
 
 
+def _validation_mae_from_loss_parts(loss_parts) -> float | None:
+    if not loss_parts:
+        return None
+    if "l1_loss" in loss_parts:
+        return float(loss_parts["l1_loss"])
+    if "gaussian_mae" in loss_parts:
+        return float(loss_parts["gaussian_mae"])
+    if "student_t_mae" in loss_parts:
+        return float(loss_parts["student_t_mae"])
+    return None
+
+
 def _reduce_wandb_loss_part_metrics(
     loss_parts,
     *,
@@ -1335,15 +1358,19 @@ def _run_validation(
     val_total = len(val_loader)
     if val_total == 0:
         print(f"[{warning_label}] WARNING: val_loader is empty; val_loss will be reported as NaN.")
-        return math.nan
+        return math.nan, {}
 
     val_loss = 0.0
+    val_loss_parts: dict[str, float] = {}
     val_batches = 0
     val_start = time.monotonic()
     with torch.no_grad():
         for step, batch in enumerate(val_loader, start=1):
             loss, loss_parts = _compute_batch_loss(model, batch, device, loss_context)
             val_loss += loss.item()
+            if loss_parts:
+                for key, value in loss_parts.items():
+                    val_loss_parts[key] = val_loss_parts.get(key, 0.0) + float(value)
             val_batches += 1
             if progress is not None:
                 progress.update(
@@ -1354,7 +1381,15 @@ def _run_validation(
                     extra=_format_loss_extra(loss, loss_parts),
                 )
 
-    return val_loss / max(val_batches, 1)
+    avg_loss_parts = {
+        key: value / max(val_batches, 1)
+        for key, value in val_loss_parts.items()
+    }
+    val_metrics = {}
+    val_mae = _validation_mae_from_loss_parts(avg_loss_parts)
+    if val_mae is not None:
+        val_metrics["mae"] = val_mae
+    return val_loss / max(val_batches, 1), val_metrics
 
 
 def _create_training_progress_path(config: dict, dist_context: DistributedContext) -> str | None:
@@ -2207,9 +2242,10 @@ def _run_training_partitioned(
                         step_train_loss = total_loss / max(num_batches, 1)
                         step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
                         step_val_loss = math.nan
+                        step_val_metrics = {}
                         if dist_context.is_main_process:
                             if checkpoint_only_reason is None:
-                                step_val_loss = _run_validation(
+                                step_val_loss, step_val_metrics = _run_validation(
                                     raw_model,
                                     val_loader,
                                     device,
@@ -2223,6 +2259,7 @@ def _run_training_partitioned(
                                     f"epoch_step={epoch_batch_step}/{train_batches_per_epoch}  "
                                     f"step_eval_trigger={epoch_step_eval_count}  "
                                     f"val_loss={_format_loss_value(step_val_loss)}  "
+                                    f"{_format_optional_metric('val_mae', step_val_metrics.get('mae'))}"
                                     f"optimizer_step={optimizer_step}"
                                 )
                                 if wandb_logger.enabled:
@@ -2236,6 +2273,10 @@ def _run_training_partitioned(
                                             ),
                                             "train/step_loss": step_train_loss,
                                             "val/loss": step_val_loss,
+                                            **{
+                                                f"val/{key}": float(value)
+                                                for key, value in step_val_metrics.items()
+                                            },
                                             "train/learning_rate": get_optimizer_lr(optimizer),
                                         }
                                     )
@@ -2279,6 +2320,10 @@ def _run_training_partitioned(
                                 step_val_loss,
                                 dist_context,
                             )
+                            step_val_metrics = broadcast_object(
+                                step_val_metrics,
+                                dist_context,
+                            )
                             if should_run_eval:
                                 _run_eval(
                                     config,
@@ -2290,6 +2335,7 @@ def _run_training_partitioned(
                                     eval_type="step",
                                     train_loss=step_train_loss,
                                     val_loss=step_val_loss,
+                                    val_metrics=step_val_metrics,
                                     checkpoint_dir=step_ckpt_dir,
                                     epoch=epoch,
                                     batch_step=global_batch_step,
@@ -2316,8 +2362,9 @@ def _run_training_partitioned(
 
             train_loss = total_loss / max(num_batches, 1)
             val_loss = math.nan
+            val_metrics = {}
             if dist_context.is_main_process:
-                val_loss = _run_validation(
+                val_loss, val_metrics = _run_validation(
                     raw_model,
                     val_loader,
                     device,
@@ -2331,6 +2378,7 @@ def _run_training_partitioned(
             print(
                 f"[epoch {epoch}/{end_epoch}] train_loss={train_loss:.4f}  "
                 f"val_loss={_format_loss_value(val_loss)}"
+                f"{_format_optional_metric('val_mae', val_metrics.get('mae'))}"
             )
             if wandb_logger.enabled:
                 wandb_logger.log(
@@ -2343,6 +2391,10 @@ def _run_training_partitioned(
                         ),
                         "train/epoch_loss": train_loss,
                         "val/loss": val_loss,
+                        **{
+                            f"val/{key}": float(value)
+                            for key, value in val_metrics.items()
+                        },
                         "train/learning_rate": get_optimizer_lr(optimizer),
                     }
                 )
@@ -2376,6 +2428,7 @@ def _run_training_partitioned(
                 ),
             )
         val_loss = broadcast_object(val_loss, dist_context)
+        val_metrics = broadcast_object(val_metrics, dist_context)
         if should_run_eval:
             _run_eval(
                 config,
@@ -2387,6 +2440,7 @@ def _run_training_partitioned(
                 eval_type="epoch",
                 train_loss=train_loss,
                 val_loss=val_loss,
+                val_metrics=val_metrics,
                 checkpoint_dir=epoch_ckpt_dir,
                 epoch=epoch,
                 optimizer_step=optimizer_step,
@@ -2747,9 +2801,10 @@ def _run_training(
                     step_train_loss = total_loss / max(num_batches, 1)
                     step_ckpt_dir = get_checkpoint_dir(config, selection_tag, step=global_batch_step)
                     step_val_loss = math.nan
+                    step_val_metrics = {}
                     if dist_context.is_main_process:
                         if checkpoint_only_reason is None:
-                            step_val_loss = _run_validation(
+                            step_val_loss, step_val_metrics = _run_validation(
                                 raw_model,
                                 val_loader,
                                 device,
@@ -2763,6 +2818,7 @@ def _run_training(
                                 f"epoch_step={step}/{train_total}  "
                                 f"step_eval_trigger={epoch_step_eval_count}  "
                                 f"val_loss={_format_loss_value(step_val_loss)}  "
+                                f"{_format_optional_metric('val_mae', step_val_metrics.get('mae'))}"
                                 f"optimizer_step={optimizer_step}"
                             )
                             if wandb_logger.enabled:
@@ -2776,6 +2832,10 @@ def _run_training(
                                         ),
                                         "train/step_loss": step_train_loss,
                                         "val/loss": step_val_loss,
+                                        **{
+                                            f"val/{key}": float(value)
+                                            for key, value in step_val_metrics.items()
+                                        },
                                         "train/learning_rate": get_optimizer_lr(optimizer),
                                     }
                                 )
@@ -2816,6 +2876,10 @@ def _run_training(
                             step_val_loss,
                             dist_context,
                         )
+                        step_val_metrics = broadcast_object(
+                            step_val_metrics,
+                            dist_context,
+                        )
                         if should_run_eval:
                             _run_eval(
                                 config,
@@ -2827,6 +2891,7 @@ def _run_training(
                                 eval_type="step",
                                 train_loss=step_train_loss,
                                 val_loss=step_val_loss,
+                                val_metrics=step_val_metrics,
                                 checkpoint_dir=step_ckpt_dir,
                                 epoch=epoch,
                                 batch_step=global_batch_step,
@@ -2850,8 +2915,9 @@ def _run_training(
             train_loss = total_loss / max(num_batches, 1)
 
             val_loss = math.nan
+            val_metrics = {}
             if dist_context.is_main_process:
-                val_loss = _run_validation(
+                val_loss, val_metrics = _run_validation(
                     raw_model,
                     val_loader,
                     device,
@@ -2865,6 +2931,7 @@ def _run_training(
             print(
                 f"[epoch {epoch}/{end_epoch}] train_loss={train_loss:.4f}  "
                 f"val_loss={_format_loss_value(val_loss)}"
+                f"{_format_optional_metric('val_mae', val_metrics.get('mae'))}"
             )
             if wandb_logger.enabled:
                 wandb_logger.log(
@@ -2877,6 +2944,10 @@ def _run_training(
                         ),
                         "train/epoch_loss": train_loss,
                         "val/loss": val_loss,
+                        **{
+                            f"val/{key}": float(value)
+                            for key, value in val_metrics.items()
+                        },
                         "train/learning_rate": get_optimizer_lr(optimizer),
                     }
                 )
@@ -2907,6 +2978,7 @@ def _run_training(
                 ),
             )
         val_loss = broadcast_object(val_loss, dist_context)
+        val_metrics = broadcast_object(val_metrics, dist_context)
         if should_run_eval:
             _run_eval(
                 config,
@@ -2918,6 +2990,7 @@ def _run_training(
                 eval_type="epoch",
                 train_loss=train_loss,
                 val_loss=val_loss,
+                val_metrics=val_metrics,
                 checkpoint_dir=epoch_ckpt_dir,
                 epoch=epoch,
                 optimizer_step=optimizer_step,
