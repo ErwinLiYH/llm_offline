@@ -1351,8 +1351,7 @@ type: project
 
 **训练配置：**
 - 新增 `training_eval_rollout_isolated`，默认 `false`；关闭时训练期 rollout 仍在训练进程内执行，保持原有行为
-- 新增 `isolated_eval_rollout_retry_times`，默认 `0`；表示额外重试次数，`0` 即总共尝试 1 次
-- 默认示例配置 `config.yaml` 与 `config.antmaze.yaml` 同步加入这两个配置项和注释
+- 默认示例配置 `config.yaml` 与 `config.antmaze.yaml` 同步加入该配置项和注释
 
 **`evaluate.py` 输出模式：**
 - 新增 `eval_output_mode: standalone | training`，默认 `standalone`；普通 `evaluate.py --config eval.yaml` 继续写 `standalone_<eval_uuid>`
@@ -1365,12 +1364,15 @@ type: project
 - 子进程配置固定使用 `parallel_backend: single`、`model_path: <just-saved checkpoint>`、本 rank 的 variants、`eval_output_mode: training` 和 `wandb_enabled: false`
 - 子进程环境会移除 `RANK`、`WORLD_SIZE`、`LOCAL_RANK` 等 DDP 变量；DDP 训练时把 `CUDA_VISIBLE_DEVICES` 限制到父 rank 的 `local_rank` 对应 GPU，避免子进程误入 DDP
 - 每次尝试的临时 config、stdout 和 stderr 写入 `epoch_<n>/isolated_eval/rank_<rank>/attempt_<n>.*` 或 `step<n>/isolated_eval/rank_<rank>/attempt_<n>.*`
-- 子进程最终失败只 warning 并继续训练；rank0 对失败 variant 记录 W&B `eval/<variant>/rollout_failed=1` 和 `eval/<variant>/isolated_attempts`，不写假的 success rate
+- 子进程第一次按配置运行；如果失败且 `eval_parallel_episodes > 1`，父进程固定再尝试一次 `eval_parallel_episodes: 1` 的 serial fallback；fallback 也失败时只 warning 并继续训练
+- rank0 对失败 variant 记录 W&B `eval/<variant>/rollout_failed=1` 和 `eval/<variant>/isolated_attempts`，不写假的 success rate
 
 **修复与验证：**
 - 修复隔离 eval 子进程 config 携带无关 continuous action 字段的问题：`parallel_l1` 不再传 `gaussian_log_std_*`、`student_t_df` 或 `continuous_mean_l1_weight`，避免 checkpoint action config 校验失败
-- 新增单元测试覆盖 standalone/training 输出路径、training context result 字段、隔离 eval 成功读取结果、retry、全部失败 warning、W&B failure flag、DDP variant 分配和 mode-specific action config keys
+- 修复 AntMaze 录视频时 `eval_parallel_episodes > 1` 可能触发 native MuJoCo/EGL abort 的问题：isolated training eval 首次仍按配置并行运行，失败后自动降级到 `eval_parallel_episodes: 1`；该 fallback 策略对所有环境族生效，降级仍失败则跳过 rollout 并继续训练
+- Isambard AntMaze 训练配置的 `eval_parallel_episodes` 保持为 `5`，开启 isolated eval 后由失败 fallback 兜底
+- 新增单元测试覆盖 standalone/training 输出路径、training context result 字段、隔离 eval 成功读取结果、失败后 serial fallback、fallback 全部失败 warning、W&B failure flag、DDP variant 分配和 mode-specific action config keys
 - 已通过 `python -m py_compile evaluate.py train.py tests/test_eval_parallel.py tests/test_resume_training_state.py`
 - 已通过 `git diff --check`
-- 已通过 `mamba run -n llm_offline python -m pytest tests/test_eval_parallel.py tests/test_resume_training_state.py`，结果 `23 passed`
+- 已通过 `mamba run -n llm_offline python -m pytest tests/test_eval_parallel.py tests/test_resume_training_state.py`，结果 `24 passed`
 - 已用 1-GPU Slurm smoke job 验证 `training_eval_rollout_isolated: true` 的 PointMaze `parallel_l1` 短训练，产出正确 `result.json`、`eval_config.yaml` 和 `isolated_eval/rank_0/attempt_1.yaml`

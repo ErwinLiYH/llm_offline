@@ -1213,28 +1213,6 @@ def _build_training_eval_config(config: dict) -> dict:
     return eval_config
 
 
-def resolve_isolated_eval_rollout_retry_times(config: dict) -> int:
-    raw_value = config.get("isolated_eval_rollout_retry_times", 0)
-    if isinstance(raw_value, bool):
-        raise ValueError(
-            "isolated_eval_rollout_retry_times must be an integer >= 0, "
-            f"got {raw_value!r}"
-        )
-    try:
-        retry_times = int(raw_value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "isolated_eval_rollout_retry_times must be an integer >= 0, "
-            f"got {raw_value!r}"
-        ) from exc
-    if retry_times < 0:
-        raise ValueError(
-            "isolated_eval_rollout_retry_times must be >= 0, "
-            f"got {retry_times}"
-        )
-    return retry_times
-
-
 def _build_training_eval_context(
     config: dict,
     *,
@@ -1404,6 +1382,31 @@ def _read_isolated_eval_results(
     return results
 
 
+def _isolated_eval_attempt_configs(child_config: dict) -> list[tuple[str, dict]]:
+    configured = dict(child_config)
+    configured["isolated_eval_attempt_mode"] = "configured"
+    attempts = [("configured", configured)]
+
+    try:
+        requested_parallel_episodes = int(child_config.get("eval_parallel_episodes", 1))
+    except (TypeError, ValueError):
+        requested_parallel_episodes = 1
+
+    if requested_parallel_episodes > 1:
+        serial_fallback = dict(child_config)
+        serial_fallback["eval_parallel_episodes"] = 1
+        serial_fallback["isolated_eval_attempt_mode"] = "serial_fallback"
+        serial_fallback["isolated_eval_fallback_reason"] = (
+            "previous_attempt_failed"
+        )
+        serial_fallback["isolated_eval_original_eval_parallel_episodes"] = (
+            requested_parallel_episodes
+        )
+        attempts.append(("serial_fallback", serial_fallback))
+
+    return attempts
+
+
 def _run_isolated_eval_subprocess_for_rank(
     config: dict,
     eval_config: dict,
@@ -1412,7 +1415,6 @@ def _run_isolated_eval_subprocess_for_rank(
     *,
     training_eval_context: dict,
     distribute_variants: bool,
-    retry_times: int,
     dist_context: DistributedContext,
 ) -> tuple[list[dict], list[dict]]:
     if not local_variants:
@@ -1446,22 +1448,24 @@ def _run_isolated_eval_subprocess_for_rank(
         "-y",
     ]
     env = _isolated_eval_subprocess_env(dist_context)
-    max_attempts = retry_times + 1
+    attempt_configs = _isolated_eval_attempt_configs(child_config)
+    max_attempts = len(attempt_configs)
     last_error = None
 
-    for attempt in range(1, max_attempts + 1):
+    for attempt, (attempt_mode, attempt_config) in enumerate(attempt_configs, start=1):
         attempt_prefix = os.path.join(rank_dir, f"attempt_{attempt}")
         config_path = f"{attempt_prefix}.yaml"
         stdout_path = f"{attempt_prefix}.stdout"
         stderr_path = f"{attempt_prefix}.stderr"
         with open(config_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(child_config, f, sort_keys=False, allow_unicode=True)
+            yaml.safe_dump(attempt_config, f, sort_keys=False, allow_unicode=True)
 
         attempt_command = list(command)
         attempt_command[attempt_command.index("--config") + 1] = config_path
         print(
             f"[eval][rank {dist_context.rank}] isolated attempt "
-            f"{attempt}/{max_attempts} variants={local_variants}"
+            f"{attempt}/{max_attempts} mode={attempt_mode} variants={local_variants} "
+            f"parallel_episodes={attempt_config.get('eval_parallel_episodes')}"
         )
         with open(stdout_path, "w", encoding="utf-8") as stdout, open(
             stderr_path,
@@ -1496,7 +1500,8 @@ def _run_isolated_eval_subprocess_for_rank(
             print(
                 f"[eval][rank {dist_context.rank}] WARNING: isolated eval "
                 f"attempt {attempt}/{max_attempts} failed for variants={local_variants}; "
-                f"retrying. stdout={stdout_path} stderr={stderr_path} error={last_error}"
+                "retrying with eval_parallel_episodes=1. "
+                f"stdout={stdout_path} stderr={stderr_path} error={last_error}"
             )
 
     failure = {
@@ -1524,7 +1529,6 @@ def _write_isolated_eval_config_snapshot(
     assignments: dict,
     parallel_episodes: int,
     distribute_variants: bool,
-    retry_times: int,
 ) -> None:
     snapshot_context = dict(training_eval_context)
     snapshot_context.pop("eval_rank", None)
@@ -1541,7 +1545,9 @@ def _write_isolated_eval_config_snapshot(
     snapshot["resolved_eval_variant_assignments"] = assignments
     snapshot["eval_world_size"] = training_eval_context.get("eval_world_size")
     snapshot["eval_parallel_episodes"] = parallel_episodes
-    snapshot["isolated_eval_rollout_retry_times"] = retry_times
+    snapshot["isolated_eval_fallback_on_failure"] = parallel_episodes > 1
+    if parallel_episodes > 1:
+        snapshot["isolated_eval_fallback_eval_parallel_episodes"] = 1
 
     run_results_dir = _isolated_eval_root_dir(
         config,
@@ -1646,7 +1652,6 @@ def _run_eval_isolated(
         dist_context,
         distribute_variants=distribute_variants,
     )
-    retry_times = resolve_isolated_eval_rollout_retry_times(config)
     training_eval_context = _build_training_eval_context(
         config,
         eval_type=eval_type,
@@ -1671,7 +1676,8 @@ def _run_eval_isolated(
             f"[eval] {label} | isolated rollout enabled | "
             f"variant assignments={assignments} | "
             f"parallel_episodes={parallel_episodes} | "
-            f"retry_times={retry_times}"
+            "fallback_on_failure="
+            f"{parallel_episodes > 1}"
         )
 
     local_results, local_failures = _run_isolated_eval_subprocess_for_rank(
@@ -1681,7 +1687,6 @@ def _run_eval_isolated(
         local_variants,
         training_eval_context=training_eval_context,
         distribute_variants=distribute_variants,
-        retry_times=retry_times,
         dist_context=dist_context,
     )
     gathered = all_gather_objects(
@@ -1698,7 +1703,6 @@ def _run_eval_isolated(
             assignments=assignments,
             parallel_episodes=parallel_episodes,
             distribute_variants=distribute_variants,
-            retry_times=retry_times,
         )
         results_by_variant = {
             result["variant"]: result
@@ -4254,9 +4258,6 @@ def main():
         resolve_step_eval_skip(config)
         config["training_eval_rollout_isolated"] = _as_bool(
             config.get("training_eval_rollout_isolated", False)
-        )
-        config["isolated_eval_rollout_retry_times"] = (
-            resolve_isolated_eval_rollout_retry_times(config)
         )
         available_variants = get_available_variants(config["env_family"])
         train_selection = resolve_train_selection(config, available_variants)

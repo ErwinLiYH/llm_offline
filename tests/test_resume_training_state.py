@@ -137,7 +137,7 @@ class DummyWandbLogger:
         self.logs.append(payload)
 
 
-def _isolated_eval_base_config(tmpdir: str, *, retry_times: int = 0) -> dict:
+def _isolated_eval_base_config(tmpdir: str) -> dict:
     return {
         "env_family": "pointmaze",
         "model_name": "org/dummy-model",
@@ -148,7 +148,6 @@ def _isolated_eval_base_config(tmpdir: str, *, retry_times: int = 0) -> dict:
         "prompt_templete_index": ["0"],
         "eval_distribute_variants": True,
         "training_eval_rollout_isolated": True,
-        "isolated_eval_rollout_retry_times": retry_times,
     }
 
 
@@ -265,17 +264,18 @@ class IsolatedTrainingEvalTest(unittest.TestCase):
                 {"mae": 0.25},
             )
 
-    def test_retries_until_success(self):
+    def test_failure_falls_back_to_serial_parallel_episodes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            config = _isolated_eval_base_config(tmpdir, retry_times=1)
+            config = _isolated_eval_base_config(tmpdir)
+            config["eval_parallel_episodes"] = 5
             selection_tag = "umaze"
-            calls = {"count": 0}
+            seen_child_configs = []
 
             def fake_run(command, **kwargs):
-                calls["count"] += 1
-                if calls["count"] == 1:
-                    return subprocess.CompletedProcess(command, 1)
                 child_config = _isolated_eval_config_from_command(command)
+                seen_child_configs.append(child_config)
+                if len(seen_child_configs) == 1:
+                    return subprocess.CompletedProcess(command, 1)
                 _write_fake_isolated_eval_results(config, selection_tag, child_config)
                 return subprocess.CompletedProcess(command, 0)
 
@@ -296,12 +296,27 @@ class IsolatedTrainingEvalTest(unittest.TestCase):
                     dist_context=DistributedContext(backend="single"),
                 )
 
-            self.assertEqual(calls["count"], 2)
+            self.assertEqual(len(seen_child_configs), 2)
+            self.assertEqual(seen_child_configs[0]["eval_parallel_episodes"], 5)
+            self.assertEqual(
+                seen_child_configs[0]["isolated_eval_attempt_mode"],
+                "configured",
+            )
+            self.assertEqual(seen_child_configs[1]["eval_parallel_episodes"], 1)
+            self.assertEqual(
+                seen_child_configs[1]["isolated_eval_attempt_mode"],
+                "serial_fallback",
+            )
+            self.assertEqual(
+                seen_child_configs[1]["isolated_eval_original_eval_parallel_episodes"],
+                5,
+            )
             self.assertEqual(wandb.logs[0]["eval/umaze/success_rate"], 0.75)
 
     def test_all_failures_warn_and_log_failure_flag(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            config = _isolated_eval_base_config(tmpdir, retry_times=1)
+            config = _isolated_eval_base_config(tmpdir)
+            config["eval_parallel_episodes"] = 5
             wandb = DummyWandbLogger()
 
             with mock.patch(
@@ -327,6 +342,35 @@ class IsolatedTrainingEvalTest(unittest.TestCase):
             self.assertEqual(wandb.logs[0]["eval/umaze/rollout_failed"], 1.0)
             self.assertEqual(wandb.logs[0]["eval/umaze/isolated_attempts"], 2.0)
             self.assertNotIn("eval/umaze/success_rate", wandb.logs[0])
+
+    def test_failure_with_serial_parallel_episodes_does_not_retry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = _isolated_eval_base_config(tmpdir)
+            config["eval_parallel_episodes"] = 1
+            wandb = DummyWandbLogger()
+
+            with mock.patch(
+                "train.subprocess.run",
+                return_value=subprocess.CompletedProcess(["evaluate.py"], 1),
+            ) as run_mock:
+                train._run_eval_isolated(
+                    config,
+                    "umaze",
+                    ["umaze"],
+                    "epoch",
+                    train_loss=1.0,
+                    val_loss=0.5,
+                    checkpoint_dir="/tmp/checkpoint/ep1",
+                    epoch=1,
+                    optimizer_step=2,
+                    wandb_logger=wandb,
+                    train_env_steps=100.0,
+                    dist_context=DistributedContext(backend="single"),
+                )
+
+            self.assertEqual(run_mock.call_count, 1)
+            self.assertEqual(wandb.logs[0]["eval/umaze/rollout_failed"], 1.0)
+            self.assertEqual(wandb.logs[0]["eval/umaze/isolated_attempts"], 1.0)
 
     def test_ddp_rank_passes_only_assigned_variants_to_child(self):
         with tempfile.TemporaryDirectory() as tmpdir:

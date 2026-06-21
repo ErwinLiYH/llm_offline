@@ -509,7 +509,7 @@ dataset_cache/
 
 训练期 rollout 默认仍在训练进程内执行，保持原有行为。设置 `training_eval_rollout_isolated: true` 后，训练进程会在保存当前 eval checkpoint 后，为每个 rank 分配到的 variants 启动一个单进程 `evaluate.py` 子进程；子进程配置固定使用 `parallel_backend: single`、`model_path: <just-saved checkpoint>`、`eval_output_mode: training` 和 `training_eval_context`，并关闭 W&B 初始化。DDP 训练中，父进程会移除子进程环境里的 `RANK` / `WORLD_SIZE` / `LOCAL_RANK` 等分布式变量，并把 `CUDA_VISIBLE_DEVICES` 限制到当前父 rank 的 `local_rank` 对应 GPU；子进程内部通常只看到逻辑 `cuda:0`。`eval_distribute_variants` 的语义保持不变：开启时 variants 轮转分配到各 rank，关闭时每个 rank 都拿到完整 variants 列表。
 
-隔离 rollout 的失败策略固定为 warning 并继续训练。`isolated_eval_rollout_retry_times` 表示额外重试次数，`0` 表示总共尝试 1 次，`2` 表示最多尝试 3 次。每次尝试都会把临时 config、stdout 和 stderr 写入对应 `epoch_<n>` 或 `step<n>` 目录下的 `isolated_eval/rank_<rank>/attempt_<n>.*`。子进程成功后父进程读取该 rank 负责 variants 的 `result.json`；某个 variant 最终失败时，rank0 只记录 warning，并在 W&B 写 `eval/<variant>/rollout_failed=1` 和 `eval/<variant>/isolated_attempts`，不会写假的 success rate。当前可靠支持目标仍是 single-node DDP；multi-node 路径仅属 best-effort，要求 checkpoint/result/cache 都位于所有节点可见的共享文件系统。
+隔离 rollout 的失败策略固定为 warning 并继续训练。父进程第一次按配置启动子进程；如果该尝试失败且 `eval_parallel_episodes > 1`，父进程会再启动一次 `eval_parallel_episodes: 1` 的 serial fallback 子进程。每次尝试都会把临时 config、stdout 和 stderr 写入对应 `epoch_<n>` 或 `step<n>` 目录下的 `isolated_eval/rank_<rank>/attempt_<n>.*`，并在 attempt config 中写 `isolated_eval_attempt_mode: configured | serial_fallback`。子进程成功后父进程读取该 rank 负责 variants 的 `result.json`；如果配置尝试和 serial fallback 都失败，rank0 只记录 warning，并在 W&B 写 `eval/<variant>/rollout_failed=1` 和 `eval/<variant>/isolated_attempts`，不会写假的 success rate。当前可靠支持目标仍是 single-node DDP；multi-node 路径仅属 best-effort，要求 checkpoint/result/cache 都位于所有节点可见的共享文件系统。
 
 `score.py` 使用独立路径语义，不嵌入训练期/standalone eval 的 `eval=<...>` 目录。每次运行写入 `<result_root>/<mode>_<score_id>/`，其中每个变种写 `score=<env_family>-<variant>/result.json`，run 根目录写 `summary.json` 和实际使用的 `score_config.yaml`。当 `record_video: true` 时，score rollout 视频保存在对应 `score=<...>/episode_<n>/rollout.<gif|mp4>` 下，并在 variant `result.json` 中记录 `video_path` / `video_paths` / `episode_artifact_dirs`。
 
@@ -576,7 +576,7 @@ env_kwargs:
 
 普通独立评估不需要设置 `eval_output_mode`，默认值为 `standalone`，输出仍写入 `standalone_<eval_uuid>`。`eval_output_mode: training` 是训练进程隔离 rollout 使用的内部模式，必须同时提供完整 `training_eval_context`；该模式直接写入 checkpoint 对应 run 的 `epoch_<n>` 或 `step<n>` 目录，并把训练上下文字段补进每个 `result.json`。
 
-当 continuous action mode 实际使用 `eval_parallel_episodes > 1` 时，不等长 episode 可能乱序完成。合批 rollout 因此关闭逐 episode 进度和逐视频路径输出；调用端仍保留启动信息、结果路径以及每个 variant 完成后的成功率汇总。非 continuous action mode 回退串行后继续使用原有逐 episode 日志。
+当 continuous action mode 实际使用 `eval_parallel_episodes > 1` 时，不等长 episode 可能乱序完成。合批 rollout 因此关闭逐 episode 进度和逐视频路径输出；调用端仍保留启动信息、结果路径以及每个 variant 完成后的成功率汇总。非 continuous action mode 回退串行后继续使用原有逐 episode 日志。训练期 isolated eval 如果配置的合批 rollout 失败，会由父进程重试一次 `eval_parallel_episodes: 1` 的 serial fallback。
 
 `evaluate.py` 和 `score.py` 的视频编码默认通过 `video_save_workers: 1` 放到后台线程执行，rollout 在提交后继续。`video_save_workers` 是并发编码线程数；`video_save_max_pending` 统计正在编码与在线程池中排队的视频任务总数，并且不能小于 worker 数。仅线程全部忙碌并不会立即阻塞，只要 pending 数仍低于上限就可以继续排队；达到上限后，下一次提交会等待至少一个任务完成，以免 `record_all` 把全部 frame 长时间保留在内存中。AntMaze eval 每个被录制的 episode 会提交跟随视角和全局视角两个视频任务，两者都计入 pending 上限；`score.py` 仍只保存普通 `rollout.<gif|mp4>`。每个 variant 返回和写最终结果前仍会等待其全部视频完成并传播编码错误。设 `video_save_workers: 0` 可恢复同步保存。
 

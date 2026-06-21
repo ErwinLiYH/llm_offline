@@ -99,7 +99,6 @@ eval_variants: [large-play]
 eval_parallel_episodes: 5
 eval_distribute_variants: true
 training_eval_rollout_isolated: true
-isolated_eval_rollout_retry_times: 2
 eval_env_kwargs:
   continuing_task: false
   reset_target: false
