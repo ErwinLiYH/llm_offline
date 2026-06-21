@@ -14,6 +14,7 @@ import time
 import math
 import sys
 import gc
+import subprocess
 
 import yaml
 import torch
@@ -1163,7 +1164,8 @@ def _partition_order(partition_count: int, epoch: int, sampling_seed: int) -> li
 
 
 def _build_training_eval_config(config: dict) -> dict:
-    return {
+    action_token_mode = config.get("action_token_mode", "text")
+    eval_config = {
         "env_family": config["env_family"],
         "num_episodes": config["eval_num_episodes"],
         "seed": config.get("eval_seed", 1),
@@ -1198,13 +1200,544 @@ def _build_training_eval_config(config: dict) -> dict:
         "action_head_num_blocks": config.get("action_head_num_blocks"),
         "action_head_dropout": config.get("action_head_dropout"),
         "action_head_weight_decay": config.get("action_head_weight_decay"),
-        "gaussian_log_std_min": config.get("gaussian_log_std_min"),
-        "gaussian_log_std_max": config.get("gaussian_log_std_max"),
-        "gaussian_log_std_init": config.get("gaussian_log_std_init"),
-        "student_t_df": config.get("student_t_df"),
-        "continuous_mean_l1_weight": config.get("continuous_mean_l1_weight"),
         "max_length": config.get("max_length"),
     }
+    if action_token_mode in {"parallel_gaussian", "parallel_t"}:
+        eval_config["gaussian_log_std_min"] = config.get("gaussian_log_std_min")
+        eval_config["gaussian_log_std_max"] = config.get("gaussian_log_std_max")
+    if action_token_mode == "parallel_gaussian":
+        eval_config["gaussian_log_std_init"] = config.get("gaussian_log_std_init")
+    if action_token_mode == "parallel_t":
+        eval_config["student_t_df"] = config.get("student_t_df")
+        eval_config["continuous_mean_l1_weight"] = config.get("continuous_mean_l1_weight")
+    return eval_config
+
+
+def resolve_isolated_eval_rollout_retry_times(config: dict) -> int:
+    raw_value = config.get("isolated_eval_rollout_retry_times", 0)
+    if isinstance(raw_value, bool):
+        raise ValueError(
+            "isolated_eval_rollout_retry_times must be an integer >= 0, "
+            f"got {raw_value!r}"
+        )
+    try:
+        retry_times = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "isolated_eval_rollout_retry_times must be an integer >= 0, "
+            f"got {raw_value!r}"
+        ) from exc
+    if retry_times < 0:
+        raise ValueError(
+            "isolated_eval_rollout_retry_times must be >= 0, "
+            f"got {retry_times}"
+        )
+    return retry_times
+
+
+def _build_training_eval_context(
+    config: dict,
+    *,
+    eval_type: str,
+    train_loss,
+    val_loss,
+    val_metrics: dict | None,
+    checkpoint_dir: str,
+    epoch: int | None,
+    batch_step: int | None,
+    epoch_step: int | None,
+    optimizer_step: int | None,
+    scheduled_step: int | None,
+    scheduled_epoch_step: int | None,
+    eval_rank: int | None = None,
+    eval_world_size: int | None = None,
+    eval_distribute_variants: bool | None = None,
+) -> dict:
+    context = {
+        "eval_type": eval_type,
+        "epoch": epoch,
+        "batch_step": batch_step,
+        "epoch_step": epoch_step,
+        "optimizer_step": optimizer_step,
+        "scheduled_step": scheduled_step,
+        "scheduled_epoch_step": scheduled_epoch_step,
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "val_metrics": val_metrics or {},
+        "checkpoint_path": checkpoint_dir,
+        "experiment_id": config["experiment_id"],
+    }
+    if eval_rank is not None:
+        context["eval_rank"] = eval_rank
+    if eval_world_size is not None:
+        context["eval_world_size"] = eval_world_size
+    if eval_distribute_variants is not None:
+        context["eval_distribute_variants"] = eval_distribute_variants
+    return context
+
+
+def _isolated_eval_root_dir(
+    config: dict,
+    train_selection_tag: str,
+    *,
+    eval_type: str,
+    epoch: int | None,
+    batch_step: int | None,
+) -> str:
+    if eval_type == "step":
+        return get_eval_results_dir(config, train_selection_tag, step=batch_step)
+    return get_eval_results_dir(config, train_selection_tag, epoch=epoch)
+
+
+def _isolated_eval_rank_dir(
+    config: dict,
+    train_selection_tag: str,
+    *,
+    eval_type: str,
+    epoch: int | None,
+    batch_step: int | None,
+    rank: int,
+) -> str:
+    return os.path.join(
+        _isolated_eval_root_dir(
+            config,
+            train_selection_tag,
+            eval_type=eval_type,
+            epoch=epoch,
+            batch_step=batch_step,
+        ),
+        "isolated_eval",
+        f"rank_{rank}",
+    )
+
+
+_DISTRIBUTED_ENV_KEYS = (
+    "RANK",
+    "WORLD_SIZE",
+    "LOCAL_RANK",
+    "LOCAL_WORLD_SIZE",
+    "GROUP_RANK",
+    "ROLE_RANK",
+    "ROLE_WORLD_SIZE",
+    "MASTER_ADDR",
+    "MASTER_PORT",
+    "TORCHELASTIC_RESTART_COUNT",
+    "TORCHELASTIC_MAX_RESTARTS",
+    "TORCHELASTIC_RUN_ID",
+    "TORCHELASTIC_USE_AGENT_STORE",
+)
+
+
+def _isolated_eval_subprocess_env(dist_context: DistributedContext) -> dict:
+    env = os.environ.copy()
+    for key in _DISTRIBUTED_ENV_KEYS:
+        env.pop(key, None)
+    env["PYTHONUNBUFFERED"] = "1"
+
+    if dist_context.is_distributed:
+        local_rank = int(dist_context.local_rank)
+        visible_devices = env.get("CUDA_VISIBLE_DEVICES")
+        if visible_devices:
+            devices = [item.strip() for item in visible_devices.split(",") if item.strip()]
+            if local_rank < len(devices):
+                env["CUDA_VISIBLE_DEVICES"] = devices[local_rank]
+            else:
+                env["CUDA_VISIBLE_DEVICES"] = str(local_rank)
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = str(local_rank)
+    return env
+
+
+def _build_isolated_training_eval_config(
+    config: dict,
+    eval_config: dict,
+    *,
+    local_variants: list[str],
+    training_eval_context: dict,
+    distribute_variants: bool,
+) -> dict:
+    child_config = dict(eval_config)
+    child_config.update(
+        {
+            "model_path": os.path.abspath(training_eval_context["checkpoint_path"]),
+            "result_root": os.path.abspath(config.get("result_root", "results")),
+            "load_in_4bit": config.get("load_in_4bit"),
+            "eval_mode": "all",
+            "variants": list(local_variants),
+            "parallel_backend": "single",
+            "eval_distribute_variants": distribute_variants,
+            "eval_output_mode": "training",
+            "training_eval_context": training_eval_context,
+            "prompt_templete_index": [config["prompt_templete_index"][0]],
+            "wandb_enabled": False,
+        }
+    )
+    return child_config
+
+
+def _read_isolated_eval_results(
+    config: dict,
+    train_selection_tag: str,
+    variants: list[str],
+    *,
+    eval_type: str,
+    epoch: int | None,
+    batch_step: int | None,
+) -> list[dict]:
+    results = []
+    for variant in variants:
+        result_dir = get_eval_variant_results_dir(
+            config,
+            train_selection_tag,
+            variant,
+            epoch=epoch if eval_type == "epoch" else None,
+            step=batch_step if eval_type == "step" else None,
+        )
+        result_path = os.path.join(result_dir, "result.json")
+        if not os.path.exists(result_path):
+            raise FileNotFoundError(
+                f"Isolated eval completed but result file is missing: {result_path}"
+            )
+        with open(result_path, "r", encoding="utf-8") as f:
+            result = json.load(f)
+        results.append(result)
+    return results
+
+
+def _run_isolated_eval_subprocess_for_rank(
+    config: dict,
+    eval_config: dict,
+    train_selection_tag: str,
+    local_variants: list[str],
+    *,
+    training_eval_context: dict,
+    distribute_variants: bool,
+    retry_times: int,
+    dist_context: DistributedContext,
+) -> tuple[list[dict], list[dict]]:
+    if not local_variants:
+        return [], []
+
+    rank_dir = _isolated_eval_rank_dir(
+        config,
+        train_selection_tag,
+        eval_type=training_eval_context["eval_type"],
+        epoch=training_eval_context.get("epoch"),
+        batch_step=training_eval_context.get("batch_step"),
+        rank=dist_context.rank,
+    )
+    os.makedirs(rank_dir, exist_ok=True)
+
+    child_config = _build_isolated_training_eval_config(
+        config,
+        eval_config,
+        local_variants=local_variants,
+        training_eval_context=training_eval_context,
+        distribute_variants=distribute_variants,
+    )
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    command = [
+        sys.executable,
+        os.path.join(repo_root, "evaluate.py"),
+        "--config",
+        "",
+        "--parallel_backend",
+        "single",
+        "-y",
+    ]
+    env = _isolated_eval_subprocess_env(dist_context)
+    max_attempts = retry_times + 1
+    last_error = None
+
+    for attempt in range(1, max_attempts + 1):
+        attempt_prefix = os.path.join(rank_dir, f"attempt_{attempt}")
+        config_path = f"{attempt_prefix}.yaml"
+        stdout_path = f"{attempt_prefix}.stdout"
+        stderr_path = f"{attempt_prefix}.stderr"
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(child_config, f, sort_keys=False, allow_unicode=True)
+
+        attempt_command = list(command)
+        attempt_command[attempt_command.index("--config") + 1] = config_path
+        print(
+            f"[eval][rank {dist_context.rank}] isolated attempt "
+            f"{attempt}/{max_attempts} variants={local_variants}"
+        )
+        with open(stdout_path, "w", encoding="utf-8") as stdout, open(
+            stderr_path,
+            "w",
+            encoding="utf-8",
+        ) as stderr:
+            completed = subprocess.run(
+                attempt_command,
+                cwd=repo_root,
+                env=env,
+                stdout=stdout,
+                stderr=stderr,
+                text=True,
+            )
+
+        if completed.returncode == 0:
+            try:
+                return _read_isolated_eval_results(
+                    config,
+                    train_selection_tag,
+                    local_variants,
+                    eval_type=training_eval_context["eval_type"],
+                    epoch=training_eval_context.get("epoch"),
+                    batch_step=training_eval_context.get("batch_step"),
+                ), []
+            except Exception as exc:  # noqa: BLE001 - retry missing/malformed artifacts.
+                last_error = str(exc)
+        else:
+            last_error = f"returncode={completed.returncode}"
+
+        if attempt < max_attempts:
+            print(
+                f"[eval][rank {dist_context.rank}] WARNING: isolated eval "
+                f"attempt {attempt}/{max_attempts} failed for variants={local_variants}; "
+                f"retrying. stdout={stdout_path} stderr={stderr_path} error={last_error}"
+            )
+
+    failure = {
+        "variants": list(local_variants),
+        "rank": dist_context.rank,
+        "attempts": max_attempts,
+        "error": last_error,
+        "log_dir": rank_dir,
+    }
+    print(
+        f"[eval][rank {dist_context.rank}] WARNING: isolated eval failed after "
+        f"{max_attempts} attempt(s) for variants={local_variants}; "
+        f"training will continue. log_dir={rank_dir} error={last_error}"
+    )
+    return [], [failure]
+
+
+def _write_isolated_eval_config_snapshot(
+    config: dict,
+    eval_config: dict,
+    train_selection_tag: str,
+    variants,
+    *,
+    training_eval_context: dict,
+    assignments: dict,
+    parallel_episodes: int,
+    distribute_variants: bool,
+    retry_times: int,
+) -> None:
+    snapshot_context = dict(training_eval_context)
+    snapshot_context.pop("eval_rank", None)
+    snapshot_context["eval_world_size"] = training_eval_context.get("eval_world_size")
+    snapshot_context["eval_distribute_variants"] = distribute_variants
+    snapshot = _build_isolated_training_eval_config(
+        config,
+        eval_config,
+        local_variants=list(variants),
+        training_eval_context=snapshot_context,
+        distribute_variants=distribute_variants,
+    )
+    snapshot["resolved_eval_variants"] = list(variants)
+    snapshot["resolved_eval_variant_assignments"] = assignments
+    snapshot["eval_world_size"] = training_eval_context.get("eval_world_size")
+    snapshot["eval_parallel_episodes"] = parallel_episodes
+    snapshot["isolated_eval_rollout_retry_times"] = retry_times
+
+    run_results_dir = _isolated_eval_root_dir(
+        config,
+        train_selection_tag,
+        eval_type=training_eval_context["eval_type"],
+        epoch=training_eval_context.get("epoch"),
+        batch_step=training_eval_context.get("batch_step"),
+    )
+    os.makedirs(run_results_dir, exist_ok=True)
+    eval_config_path = os.path.join(run_results_dir, "eval_config.yaml")
+    with open(eval_config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(snapshot, f, sort_keys=False, allow_unicode=True)
+    print(f"[eval] Isolated eval config saved to: {eval_config_path}")
+
+
+def _log_training_eval_wandb_metrics(
+    *,
+    variants,
+    results_by_variant: dict,
+    failures_by_variant: dict,
+    wandb_logger: WandbLogger | None,
+    train_env_steps: float | None,
+    wandb_batch_step: int | None,
+    batch_step: int | None,
+    optimizer_step: int | None,
+    epoch: int | None,
+) -> None:
+    if wandb_logger is None or not wandb_logger.enabled or train_env_steps is None:
+        return
+    step_metrics = wandb_step_metrics(
+        env_steps=train_env_steps,
+        batch_step=wandb_batch_step if wandb_batch_step is not None else batch_step,
+        optimizer_step=optimizer_step,
+        epoch=epoch,
+    )
+    for variant in variants:
+        result = results_by_variant.get(variant)
+        if result is not None:
+            wandb_logger.log(
+                {
+                    **step_metrics,
+                    f"eval/{variant}/success_rate": float(result["success_rate"]),
+                    f"eval/{variant}/mean_episode_steps": float(
+                        result["mean_episode_steps"]
+                    ),
+                }
+            )
+            continue
+        failure = failures_by_variant.get(variant)
+        if failure is not None:
+            wandb_logger.log(
+                {
+                    **step_metrics,
+                    f"eval/{variant}/rollout_failed": 1.0,
+                    f"eval/{variant}/isolated_attempts": float(
+                        failure.get("attempts", 0)
+                    ),
+                }
+            )
+
+
+def _run_eval_isolated(
+    config,
+    train_selection_tag: str,
+    variants,
+    eval_type: str,
+    train_loss,
+    val_loss,
+    checkpoint_dir: str,
+    val_metrics: dict | None = None,
+    epoch: int | None = None,
+    batch_step: int | None = None,
+    epoch_step: int | None = None,
+    optimizer_step: int | None = None,
+    scheduled_step: int | None = None,
+    scheduled_epoch_step: int | None = None,
+    wandb_logger: WandbLogger | None = None,
+    train_env_steps: float | None = None,
+    wandb_batch_step: int | None = None,
+    dist_context: DistributedContext | None = None,
+):
+    from utils.eval_parallel import (
+        assigned_eval_variants,
+        eval_variant_assignments,
+        resolve_eval_distribute_variants,
+        resolve_eval_parallel_episodes,
+    )
+
+    if dist_context is None:
+        dist_context = DistributedContext(backend="single", device=torch.device("cpu"))
+
+    eval_config = _build_training_eval_config(config)
+    distribute_variants = resolve_eval_distribute_variants(eval_config)
+    parallel_episodes = resolve_eval_parallel_episodes(eval_config)
+    assignments = eval_variant_assignments(
+        variants,
+        dist_context,
+        distribute_variants=distribute_variants,
+    )
+    local_variants = assigned_eval_variants(
+        variants,
+        dist_context,
+        distribute_variants=distribute_variants,
+    )
+    retry_times = resolve_isolated_eval_rollout_retry_times(config)
+    training_eval_context = _build_training_eval_context(
+        config,
+        eval_type=eval_type,
+        train_loss=train_loss,
+        val_loss=val_loss,
+        val_metrics=val_metrics,
+        checkpoint_dir=checkpoint_dir,
+        epoch=epoch,
+        batch_step=batch_step,
+        epoch_step=epoch_step,
+        optimizer_step=optimizer_step,
+        scheduled_step=scheduled_step,
+        scheduled_epoch_step=scheduled_epoch_step,
+        eval_rank=dist_context.rank,
+        eval_world_size=dist_context.world_size,
+        eval_distribute_variants=distribute_variants,
+    )
+
+    label = f"Step {batch_step}" if eval_type == "step" else f"Epoch {epoch}"
+    if dist_context.is_main_process:
+        print(
+            f"[eval] {label} | isolated rollout enabled | "
+            f"variant assignments={assignments} | "
+            f"parallel_episodes={parallel_episodes} | "
+            f"retry_times={retry_times}"
+        )
+
+    local_results, local_failures = _run_isolated_eval_subprocess_for_rank(
+        config,
+        eval_config,
+        train_selection_tag,
+        local_variants,
+        training_eval_context=training_eval_context,
+        distribute_variants=distribute_variants,
+        retry_times=retry_times,
+        dist_context=dist_context,
+    )
+    gathered = all_gather_objects(
+        {"results": local_results, "failures": local_failures},
+        dist_context,
+    )
+    if dist_context.is_main_process:
+        _write_isolated_eval_config_snapshot(
+            config,
+            eval_config,
+            train_selection_tag,
+            variants,
+            training_eval_context=training_eval_context,
+            assignments=assignments,
+            parallel_episodes=parallel_episodes,
+            distribute_variants=distribute_variants,
+            retry_times=retry_times,
+        )
+        results_by_variant = {
+            result["variant"]: result
+            for rank_payload in gathered
+            for result in rank_payload["results"]
+        }
+        failures_by_variant = {}
+        for rank_payload in gathered:
+            for failure in rank_payload["failures"]:
+                for variant in failure.get("variants", []):
+                    failures_by_variant[variant] = failure
+
+        for variant in variants:
+            result = results_by_variant.get(variant)
+            if result is not None:
+                print(
+                    f"[eval] {variant}: success_rate={result['success_rate']:.2%}, "
+                    f"mean_steps={result['mean_episode_steps']:.1f}, "
+                    f"rank={result.get('eval_rank')}"
+                )
+            else:
+                failure = failures_by_variant.get(variant, {})
+                print(
+                    f"[eval] WARNING: isolated rollout failed for variant={variant}; "
+                    f"training will continue. attempts={failure.get('attempts')} "
+                    f"log_dir={failure.get('log_dir')} error={failure.get('error')}"
+                )
+
+        _log_training_eval_wandb_metrics(
+            variants=variants,
+            results_by_variant=results_by_variant,
+            failures_by_variant=failures_by_variant,
+            wandb_logger=wandb_logger,
+            train_env_steps=train_env_steps,
+            wandb_batch_step=wandb_batch_step,
+            batch_step=batch_step,
+            optimizer_step=optimizer_step,
+            epoch=epoch,
+        )
 
 
 def _format_loss_value(value) -> str:
@@ -1247,8 +1780,34 @@ def _run_eval(
     wandb_batch_step: int | None = None,
     dist_context: DistributedContext | None = None,
 ):
+    if _as_bool(config.get("training_eval_rollout_isolated", False)):
+        return _run_eval_isolated(
+            config,
+            train_selection_tag,
+            variants,
+            eval_type,
+            train_loss,
+            val_loss,
+            checkpoint_dir,
+            val_metrics=val_metrics,
+            epoch=epoch,
+            batch_step=batch_step,
+            epoch_step=epoch_step,
+            optimizer_step=optimizer_step,
+            scheduled_step=scheduled_step,
+            scheduled_epoch_step=scheduled_epoch_step,
+            wandb_logger=wandb_logger,
+            train_env_steps=train_env_steps,
+            wandb_batch_step=wandb_batch_step,
+            dist_context=dist_context,
+        )
+
     import gymnasium_robotics  # noqa: F401
-    from evaluate import configure_mujoco_gl, evaluate_variant
+    from evaluate import (
+        apply_training_eval_context_to_result,
+        configure_mujoco_gl,
+        evaluate_variant,
+    )
     from utils.eval_parallel import (
         assigned_eval_variants,
         eval_variant_assignments,
@@ -1273,9 +1832,22 @@ def _run_eval(
         dist_context,
         distribute_variants=distribute_variants,
     )
+    training_eval_context = _build_training_eval_context(
+        config,
+        eval_type=eval_type,
+        train_loss=train_loss,
+        val_loss=val_loss,
+        val_metrics=val_metrics,
+        checkpoint_dir=checkpoint_dir,
+        epoch=epoch,
+        batch_step=batch_step,
+        epoch_step=epoch_step,
+        optimizer_step=optimizer_step,
+        scheduled_step=scheduled_step,
+        scheduled_epoch_step=scheduled_epoch_step,
+    )
     prompt_name = config["prompt_templete_index"][0]
     template = load_named_templates(config["env_family"], [prompt_name])[0]
-    eval_tag = f"step{batch_step}" if eval_type == "step" else f"epoch_{epoch}"
     label = f"Step {batch_step}" if eval_type == "step" else f"Epoch {epoch}"
     if eval_type == "step" and scheduled_step is not None and scheduled_step != batch_step:
         label = f"{label} (scheduled at batch step {scheduled_step})"
@@ -1323,22 +1895,8 @@ def _run_eval(
                 variant_results_dir=results_dir,
             )
             result["prompt_template_name"] = prompt_name
-            result["train_loss"] = train_loss
-            result["val_loss"] = val_loss
-            result["val_metrics"] = val_metrics or {}
-            if val_metrics and "mae" in val_metrics:
-                result["val_mae"] = val_metrics["mae"]
-            result["experiment_id"] = config["experiment_id"]
             result["result_path"] = result_path
-            result["eval_type"] = eval_type
-            result["eval_tag"] = eval_tag
-            result["epoch"] = epoch
-            result["batch_step"] = batch_step
-            result["epoch_step"] = epoch_step
-            result["optimizer_step"] = optimizer_step
-            result["scheduled_step"] = scheduled_step
-            result["scheduled_epoch_step"] = scheduled_epoch_step
-            result["checkpoint_path"] = checkpoint_dir
+            apply_training_eval_context_to_result(result, training_eval_context)
             result["eval_rank"] = dist_context.rank
             result["eval_world_size"] = dist_context.world_size
             result["eval_distribute_variants"] = distribute_variants
@@ -1367,33 +1925,17 @@ def _run_eval(
                 for rank_results in gathered_results
                 for result in rank_results
             }
-            for variant in variants:
-                result = results_by_variant[variant]
-                if (
-                    wandb_logger is not None
-                    and wandb_logger.enabled
-                    and train_env_steps is not None
-                ):
-                    wandb_logger.log(
-                        {
-                            **wandb_step_metrics(
-                                env_steps=train_env_steps,
-                                batch_step=(
-                                    wandb_batch_step
-                                    if wandb_batch_step is not None
-                                    else batch_step
-                                ),
-                                optimizer_step=optimizer_step,
-                                epoch=epoch,
-                            ),
-                            f"eval/{variant}/success_rate": float(
-                                result["success_rate"]
-                            ),
-                            f"eval/{variant}/mean_episode_steps": float(
-                                result["mean_episode_steps"]
-                            ),
-                        }
-                    )
+            _log_training_eval_wandb_metrics(
+                variants=variants,
+                results_by_variant=results_by_variant,
+                failures_by_variant={},
+                wandb_logger=wandb_logger,
+                train_env_steps=train_env_steps,
+                wandb_batch_step=wandb_batch_step,
+                batch_step=batch_step,
+                optimizer_step=optimizer_step,
+                epoch=epoch,
+            )
     finally:
         model.train()
         unpatch_continuous_action_forward(model)
@@ -3710,6 +4252,12 @@ def main():
         dataloader_config = resolve_dataloader_config(config)
         config["dataset_load_partitions"] = resolve_dataset_load_partitions(config, dist_context)
         resolve_step_eval_skip(config)
+        config["training_eval_rollout_isolated"] = _as_bool(
+            config.get("training_eval_rollout_isolated", False)
+        )
+        config["isolated_eval_rollout_retry_times"] = (
+            resolve_isolated_eval_rollout_retry_times(config)
+        )
         available_variants = get_available_variants(config["env_family"])
         train_selection = resolve_train_selection(config, available_variants)
         eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)

@@ -124,6 +124,8 @@ eval_mode: except           # optional; defaults to following train_mode
 eval_variants: [open-dense, umaze-dense, medium-dense, large-dense]  # single: one variant; all: selected variants or omit for all; except: excluded variants
 eval_parallel_episodes: 1   # continuous modes only; batch this many active episodes per rank
 eval_distribute_variants: false  # DDP only; assign different eval variants to different ranks
+training_eval_rollout_isolated: false  # true = run training-time rollout in single-process evaluate.py subprocesses
+isolated_eval_rollout_retry_times: 0  # extra retries for isolated rollout; 0 = one total attempt
 eval_env_kwargs:
   continuing_task: false
 

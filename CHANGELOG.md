@@ -1344,3 +1344,33 @@ type: project
 - 分区训练改为 rank0 规划全局 train shard，按 DDP round scatter 当前 rank 需要的 episode segment payload；val split 保持 rank0-only 且不分区。
 - train shard cache 改为 flat shard samples + segment metadata，cache signature 包含 partition index/count、segment plan 和 `partition_plan_hash`；PointMaze/AntMaze cache format bump 到 v3。
 - 每个 DDP round 使用本地 shard padding/replacement sampler 对齐到共同 `target_batches`，resume compat metadata 记录 plan hash 与 round stats。
+
+---
+
+## Isolated training eval rollout（2026-06-21）
+
+**训练配置：**
+- 新增 `training_eval_rollout_isolated`，默认 `false`；关闭时训练期 rollout 仍在训练进程内执行，保持原有行为
+- 新增 `isolated_eval_rollout_retry_times`，默认 `0`；表示额外重试次数，`0` 即总共尝试 1 次
+- 默认示例配置 `config.yaml` 与 `config.antmaze.yaml` 同步加入这两个配置项和注释
+
+**`evaluate.py` 输出模式：**
+- 新增 `eval_output_mode: standalone | training`，默认 `standalone`；普通 `evaluate.py --config eval.yaml` 继续写 `standalone_<eval_uuid>`
+- 新增内部 `training_eval_context`，用于隔离训练期 rollout；`training` 模式直接写 checkpoint 推导出的训练 run 目录下的 `epoch_<n>` 或 `step<n>`
+- `training` 模式的 `result.json` 补齐训练期 eval 字段，包括 `train_loss`、`val_loss`、`val_metrics`、`val_mae`、`experiment_id`、`eval_type`、`eval_tag`、`epoch`、`batch_step`、`epoch_step`、`optimizer_step`、`scheduled_step`、`scheduled_epoch_step`、`checkpoint_path`、`eval_rank`、`eval_world_size` 和 `eval_distribute_variants`
+- 隔离 eval 的合并运行配置保存到对应 `epoch_<n>/eval_config.yaml` 或 `step<n>/eval_config.yaml`
+
+**隔离子进程行为：**
+- 开启 `training_eval_rollout_isolated: true` 后，每个训练 rank 为自己分配到的 variants 启动一个单进程 `evaluate.py` 子进程
+- 子进程配置固定使用 `parallel_backend: single`、`model_path: <just-saved checkpoint>`、本 rank 的 variants、`eval_output_mode: training` 和 `wandb_enabled: false`
+- 子进程环境会移除 `RANK`、`WORLD_SIZE`、`LOCAL_RANK` 等 DDP 变量；DDP 训练时把 `CUDA_VISIBLE_DEVICES` 限制到父 rank 的 `local_rank` 对应 GPU，避免子进程误入 DDP
+- 每次尝试的临时 config、stdout 和 stderr 写入 `epoch_<n>/isolated_eval/rank_<rank>/attempt_<n>.*` 或 `step<n>/isolated_eval/rank_<rank>/attempt_<n>.*`
+- 子进程最终失败只 warning 并继续训练；rank0 对失败 variant 记录 W&B `eval/<variant>/rollout_failed=1` 和 `eval/<variant>/isolated_attempts`，不写假的 success rate
+
+**修复与验证：**
+- 修复隔离 eval 子进程 config 携带无关 continuous action 字段的问题：`parallel_l1` 不再传 `gaussian_log_std_*`、`student_t_df` 或 `continuous_mean_l1_weight`，避免 checkpoint action config 校验失败
+- 新增单元测试覆盖 standalone/training 输出路径、training context result 字段、隔离 eval 成功读取结果、retry、全部失败 warning、W&B failure flag、DDP variant 分配和 mode-specific action config keys
+- 已通过 `python -m py_compile evaluate.py train.py tests/test_eval_parallel.py tests/test_resume_training_state.py`
+- 已通过 `git diff --check`
+- 已通过 `mamba run -n llm_offline python -m pytest tests/test_eval_parallel.py tests/test_resume_training_state.py`，结果 `23 passed`
+- 已用 1-GPU Slurm smoke job 验证 `training_eval_rollout_isolated: true` 的 PointMaze `parallel_l1` 短训练，产出正确 `result.json`、`eval_config.yaml` 和 `isolated_eval/rank_0/attempt_1.yaml`

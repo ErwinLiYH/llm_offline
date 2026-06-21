@@ -1,12 +1,18 @@
 import unittest
 import threading
 import tempfile
+import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
 import torch
+
+unsloth_stub = types.ModuleType("unsloth")
+unsloth_stub.FastLanguageModel = object()
+sys.modules.setdefault("unsloth", unsloth_stub)
 
 import evaluate
 from utils.distributed import DistributedContext
@@ -246,6 +252,85 @@ class EvalParallelTest(unittest.TestCase):
         self.assertEqual(resolve_eval_parallel_episodes({}), 1)
         with self.assertRaises(ValueError):
             resolve_eval_parallel_episodes({"eval_parallel_episodes": 0})
+
+    def test_standalone_eval_output_mode_keeps_standalone_dir(self):
+        self.assertEqual(evaluate.resolve_eval_output_mode({}), "standalone")
+        self.assertEqual(
+            evaluate.get_standalone_results_dir("/tmp/results", "abc123"),
+            "/tmp/results/standalone_abc123",
+        )
+
+    def test_training_eval_results_dir_uses_training_context(self):
+        epoch_context = evaluate.resolve_training_eval_context(
+            {
+                "training_eval_context": {
+                    "eval_type": "epoch",
+                    "epoch": 3,
+                    "batch_step": None,
+                    "epoch_step": None,
+                    "optimizer_step": 7,
+                    "scheduled_step": None,
+                    "scheduled_epoch_step": None,
+                    "train_loss": 1.2,
+                    "val_loss": 2.3,
+                    "val_metrics": {"mae": 0.4},
+                    "checkpoint_path": "/ckpt/ep3",
+                    "experiment_id": "exp",
+                }
+            }
+        )
+        step_context = dict(epoch_context)
+        step_context.update(
+            {
+                "eval_type": "step",
+                "batch_step": 42,
+                "epoch_step": 5,
+                "scheduled_step": 40,
+                "scheduled_epoch_step": 4,
+            }
+        )
+
+        self.assertEqual(
+            evaluate.get_training_results_dir("/tmp/results", epoch_context),
+            "/tmp/results/epoch_3",
+        )
+        self.assertEqual(
+            evaluate.get_training_results_dir("/tmp/results", step_context),
+            "/tmp/results/step42",
+        )
+
+    def test_training_eval_context_fields_are_added_to_result(self):
+        context = evaluate.resolve_training_eval_context(
+            {
+                "training_eval_context": {
+                    "eval_type": "step",
+                    "epoch": 2,
+                    "batch_step": 12,
+                    "epoch_step": 4,
+                    "optimizer_step": 6,
+                    "scheduled_step": 10,
+                    "scheduled_epoch_step": 3,
+                    "train_loss": 1.0,
+                    "val_loss": 0.5,
+                    "val_metrics": {"mae": 0.25},
+                    "checkpoint_path": "/ckpt/step12",
+                    "experiment_id": "exp",
+                }
+            }
+        )
+
+        result = evaluate.apply_training_eval_context_to_result(
+            {"variant": "umaze"},
+            context,
+        )
+
+        self.assertEqual(result["eval_type"], "step")
+        self.assertEqual(result["eval_tag"], "step12")
+        self.assertEqual(result["epoch"], 2)
+        self.assertEqual(result["batch_step"], 12)
+        self.assertEqual(result["checkpoint_path"], "/ckpt/step12")
+        self.assertEqual(result["experiment_id"], "exp")
+        self.assertEqual(result["val_mae"], 0.25)
 
     def test_continuous_batch_clips_and_restores_padding_side(self):
         tokenizer = DummyTokenizer()

@@ -380,6 +380,94 @@ def get_standalone_results_dir(base_results_dir: str, standalone_eval_id: str) -
     return os.path.join(base_results_dir, f"standalone_{standalone_eval_id}")
 
 
+def resolve_eval_output_mode(config: dict) -> str:
+    mode = str(config.get("eval_output_mode", "standalone")).strip().lower()
+    if mode not in {"standalone", "training"}:
+        raise ValueError(
+            "eval_output_mode must be 'standalone' or 'training', "
+            f"got {mode!r}"
+        )
+    return mode
+
+
+TRAINING_EVAL_CONTEXT_KEYS = (
+    "eval_type",
+    "epoch",
+    "batch_step",
+    "epoch_step",
+    "optimizer_step",
+    "scheduled_step",
+    "scheduled_epoch_step",
+    "train_loss",
+    "val_loss",
+    "val_metrics",
+    "checkpoint_path",
+    "experiment_id",
+)
+
+
+def resolve_training_eval_context(config: dict) -> dict:
+    context = config.get("training_eval_context")
+    if not isinstance(context, dict):
+        raise ValueError(
+            "training_eval_context must be provided as a mapping when "
+            "eval_output_mode='training'"
+        )
+
+    missing = [key for key in TRAINING_EVAL_CONTEXT_KEYS if key not in context]
+    if missing:
+        raise ValueError(f"training_eval_context is missing required keys: {missing}")
+
+    eval_type = context.get("eval_type")
+    if eval_type not in {"epoch", "step"}:
+        raise ValueError(
+            "training_eval_context.eval_type must be 'epoch' or 'step', "
+            f"got {eval_type!r}"
+        )
+    if eval_type == "epoch" and context.get("epoch") is None:
+        raise ValueError("training_eval_context.epoch is required for epoch eval")
+    if eval_type == "step" and context.get("batch_step") is None:
+        raise ValueError("training_eval_context.batch_step is required for step eval")
+
+    resolved = dict(context)
+    if not isinstance(resolved.get("val_metrics"), dict):
+        raise ValueError("training_eval_context.val_metrics must be a mapping")
+    return resolved
+
+
+def get_training_eval_tag(training_eval_context: dict) -> str:
+    if training_eval_context["eval_type"] == "step":
+        return f"step{training_eval_context['batch_step']}"
+    return f"epoch_{training_eval_context['epoch']}"
+
+
+def get_training_results_dir(base_results_dir: str, training_eval_context: dict) -> str:
+    return os.path.join(base_results_dir, get_training_eval_tag(training_eval_context))
+
+
+def apply_training_eval_context_to_result(
+    result: dict,
+    training_eval_context: dict,
+) -> dict:
+    val_metrics = training_eval_context.get("val_metrics") or {}
+    result["train_loss"] = training_eval_context.get("train_loss")
+    result["val_loss"] = training_eval_context.get("val_loss")
+    result["val_metrics"] = val_metrics
+    if "mae" in val_metrics:
+        result["val_mae"] = val_metrics["mae"]
+    result["experiment_id"] = training_eval_context.get("experiment_id")
+    result["eval_type"] = training_eval_context.get("eval_type")
+    result["eval_tag"] = get_training_eval_tag(training_eval_context)
+    result["epoch"] = training_eval_context.get("epoch")
+    result["batch_step"] = training_eval_context.get("batch_step")
+    result["epoch_step"] = training_eval_context.get("epoch_step")
+    result["optimizer_step"] = training_eval_context.get("optimizer_step")
+    result["scheduled_step"] = training_eval_context.get("scheduled_step")
+    result["scheduled_epoch_step"] = training_eval_context.get("scheduled_epoch_step")
+    result["checkpoint_path"] = training_eval_context.get("checkpoint_path")
+    return result
+
+
 def get_variant_results_dir(parent_results_dir: str, env_family: str, variant: str) -> str:
     return os.path.join(parent_results_dir, f"eval={env_family}-{variant}")
 
@@ -1344,6 +1432,12 @@ def main():
             config = None
         config = broadcast_object(config, dist_context)
 
+        eval_output_mode = resolve_eval_output_mode(config)
+        training_eval_context = (
+            resolve_training_eval_context(config)
+            if eval_output_mode == "training"
+            else None
+        )
         eval_selection = resolve_standalone_eval_selection(config)
         distribute_variants = resolve_eval_distribute_variants(config)
         parallel_episodes = resolve_eval_parallel_episodes(config)
@@ -1362,6 +1456,7 @@ def main():
         device = dist_context.device
         if dist_context.is_main_process:
             print(f"[eval] Using backend: {dist_context.backend}")
+            print(f"[eval] Output mode: {eval_output_mode}")
             print(f"[eval] Loading model from: {config['model_path']}")
             print(f"[eval] Resolved eval variants: {eval_selection.selected_variants}")
             print(f"[eval] Variant assignments: {assignments}")
@@ -1375,34 +1470,55 @@ def main():
         model.eval()
 
         env_family = config["env_family"]
-        standalone_eval_id = (
-            uuid.uuid4().hex[:8]
-            if dist_context.is_main_process
-            else None
-        )
-        standalone_eval_id = broadcast_object(
-            standalone_eval_id,
-            dist_context,
-        )
-        if dist_context.is_main_process:
-            print(f"[eval] Eval ID: {standalone_eval_id}")
-
         base_results_dir = get_results_base_dir(config)
-        run_results_dir = get_standalone_results_dir(
-            base_results_dir,
-            standalone_eval_id,
-        )
+        standalone_eval_id = None
+        if eval_output_mode == "standalone":
+            standalone_eval_id = (
+                uuid.uuid4().hex[:8]
+                if dist_context.is_main_process
+                else None
+            )
+            standalone_eval_id = broadcast_object(
+                standalone_eval_id,
+                dist_context,
+            )
+            run_results_dir = get_standalone_results_dir(
+                base_results_dir,
+                standalone_eval_id,
+            )
+            if dist_context.is_main_process:
+                print(f"[eval] Eval ID: {standalone_eval_id}")
+        else:
+            run_results_dir = get_training_results_dir(
+                base_results_dir,
+                training_eval_context,
+            )
+            if dist_context.is_main_process:
+                print(
+                    f"[eval] Training eval tag: "
+                    f"{get_training_eval_tag(training_eval_context)}"
+                )
         prompt_name = config.get("resolved_eval_prompt_name")
         if prompt_name is None:
             prompt_name = load_template_names(env_family)[0]
             config["resolved_eval_prompt_name"] = prompt_name
         template = load_named_templates(env_family, [prompt_name])[0]
         config["eval_config_source"] = args.config
-        config["standalone_eval_id"] = standalone_eval_id
-        config["standalone_results_dir"] = run_results_dir
+        config["eval_output_mode"] = eval_output_mode
+        if eval_output_mode == "standalone":
+            config["standalone_eval_id"] = standalone_eval_id
+            config["standalone_results_dir"] = run_results_dir
+        else:
+            config["training_eval_context"] = training_eval_context
+            config["training_eval_tag"] = get_training_eval_tag(training_eval_context)
+            config["training_results_dir"] = run_results_dir
         config["resolved_eval_variants"] = eval_selection.selected_variants
         config["resolved_eval_variant_assignments"] = assignments
-        config["eval_world_size"] = dist_context.world_size
+        config["eval_world_size"] = (
+            training_eval_context.get("eval_world_size", dist_context.world_size)
+            if training_eval_context is not None
+            else dist_context.world_size
+        )
         config["eval_parallel_episodes"] = parallel_episodes
         config["eval_distribute_variants"] = distribute_variants
         eval_config_path = os.path.join(run_results_dir, "eval_config.yaml")
@@ -1438,9 +1554,23 @@ def main():
             )
             result["result_path"] = result_path
             result["prompt_template_name"] = prompt_name
-            result["eval_rank"] = dist_context.rank
-            result["eval_world_size"] = dist_context.world_size
-            result["eval_distribute_variants"] = distribute_variants
+            if training_eval_context is not None:
+                apply_training_eval_context_to_result(result, training_eval_context)
+            result["eval_rank"] = (
+                training_eval_context.get("eval_rank", dist_context.rank)
+                if training_eval_context is not None
+                else dist_context.rank
+            )
+            result["eval_world_size"] = (
+                training_eval_context.get("eval_world_size", dist_context.world_size)
+                if training_eval_context is not None
+                else dist_context.world_size
+            )
+            result["eval_distribute_variants"] = (
+                training_eval_context.get("eval_distribute_variants", distribute_variants)
+                if training_eval_context is not None
+                else distribute_variants
+            )
             with open(result_path, "w") as f:
                 json.dump(result, f, indent=2)
             print(
