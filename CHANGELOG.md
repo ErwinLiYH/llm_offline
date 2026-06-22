@@ -1395,9 +1395,11 @@ type: project
 
 **官方风格 AntMaze 本地数据生成：**
 - 新增 `local_antmaze_gen.py`，使用 Farama 官方 `minari-dataset-generation-scripts/scripts/D4RL/antmaze/controller.py` 的 `WaypointController` 和默认 `GoalReachAnt_model.zip` SAC policy 生成 local AntMaze Minari 数据
-- 支持 `--variants`、`--target-episodes`、`--num-workers`、`--overwrite`、`--seed`、`--max-episode-steps`、`--policy-file`、`--maze-solver QIteration|DFS`、`--action-noise` 和 `--truncate-on-success`
+- 支持 `--variants`、`--target-episodes`、`--num-workers`、`--overwrite`、`--seed`、`--max-episode-steps`、`--policy-file`、`--maze-solver QIteration|DFS`、`--action-noise`、`--truncate-on-success`、`--min-success-rate` 和 `--max-episode-attempts`
 - 多 worker 先生成临时 Minari shard，再 merge 到 `local_datasets/antmaze-<variant>-v0`；完成后清理临时 dataset id
 - `StepDataCallback` 记录 `success`、`qpos`、`qvel` 和 `goal`，并可选择在首次 success 时截断 episode
+- `--min-success-rate` 开启后先生成目标 episode 数；若保存集成功率不足，则继续补采，补采失败 episode 直接丢弃，补采成功 episode 随机替换保存集里一条失败 episode，最终保存数量保持 `--target-episodes`
+- `generation_summary.json` 同时记录最终保存数据集成功率 `success_rate` / `saved_success_rate` 和包含丢弃失败轨迹在内的真实采样成功率 `true_success_rate`
 
 **Maze topology metrics and inspection：**
 - 新增 `utils/maze_metrics.py`，提供二维网格迷宫的通用拓扑指标：连通性、直径、最短路长度、路径转弯、路径岔路、死胡同、junction 数、cycle rank、割点、桥边、走廊长度和 `static_difficulty`

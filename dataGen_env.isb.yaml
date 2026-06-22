@@ -4,6 +4,9 @@ channels:
 dependencies:
   - python=3.12
   - pip
+  - pytorch=2.12.1
+  - matplotlib=3.11.0
+  - pandas=3.0.3
   - pip:
     # The official generator pins gymnasium-robotics 1.2.4, which requires
     # mujoco<3 and has no Python 3.12 aarch64 wheel. The repository wrapper is
@@ -16,3 +19,6 @@ dependencies:
     - mujoco==3.6.0
     - h5py==3.16.0
     - tqdm==4.67.3
+    # The official SB3 commit targets Gymnasium's removed wrappers.monitoring
+    # module. Use current SB3 with the current Gymnasium/MuJoCo stack.
+    - stable-baselines3==2.9.0

@@ -232,6 +232,7 @@ python local_antmaze_gen.py \
   --variants local-layout-01 \
   --target-episodes 1000 \
   --num-workers 4 \
+  --min-success-rate 0.8 \
   --seed 42 \
   --overwrite
 ```
@@ -244,6 +245,23 @@ to:
 ```text
 local_datasets/antmaze-<variant>-v0
 ```
+
+`--min-success-rate` defaults to `0`, which preserves the original behavior of
+stopping once `--target-episodes` has been collected. When set above `0`, each
+worker first records all episodes until the target count is reached. If the
+saved successful-episode ratio is still below the threshold, the worker keeps
+sampling: failed post-target episodes are discarded, and each successful
+post-target episode replaces one randomly selected failed episode from the
+saved set. The final saved dataset therefore keeps exactly `--target-episodes`
+episodes unless generation fails. The attempt cap defaults to
+`target_episodes * 5` and can be overridden with `--max-episode-attempts`.
+
+Each generated dataset writes `generation_summary.json` next to the Minari data
+directory with the saved dataset success rate (`success_rate` /
+`saved_success_rate`) and the empirical success rate over all attempted
+episodes before failed-episode filtering (`true_success_rate`). Use
+`--overwrite` when enforcing `--min-success-rate` on a dataset path that already
+contains episodes.
 
 Training consumes only the generated Minari/HDF5 data. It does not regenerate
 trajectories automatically.
