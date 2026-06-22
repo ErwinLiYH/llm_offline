@@ -1376,3 +1376,43 @@ type: project
 - 已通过 `git diff --check`
 - 已通过 `mamba run -n llm_offline python -m pytest tests/test_eval_parallel.py tests/test_resume_training_state.py`，结果 `24 passed`
 - 已用 1-GPU Slurm smoke job 验证 `training_eval_rollout_isolated: true` 的 PointMaze `parallel_l1` 短训练，产出正确 `result.json`、`eval_config.yaml` 和 `isolated_eval/rank_0/attempt_1.yaml`
+
+---
+
+## AntMaze local layouts and generators（2026-06-22）
+
+**AntMaze local/custom variant 注册：**
+- `data/antmaze/variants.py` 新增 `local-layout-01` 到 `local-layout-09` 以及 `test-layout-01` 到 `test-layout-04`，用于本地 AntMaze 地图、数据生成和训练/eval 接入
+- local variant 使用 `varient_type: local`、`dataset_path: local_datasets/antmaze-<variant>-v0`，并同时保存 `collection_env_paras` 和带固定 `r/g` 标记的 `env_paras`
+- 新增 `_maze_from_strings(...)`、`_build_local_variant(...)`、`_mark_cells(...)`、`get_antmaze_variant_type(...)` 和 `resolve_local_dataset_path(...)`，统一处理字符串地图、评测起终点、local/remote variant 类型和本地数据路径
+- 9 个 local layout 分为 large-like 和 hard 两组；4 个 test layout 用作 held-out 地图，其中 `test-layout-03/04` 重新生成后避免 `2x2`、`2x3`、`3x2` 连续开放块
+
+**AntMaze local dataset 加载：**
+- `data/antmaze/dataset.py` 支持 local AntMaze 数据集，不再只读取远程 Minari D4RL dataset id
+- local 数据优先通过 `MinariDataset(<dataset_path>/data)` 读取；遇到 Minari storage metadata 不完整但存在 `main_data.hdf5` 时，复用 PointMaze local HDF5 episode fallback loader
+- local cache signature 新增基于 total steps 的 `localsteps<N>` 标记，避免同名 local dataset 追加或覆盖后误复用旧 tokenized cache
+- local 数据缺失时直接报错并提示先运行 `local_antmaze_gen.py`
+
+**官方风格 AntMaze 本地数据生成：**
+- 新增 `local_antmaze_gen.py`，使用 Farama 官方 `minari-dataset-generation-scripts/scripts/D4RL/antmaze/controller.py` 的 `WaypointController` 和默认 `GoalReachAnt_model.zip` SAC policy 生成 local AntMaze Minari 数据
+- 支持 `--variants`、`--target-episodes`、`--num-workers`、`--overwrite`、`--seed`、`--max-episode-steps`、`--policy-file`、`--maze-solver QIteration|DFS`、`--action-noise` 和 `--truncate-on-success`
+- 多 worker 先生成临时 Minari shard，再 merge 到 `local_datasets/antmaze-<variant>-v0`；完成后清理临时 dataset id
+- `StepDataCallback` 记录 `success`、`qpos`、`qvel` 和 `goal`，并可选择在首次 success 时截断 episode
+
+**Maze topology metrics and inspection：**
+- 新增 `utils/maze_metrics.py`，提供二维网格迷宫的通用拓扑指标：连通性、直径、最短路长度、路径转弯、路径岔路、死胡同、junction 数、cycle rank、割点、桥边、走廊长度和 `static_difficulty`
+- `static_difficulty` 是静态拓扑启发式分数，综合相对路径长度、转弯率、路径岔路、割点/桥边、死胡同、墙密度和环路比例；不是 D4RL 官方 normalized score 或真实 rollout 成功率
+- 新增 `inspect_antmaze_layouts.py`，可对注册的 AntMaze variants 输出表格或 JSON 指标，默认使用 eval map 中的 `r/g` 标记作为起终点
+
+**Design-centric AntMaze layout generation：**
+- 新增 `generate_antmaze_layouts.py`，按 `large-like` / `hard` profile 随机生成候选地图，并按拓扑指标筛选最佳 layout
+- 生成器使用全图 spanning-corridor 骨架，再添加 loops 和 pockets，避免早期随机扩张造成“局部通路 + 大片墙体”的地图形态
+- 候选选择加入空间覆盖惩罚，压制空行/空列和大面积实心墙块；hard profile 额外强惩罚开放块，避免 `2x2`、`2x3`、`3x2` 房间状连续 free 区域，同时保留长直走廊
+- `--mode suite` 生成 9 个 local + 4 个 test layout；`--mode candidates` 可按 profile 生成候选；支持输出 JSON 和可复制到 `variants.py` 的 Python 片段
+- 当前 seed 42 生成记录保存为 `generated_antmaze_layouts_seed42.json` 和 `generated_antmaze_layouts_seed42.py`
+
+**验证：**
+- 已通过 `python -m py_compile data/antmaze/variants.py data/antmaze/dataset.py generate_antmaze_layouts.py inspect_antmaze_layouts.py utils/maze_metrics.py local_antmaze_gen.py`
+- 已通过 `python -m json.tool generated_antmaze_layouts_seed42.json`
+- 已通过 `python inspect_antmaze_layouts.py --variants medium-play large-play local-layout-01 ... local-layout-09 test-layout-01 ... test-layout-04` 检查所有新增 AntMaze layout 指标和起终点合法性
+- 已额外验证 `test-layout-03` 和 `test-layout-04` 的 `open_2x2=0`、`open_2x3=0`、`open_3x2=0`

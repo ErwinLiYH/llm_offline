@@ -140,7 +140,7 @@ POINTMAZE_VARIANTS = {
 
 ---
 
-### AntMaze 官方 D4RL 变种
+### AntMaze 官方与本地变种
 
 `data/antmaze/variants.py` 注册 Minari 当前提供的 6 个官方数据集：
 
@@ -155,7 +155,9 @@ POINTMAZE_VARIANTS = {
 
 AntMaze 必须保持 Minari metadata 中的 v4 数据契约：`observation` 为 27 维本体状态，另有 2 维 `achieved_goal` / `desired_goal`，action 为 8 维关节 torque。不能直接替换成 v5 默认环境，因为 v5 默认包含 contact-force observation，会改变输入维度。每个 variant 的 `env_kwargs` 保存官方 eval map、稀疏奖励、horizon 对应的 continuing/reset 语义；训练期或 standalone eval 可用配置中的 `env_kwargs` 覆盖 `continuing_task`。官方 eval map 与离线采集 map 不保证相同，例如 UMaze 的中间墙朝向不同，因此 rollout 创建环境后会从 `env.unwrapped.maze` 刷新 prompt 使用的 map、visual map 和 `maze_size_scaling`。
 
-当前只支持上述官方地图，不包含本地自定义 AntMaze 数据生成或地图注册。`score.py` 仍是 PointMaze-only；AntMaze 当前支持训练和普通 return/success-rate rollout eval。
+本地 AntMaze 变种也注册在同一个 `ANTMAZE_VARIANTS` 字典中，目前包含 `local-layout-01..09` 和 `test-layout-01..04`。local/test 变种使用 `varient_type: local`、`dataset_path: local_datasets/antmaze-<variant>-v0`，并同时保存数据采集地图和带固定 `r/g` 标记的 eval 地图。训练时 `data/antmaze/dataset.py` 会从本地 Minari/HDF5 数据目录读取 episode；缺失数据时需要先运行 `local_antmaze_gen.py` 生成。
+
+AntMaze local layout 的随机生成和静态拓扑评分是辅助工具，不是官方 D4RL normalized score。简要入口见下方 “Local/custom maze generation and topology scoring”，详细设计、指标公式和引用见 `docs/maze_generation_topology.md`。`score.py` 仍是 PointMaze-only；AntMaze 当前支持训练和普通 return/success-rate rollout eval。
 
 ---
 
@@ -603,6 +605,29 @@ micromamba run -n d4rl_datagen python local_varient_gen.py \
 
 ---
 
+### Local/custom maze generation and topology scoring
+
+AntMaze local/test layout 由 `generate_antmaze_layouts.py` 生成候选，并按 `utils/maze_metrics.py` 中的静态拓扑指标筛选。当前实现借鉴 design-centric maze generation 的思路：先给定期望的拓扑 profile，再从候选中选择满足路径长度、岔路、死胡同、空间覆盖和开放块约束的地图。它不是论文方法的完整复现，而是适配 AntMaze 网格、rollout 和 prompt 的工程化版本。
+
+```bash
+python generate_antmaze_layouts.py \
+  --mode suite \
+  --seed 42 \
+  --candidates-per-layout 500 \
+  --json-output generated_antmaze_layouts_seed42.json \
+  --python-output generated_antmaze_layouts_seed42.py
+```
+
+`inspect_antmaze_layouts.py` 用同一套指标检查注册地图，输出 `static_difficulty`、最短路、转弯、岔路、死胡同、割点、桥边和走廊长度等字段。`static_difficulty` 只是静态拓扑启发式分数，不能替代环境 rollout success rate 或 PointMaze official normalized score。
+
+```bash
+python inspect_antmaze_layouts.py --variants medium-play large-play local-layout-01
+```
+
+详细说明见 `docs/maze_generation_topology.md`。
+
+---
+
 ### Official normalized score
 
 `evaluate.py` 和训练期 eval 保持快速 rollout / success-rate 风格评估，不承担 official normalized score。PointMaze official-style 分数通过独立入口 `score.py` 计算：
@@ -697,6 +722,9 @@ project/
 ├── evaluate.py                  # Rollout 评估
 ├── score.py                     # PointMaze official-style normalized score / local reference 入口
 ├── local_varient_gen.py          # local PointMaze Minari 数据生成入口
+├── local_antmaze_gen.py          # local AntMaze Minari 数据生成入口
+├── generate_antmaze_layouts.py   # AntMaze local/test layout 候选生成与筛选
+├── inspect_antmaze_layouts.py    # AntMaze layout 拓扑指标检查入口
 ├── checkpoints/
 ├── results/
 ├── score_results/
@@ -705,6 +733,7 @@ project/
     ├── action_bins.py           # action-bin display/model token codec、token selection、gaussian bin loss
     ├── eval_parallel.py         # eval episode 并行参数与 DDP variant 分配
     ├── eval_rollout.py          # eval/score 共享 prompt、history、动作生成、parse retry、fallback 逻辑
+    ├── maze_metrics.py          # maze 拓扑指标、直径端点和 static_difficulty
     ├── pointmaze_score.py       # PointMaze score env、reference、fingerprint 和 normalized score 逻辑
     └── prompt_loader.py         # 加载指定环境族的共享模板，返回列表
 ```

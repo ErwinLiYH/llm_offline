@@ -1,0 +1,813 @@
+[
+  {
+    "name": "local-layout-01",
+    "profile": "large-like",
+    "map_rows": [
+      "#############",
+      "#.....#...#.#",
+      "#.#.#.###.#.#",
+      "#.#.....#...#",
+      "#.#.#.#.###.#",
+      "#...........#",
+      "#.#######.###",
+      "#.#.....#...#",
+      "#.#.###.###.#",
+      "#.....#.....#",
+      "#############"
+    ],
+    "eval_reset_cell": [
+      9,
+      5
+    ],
+    "eval_goal_cell": [
+      1,
+      7
+    ],
+    "metrics": {
+      "rows": 11,
+      "cols": 13,
+      "total_cells": 143,
+      "free_cells": 64,
+      "wall_cells": 79,
+      "wall_density": 0.5524475524475524,
+      "edge_count": 68,
+      "connected_components": 1,
+      "start": [
+        9,
+        5
+      ],
+      "goal": [
+        1,
+        7
+      ],
+      "shortest_path_len": 26,
+      "normalized_path_len": 0.4126984126984127,
+      "diameter": 26,
+      "solution_turns": 6,
+      "solution_turn_rate": 0.24,
+      "solution_junctions": 7,
+      "degree_1_deadends": 3,
+      "degree_2_corridors": 51,
+      "degree_3_forks": 9,
+      "degree_4_crosses": 1,
+      "junction_count": 10,
+      "cycle_rank": 5,
+      "articulation_points": 13,
+      "bridge_edges": 14,
+      "corridor_count": 17,
+      "mean_corridor_len": 4.0,
+      "max_corridor_len": 18,
+      "static_difficulty": 57.07
+    }
+  },
+  {
+    "name": "local-layout-02",
+    "profile": "large-like",
+    "map_rows": [
+      "##############",
+      "#.#..........#",
+      "#.#.#####.#..#",
+      "#...#.#......#",
+      "#.#.#.#.#.#..#",
+      "#...#........#",
+      "#.#.#####.#..#",
+      "#.......#....#",
+      "#.#.###.####.#",
+      "#...#........#",
+      "##############"
+    ],
+    "eval_reset_cell": [
+      9,
+      1
+    ],
+    "eval_goal_cell": [
+      3,
+      5
+    ],
+    "metrics": {
+      "rows": 11,
+      "cols": 14,
+      "total_cells": 154,
+      "free_cells": 75,
+      "wall_cells": 79,
+      "wall_density": 0.512987012987013,
+      "edge_count": 88,
+      "connected_components": 1,
+      "start": [
+        9,
+        1
+      ],
+      "goal": [
+        3,
+        5
+      ],
+      "shortest_path_len": 26,
+      "normalized_path_len": 0.35135135135135137,
+      "diameter": 26,
+      "solution_turns": 6,
+      "solution_turn_rate": 0.24,
+      "solution_junctions": 8,
+      "degree_1_deadends": 3,
+      "degree_2_corridors": 48,
+      "degree_3_forks": 19,
+      "degree_4_crosses": 5,
+      "junction_count": 24,
+      "cycle_rank": 14,
+      "articulation_points": 8,
+      "bridge_edges": 8,
+      "corridor_count": 40,
+      "mean_corridor_len": 2.2,
+      "max_corridor_len": 8,
+      "static_difficulty": 52.62
+    }
+  },
+  {
+    "name": "local-layout-03",
+    "profile": "large-like",
+    "map_rows": [
+      "#############",
+      "#...........#",
+      "#.#.###.#.#.#",
+      "#.#.#.....#.#",
+      "###.#.###.#.#",
+      "#...#...#...#",
+      "#.###.#.###.#",
+      "#...#...#...#",
+      "#.#.#.###.###",
+      "#.#.........#",
+      "#############"
+    ],
+    "eval_reset_cell": [
+      3,
+      1
+    ],
+    "eval_goal_cell": [
+      9,
+      11
+    ],
+    "metrics": {
+      "rows": 11,
+      "cols": 13,
+      "total_cells": 143,
+      "free_cells": 64,
+      "wall_cells": 79,
+      "wall_density": 0.5524475524475524,
+      "edge_count": 68,
+      "connected_components": 1,
+      "start": [
+        3,
+        1
+      ],
+      "goal": [
+        9,
+        11
+      ],
+      "shortest_path_len": 24,
+      "normalized_path_len": 0.38095238095238093,
+      "diameter": 24,
+      "solution_turns": 7,
+      "solution_turn_rate": 0.30434782608695654,
+      "solution_junctions": 4,
+      "degree_1_deadends": 3,
+      "degree_2_corridors": 50,
+      "degree_3_forks": 11,
+      "degree_4_crosses": 0,
+      "junction_count": 11,
+      "cycle_rank": 5,
+      "articulation_points": 8,
+      "bridge_edges": 8,
+      "corridor_count": 18,
+      "mean_corridor_len": 3.7777777777777777,
+      "max_corridor_len": 8,
+      "static_difficulty": 48.21
+    }
+  },
+  {
+    "name": "local-layout-04",
+    "profile": "large-like",
+    "map_rows": [
+      "#############",
+      "#.........#.#",
+      "#.#.#####.#.#",
+      "#.....#.....#",
+      "#.###.#.#.#.#",
+      "#...#...#...#",
+      "###.###.#.#.#",
+      "#...........#",
+      "#########.#.#",
+      "#...........#",
+      "#############"
+    ],
+    "eval_reset_cell": [
+      9,
+      1
+    ],
+    "eval_goal_cell": [
+      1,
+      1
+    ],
+    "metrics": {
+      "rows": 11,
+      "cols": 13,
+      "total_cells": 143,
+      "free_cells": 66,
+      "wall_cells": 77,
+      "wall_density": 0.5384615384615384,
+      "edge_count": 72,
+      "connected_components": 1,
+      "start": [
+        9,
+        1
+      ],
+      "goal": [
+        1,
+        1
+      ],
+      "shortest_path_len": 24,
+      "normalized_path_len": 0.36923076923076925,
+      "diameter": 24,
+      "solution_turns": 2,
+      "solution_turn_rate": 0.08695652173913043,
+      "solution_junctions": 5,
+      "degree_1_deadends": 3,
+      "degree_2_corridors": 50,
+      "degree_3_forks": 11,
+      "degree_4_crosses": 2,
+      "junction_count": 13,
+      "cycle_rank": 7,
+      "articulation_points": 12,
+      "bridge_edges": 12,
+      "corridor_count": 22,
+      "mean_corridor_len": 3.272727272727273,
+      "max_corridor_len": 8,
+      "static_difficulty": 47.55
+    }
+  },
+  {
+    "name": "local-layout-05",
+    "profile": "large-like",
+    "map_rows": [
+      "##############",
+      "#.........#..#",
+      "#.#######.##.#",
+      "#.#.....#....#",
+      "#.#.###.###..#",
+      "#...#.#...#..#",
+      "#.###.#.###..#",
+      "#.....#......#",
+      "##############"
+    ],
+    "eval_reset_cell": [
+      1,
+      11
+    ],
+    "eval_goal_cell": [
+      5,
+      5
+    ],
+    "metrics": {
+      "rows": 9,
+      "cols": 14,
+      "total_cells": 126,
+      "free_cells": 54,
+      "wall_cells": 72,
+      "wall_density": 0.5714285714285714,
+      "edge_count": 58,
+      "connected_components": 1,
+      "start": [
+        1,
+        11
+      ],
+      "goal": [
+        5,
+        5
+      ],
+      "shortest_path_len": 28,
+      "normalized_path_len": 0.5283018867924528,
+      "diameter": 28,
+      "solution_turns": 7,
+      "solution_turn_rate": 0.25925925925925924,
+      "solution_junctions": 3,
+      "degree_1_deadends": 3,
+      "degree_2_corridors": 40,
+      "degree_3_forks": 11,
+      "degree_4_crosses": 0,
+      "junction_count": 11,
+      "cycle_rank": 5,
+      "articulation_points": 13,
+      "bridge_edges": 13,
+      "corridor_count": 18,
+      "mean_corridor_len": 3.2222222222222223,
+      "max_corridor_len": 16,
+      "static_difficulty": 54.13
+    }
+  },
+  {
+    "name": "local-layout-06",
+    "profile": "hard",
+    "map_rows": [
+      "################",
+      "#.........#.#..#",
+      "#########.#.##.#",
+      "#.......#.#....#",
+      "#.#####.#.####.#",
+      "#...#.#.#...#..#",
+      "#.#.#.#.#.###.##",
+      "#.#.#.....#....#",
+      "#.#.#######.#..#",
+      "#.#.........#..#",
+      "#.#######.#.##.#",
+      "#.#.........#..#",
+      "#.#.#.#.#.#.#..#",
+      "#.......#......#",
+      "################"
+    ],
+    "eval_reset_cell": [
+      1,
+      11
+    ],
+    "eval_goal_cell": [
+      1,
+      1
+    ],
+    "metrics": {
+      "rows": 15,
+      "cols": 16,
+      "total_cells": 240,
+      "free_cells": 112,
+      "wall_cells": 128,
+      "wall_density": 0.5333333333333333,
+      "edge_count": 121,
+      "connected_components": 1,
+      "start": [
+        1,
+        11
+      ],
+      "goal": [
+        1,
+        1
+      ],
+      "shortest_path_len": 56,
+      "normalized_path_len": 0.5045045045045045,
+      "diameter": 56,
+      "solution_turns": 15,
+      "solution_turn_rate": 0.2727272727272727,
+      "solution_junctions": 7,
+      "degree_1_deadends": 5,
+      "degree_2_corridors": 86,
+      "degree_3_forks": 19,
+      "degree_4_crosses": 2,
+      "junction_count": 21,
+      "cycle_rank": 10,
+      "articulation_points": 44,
+      "bridge_edges": 47,
+      "corridor_count": 35,
+      "mean_corridor_len": 3.4571428571428573,
+      "max_corridor_len": 12,
+      "static_difficulty": 66.68
+    }
+  },
+  {
+    "name": "local-layout-07",
+    "profile": "hard",
+    "map_rows": [
+      "################",
+      "#.......#...#..#",
+      "#.#.#####.#.##.#",
+      "#.#.#...#.#....#",
+      "#.###.#.#.###..#",
+      "#.#...#...#....#",
+      "#.#.#######.##.#",
+      "#.#.....#...#..#",
+      "#.#####.#####..#",
+      "#.....#...#....#",
+      "#.#.#.###.#.##.#",
+      "#.......#...#..#",
+      "#.#.###.#####.##",
+      "#.....#........#",
+      "################"
+    ],
+    "eval_reset_cell": [
+      3,
+      5
+    ],
+    "eval_goal_cell": [
+      1,
+      7
+    ],
+    "metrics": {
+      "rows": 15,
+      "cols": 16,
+      "total_cells": 240,
+      "free_cells": 110,
+      "wall_cells": 130,
+      "wall_density": 0.5416666666666666,
+      "edge_count": 117,
+      "connected_components": 1,
+      "start": [
+        3,
+        5
+      ],
+      "goal": [
+        1,
+        7
+      ],
+      "shortest_path_len": 58,
+      "normalized_path_len": 0.5321100917431193,
+      "diameter": 58,
+      "solution_turns": 19,
+      "solution_turn_rate": 0.3333333333333333,
+      "solution_junctions": 7,
+      "degree_1_deadends": 6,
+      "degree_2_corridors": 85,
+      "degree_3_forks": 18,
+      "degree_4_crosses": 1,
+      "junction_count": 19,
+      "cycle_rank": 8,
+      "articulation_points": 42,
+      "bridge_edges": 43,
+      "corridor_count": 32,
+      "mean_corridor_len": 3.65625,
+      "max_corridor_len": 38,
+      "static_difficulty": 68.85
+    }
+  },
+  {
+    "name": "local-layout-08",
+    "profile": "hard",
+    "map_rows": [
+      "################",
+      "#.....#........#",
+      "###.#.#######.##",
+      "#...#.......#..#",
+      "#.#########.#..#",
+      "#...#...#.#.#..#",
+      "###.#.#.#.#.##.#",
+      "#...#.#.#.#.#..#",
+      "#.###.#.#.#.#..#",
+      "#.#...#.#......#",
+      "#.#.###.######.#",
+      "#.#...#...#....#",
+      "#.###.###.#.#..#",
+      "#.......#...#..#",
+      "################"
+    ],
+    "eval_reset_cell": [
+      13,
+      1
+    ],
+    "eval_goal_cell": [
+      1,
+      7
+    ],
+    "metrics": {
+      "rows": 15,
+      "cols": 16,
+      "total_cells": 240,
+      "free_cells": 108,
+      "wall_cells": 132,
+      "wall_density": 0.55,
+      "edge_count": 114,
+      "connected_components": 1,
+      "start": [
+        13,
+        1
+      ],
+      "goal": [
+        1,
+        7
+      ],
+      "shortest_path_len": 52,
+      "normalized_path_len": 0.48598130841121495,
+      "diameter": 52,
+      "solution_turns": 17,
+      "solution_turn_rate": 0.3333333333333333,
+      "solution_junctions": 9,
+      "degree_1_deadends": 5,
+      "degree_2_corridors": 86,
+      "degree_3_forks": 17,
+      "degree_4_crosses": 0,
+      "junction_count": 17,
+      "cycle_rank": 7,
+      "articulation_points": 21,
+      "bridge_edges": 21,
+      "corridor_count": 28,
+      "mean_corridor_len": 4.071428571428571,
+      "max_corridor_len": 30,
+      "static_difficulty": 61.49
+    }
+  },
+  {
+    "name": "local-layout-09",
+    "profile": "hard",
+    "map_rows": [
+      "################",
+      "#.#............#",
+      "#.#.#########..#",
+      "#.........#....#",
+      "#########.#.##.#",
+      "#.......#.#....#",
+      "#.#####.#.###..#",
+      "#.#...#.#.#....#",
+      "#.###.#.###.##.#",
+      "#...#.#.....#..#",
+      "#.#.#.#.#####..#",
+      "#.#.#.....#....#",
+      "###.#.###.#.####",
+      "#...#...#......#",
+      "################"
+    ],
+    "eval_reset_cell": [
+      13,
+      1
+    ],
+    "eval_goal_cell": [
+      7,
+      9
+    ],
+    "metrics": {
+      "rows": 15,
+      "cols": 16,
+      "total_cells": 240,
+      "free_cells": 109,
+      "wall_cells": 131,
+      "wall_density": 0.5458333333333333,
+      "edge_count": 116,
+      "connected_components": 1,
+      "start": [
+        13,
+        1
+      ],
+      "goal": [
+        7,
+        9
+      ],
+      "shortest_path_len": 60,
+      "normalized_path_len": 0.5555555555555556,
+      "diameter": 60,
+      "solution_turns": 15,
+      "solution_turn_rate": 0.2542372881355932,
+      "solution_junctions": 10,
+      "degree_1_deadends": 7,
+      "degree_2_corridors": 81,
+      "degree_3_forks": 21,
+      "degree_4_crosses": 0,
+      "junction_count": 21,
+      "cycle_rank": 8,
+      "articulation_points": 62,
+      "bridge_edges": 65,
+      "corridor_count": 35,
+      "mean_corridor_len": 3.3142857142857145,
+      "max_corridor_len": 14,
+      "static_difficulty": 73.47
+    }
+  },
+  {
+    "name": "test-layout-01",
+    "profile": "large-like",
+    "map_rows": [
+      "##############",
+      "#.........#..#",
+      "#.#.#.###.#..#",
+      "#.#.#........#",
+      "#.#.###.#.#..#",
+      "#...#.#......#",
+      "#.###.###.##.#",
+      "#.#..........#",
+      "#.#.#.#.#.####",
+      "#.#..........#",
+      "##############"
+    ],
+    "eval_reset_cell": [
+      9,
+      1
+    ],
+    "eval_goal_cell": [
+      9,
+      3
+    ],
+    "metrics": {
+      "rows": 11,
+      "cols": 14,
+      "total_cells": 154,
+      "free_cells": 74,
+      "wall_cells": 80,
+      "wall_density": 0.5194805194805194,
+      "edge_count": 85,
+      "connected_components": 1,
+      "start": [
+        9,
+        1
+      ],
+      "goal": [
+        9,
+        3
+      ],
+      "shortest_path_len": 30,
+      "normalized_path_len": 0.410958904109589,
+      "diameter": 30,
+      "solution_turns": 7,
+      "solution_turn_rate": 0.2413793103448276,
+      "solution_junctions": 9,
+      "degree_1_deadends": 3,
+      "degree_2_corridors": 51,
+      "degree_3_forks": 15,
+      "degree_4_crosses": 5,
+      "junction_count": 20,
+      "cycle_rank": 12,
+      "articulation_points": 13,
+      "bridge_edges": 11,
+      "corridor_count": 34,
+      "mean_corridor_len": 2.5,
+      "max_corridor_len": 6,
+      "static_difficulty": 57.71
+    }
+  },
+  {
+    "name": "test-layout-02",
+    "profile": "large-like",
+    "map_rows": [
+      "##############",
+      "#.....#......#",
+      "#.###.#.####.#",
+      "#.#.#...#....#",
+      "#.#.#.#####..#",
+      "#.#...#......#",
+      "#.#.#.#.####.#",
+      "#...#...#....#",
+      "##############"
+    ],
+    "eval_reset_cell": [
+      3,
+      1
+    ],
+    "eval_goal_cell": [
+      7,
+      9
+    ],
+    "metrics": {
+      "rows": 9,
+      "cols": 14,
+      "total_cells": 126,
+      "free_cells": 54,
+      "wall_cells": 72,
+      "wall_density": 0.5714285714285714,
+      "edge_count": 57,
+      "connected_components": 1,
+      "start": [
+        3,
+        1
+      ],
+      "goal": [
+        7,
+        9
+      ],
+      "shortest_path_len": 26,
+      "normalized_path_len": 0.49056603773584906,
+      "diameter": 26,
+      "solution_turns": 7,
+      "solution_turn_rate": 0.28,
+      "solution_junctions": 4,
+      "degree_1_deadends": 3,
+      "degree_2_corridors": 42,
+      "degree_3_forks": 9,
+      "degree_4_crosses": 0,
+      "junction_count": 9,
+      "cycle_rank": 4,
+      "articulation_points": 9,
+      "bridge_edges": 9,
+      "corridor_count": 15,
+      "mean_corridor_len": 3.8,
+      "max_corridor_len": 16,
+      "static_difficulty": 51.52
+    }
+  },
+  {
+    "name": "test-layout-03",
+    "profile": "hard",
+    "map_rows": [
+      "###############",
+      "#.......#.#.#.#",
+      "#.#.###.#.#.#.#",
+      "#...#.#...#...#",
+      "#.#.#.#.#####.#",
+      "#.#.....#...#.#",
+      "#.#.#.#.#.#.#.#",
+      "#.#.#...#.#...#",
+      "#.#.###.#.#####",
+      "#.#...#.#.....#",
+      "#.###.#######.#",
+      "#.#...........#",
+      "#.#.###.#.#.###",
+      "#.#.....#.....#",
+      "###############"
+    ],
+    "eval_reset_cell": [
+      13,
+      1
+    ],
+    "eval_goal_cell": [
+      1,
+      11
+    ],
+    "metrics": {
+      "rows": 15,
+      "cols": 15,
+      "total_cells": 225,
+      "free_cells": 102,
+      "wall_cells": 123,
+      "wall_density": 0.5466666666666666,
+      "edge_count": 106,
+      "connected_components": 1,
+      "start": [
+        13,
+        1
+      ],
+      "goal": [
+        1,
+        11
+      ],
+      "shortest_path_len": 54,
+      "normalized_path_len": 0.5346534653465347,
+      "diameter": 54,
+      "solution_turns": 14,
+      "solution_turn_rate": 0.2641509433962264,
+      "solution_junctions": 8,
+      "degree_1_deadends": 7,
+      "degree_2_corridors": 81,
+      "degree_3_forks": 13,
+      "degree_4_crosses": 1,
+      "junction_count": 14,
+      "cycle_rank": 5,
+      "articulation_points": 59,
+      "bridge_edges": 58,
+      "corridor_count": 25,
+      "mean_corridor_len": 4.24,
+      "max_corridor_len": 22,
+      "static_difficulty": 70.45
+    }
+  },
+  {
+    "name": "test-layout-04",
+    "profile": "hard",
+    "map_rows": [
+      "###############",
+      "#.#.........#.#",
+      "#.#####.###.#.#",
+      "#.........#...#",
+      "#.#.#.###.#.#.#",
+      "#.....#.......#",
+      "#.#.#.#.###.###",
+      "#.#...#.#...#.#",
+      "#.###.#.#.#.#.#",
+      "#.#...#...#...#",
+      "#.#.#########.#",
+      "#...#.........#",
+      "###############"
+    ],
+    "eval_reset_cell": [
+      11,
+      5
+    ],
+    "eval_goal_cell": [
+      11,
+      1
+    ],
+    "metrics": {
+      "rows": 13,
+      "cols": 15,
+      "total_cells": 195,
+      "free_cells": 90,
+      "wall_cells": 105,
+      "wall_density": 0.5384615384615384,
+      "edge_count": 96,
+      "connected_components": 1,
+      "start": [
+        11,
+        5
+      ],
+      "goal": [
+        11,
+        1
+      ],
+      "shortest_path_len": 36,
+      "normalized_path_len": 0.4044943820224719,
+      "diameter": 36,
+      "solution_turns": 10,
+      "solution_turn_rate": 0.2857142857142857,
+      "solution_junctions": 8,
+      "degree_1_deadends": 5,
+      "degree_2_corridors": 70,
+      "degree_3_forks": 13,
+      "degree_4_crosses": 2,
+      "junction_count": 15,
+      "cycle_rank": 7,
+      "articulation_points": 26,
+      "bridge_edges": 26,
+      "corridor_count": 26,
+      "mean_corridor_len": 3.6923076923076925,
+      "max_corridor_len": 14,
+      "static_difficulty": 63.59
+    }
+  }
+]
