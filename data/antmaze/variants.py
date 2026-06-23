@@ -366,7 +366,7 @@ def _build_local_variant(
     eval_reset_cell: tuple[int, int],
     eval_goal_cell: tuple[int, int],
     structure_desc_en: str,
-    dataset_style: str = "local diverse reset and goal trajectories",
+    dataset_style: str = "local reset and goal trajectories",
     max_episode_steps: int | None = None,
     env_name: str | None = None,
 ) -> dict:
@@ -549,7 +549,7 @@ ANTMAZE_VARIANTS = {
         eval_reset_cell=(9, 1),
         eval_goal_cell=(9, 3),
         structure_desc_en="A held-out design-generated large-like maze with distributed corridors, central barriers, and looped bypasses.",
-        dataset_style="held-out local diverse reset and goal trajectories",
+        dataset_style="held-out local reset and goal trajectories",
     ),
     "test-layout-02": _build_local_variant(
         variant_name="test-layout-02",
@@ -558,7 +558,7 @@ ANTMAZE_VARIANTS = {
         eval_reset_cell=(3, 1),
         eval_goal_cell=(7, 9),
         structure_desc_en="A held-out design-generated large-like maze with staggered gates, compact pockets, and a long lower route.",
-        dataset_style="held-out local diverse reset and goal trajectories",
+        dataset_style="held-out local reset and goal trajectories",
     ),
     "test-layout-03": _build_local_variant(
         variant_name="test-layout-03",
@@ -567,7 +567,7 @@ ANTMAZE_VARIANTS = {
         eval_reset_cell=(13, 1),
         eval_goal_cell=(1, 11),
         structure_desc_en="A held-out design-generated harder maze with one-cell-wide corridors, repeated bottlenecks, and long detours.",
-        dataset_style="held-out local diverse reset and goal trajectories",
+        dataset_style="held-out local reset and goal trajectories",
         max_episode_steps=1700,
     ),
     "test-layout-04": _build_local_variant(
@@ -577,7 +577,7 @@ ANTMAZE_VARIANTS = {
         eval_reset_cell=(11, 5),
         eval_goal_cell=(11, 1),
         structure_desc_en="A held-out design-generated harder maze with narrow corridors, long routing, and dense internal bottlenecks.",
-        dataset_style="held-out local diverse reset and goal trajectories",
+        dataset_style="held-out local reset and goal trajectories",
         max_episode_steps=2100,
     ),
 }

@@ -232,6 +232,8 @@ python local_antmaze_gen.py \
   --variants local-layout-01 \
   --target-episodes 1000 \
   --num-workers 4 \
+  --mode diverse \
+  --diverse-cell-mode all-free \
   --min-success-rate 0.8 \
   --seed 42 \
   --overwrite
@@ -245,6 +247,15 @@ to:
 ```text
 local_datasets/antmaze-<variant>-v0
 ```
+
+`--mode diverse` defaults to `--diverse-cell-mode all-free`: the collection map
+does not use `c` markers, so Gymnasium Robotics samples reset and goal from all
+free cells. `--diverse-cell-mode representative-c` restores the narrower
+representative-cell behavior by marking deterministic free cells as `c` and
+sampling reset/goal from those combined cells. `--mode play` also leaves every
+free cell eligible as a reset/goal candidate. Both modes keep official AntMaze
+fixed-horizon episode semantics: reaching the goal records `info["success"]`
+but does not truncate the episode.
 
 `--min-success-rate` defaults to `0`, which preserves the original behavior of
 stopping once `--target-episodes` has been collected. When set above `0`, each

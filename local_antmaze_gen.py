@@ -70,9 +70,7 @@ WaypointController = _OFFICIAL_CONTROLLER.WaypointController
 
 
 class AntMazeStepDataCallback(StepDataCallback):
-    """Record AntMaze state and optionally split episodes at first success."""
-
-    truncate_on_success = False
+    """Record AntMaze state and keep official fixed-horizon episode semantics."""
 
     def __call__(
         self,
@@ -86,11 +84,8 @@ class AntMazeStepDataCallback(StepDataCallback):
     ):
         step_data = super().__call__(env, obs, info, action, rew, terminated, truncated)
         info_key = "info" if "info" in step_data else "infos"
-        truncated_key = "truncated" if "truncated" in step_data else "truncations"
         success = bool(step_data[info_key].get("success", False))
         step_data[info_key] = {"success": success}
-        if self.truncate_on_success and success:
-            step_data[truncated_key] = True
 
         step_data[info_key]["qpos"] = np.concatenate(
             [obs["achieved_goal"], obs["observation"][:13]]
@@ -98,10 +93,6 @@ class AntMazeStepDataCallback(StepDataCallback):
         step_data[info_key]["qvel"] = obs["observation"][13:]
         step_data[info_key]["goal"] = obs["desired_goal"]
         return step_data
-
-
-class AntMazeSuccessStepDataCallback(AntMazeStepDataCallback):
-    truncate_on_success = True
 
 
 def parse_args():
@@ -137,9 +128,25 @@ def parse_args():
         help="Gaussian action noise std added to SAC actions before clipping.",
     )
     parser.add_argument(
-        "--truncate-on-success",
-        action="store_true",
-        help="End a collected episode as soon as info['success'] becomes true.",
+        "--mode",
+        type=str,
+        default="diverse",
+        choices=("diverse", "play"),
+        help=(
+            "Official-style AntMaze collection mode. Both modes keep fixed-horizon "
+            "episodes and do not truncate on success."
+        ),
+    )
+    parser.add_argument(
+        "--diverse-cell-mode",
+        type=str,
+        default="all-free",
+        choices=("all-free", "representative-c"),
+        help=(
+            "Reset/goal cell source for --mode diverse. 'all-free' uses no c cells "
+            "and samples from every free cell; 'representative-c' marks deterministic "
+            "representative free cells as c and samples from those cells."
+        ),
     )
     parser.add_argument(
         "--min-success-rate",
@@ -299,6 +306,155 @@ def _make_env(env_paras: dict, max_episode_steps: int | None):
     return gym.make(env_id, **env_paras)
 
 
+def _clean_collection_map(maze_map: list[list[object]]) -> list[list[int]]:
+    return [[1 if cell == 1 else 0 for cell in row] for row in maze_map]
+
+
+def _free_cells(maze_map: list[list[object]]) -> list[tuple[int, int]]:
+    return [
+        (row_idx, col_idx)
+        for row_idx, row in enumerate(maze_map)
+        for col_idx, cell in enumerate(row)
+        if cell != 1
+    ]
+
+
+def _cell_neighbors(
+    cell: tuple[int, int],
+    free_cell_set: set[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    row, col = cell
+    candidates = (
+        (row - 1, col),
+        (row + 1, col),
+        (row, col - 1),
+        (row, col + 1),
+    )
+    return [candidate for candidate in candidates if candidate in free_cell_set]
+
+
+def _largest_connected_component(
+    cells: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    free_cell_set = set(cells)
+    remaining = set(cells)
+    largest: list[tuple[int, int]] = []
+    while remaining:
+        start = min(remaining)
+        stack = [start]
+        remaining.remove(start)
+        component = [start]
+        while stack:
+            cell = stack.pop()
+            for neighbor in _cell_neighbors(cell, free_cell_set):
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    stack.append(neighbor)
+                    component.append(neighbor)
+        if len(component) > len(largest):
+            largest = sorted(component)
+    return largest
+
+
+def _bfs_distances(
+    start: tuple[int, int],
+    free_cell_set: set[tuple[int, int]],
+) -> dict[tuple[int, int], int]:
+    distances = {start: 0}
+    queue = [start]
+    for cell in queue:
+        next_distance = distances[cell] + 1
+        for neighbor in _cell_neighbors(cell, free_cell_set):
+            if neighbor not in distances:
+                distances[neighbor] = next_distance
+                queue.append(neighbor)
+    return distances
+
+
+def _farthest_cell(
+    distances: dict[tuple[int, int], int],
+) -> tuple[int, int]:
+    return max(distances, key=lambda cell: (distances[cell], -cell[0], -cell[1]))
+
+
+def _diverse_cell_count(free_cell_count: int) -> int:
+    if free_cell_count <= 0:
+        return 0
+    if free_cell_count <= 30:
+        return min(4, free_cell_count)
+    return min(8, free_cell_count)
+
+
+def _select_diverse_combined_cells(
+    maze_map: list[list[object]],
+) -> list[tuple[int, int]]:
+    cells = _largest_connected_component(_free_cells(maze_map))
+    if not cells:
+        raise ValueError("Cannot build diverse AntMaze collection map without free cells")
+    target_count = _diverse_cell_count(len(cells))
+    if target_count >= len(cells):
+        return cells
+
+    free_cell_set = set(cells)
+    first = _farthest_cell(_bfs_distances(cells[0], free_cell_set))
+    first_distances = _bfs_distances(first, free_cell_set)
+    second = _farthest_cell(first_distances)
+    selected = [first, second]
+    selected_set = set(selected)
+
+    all_distances = {
+        cell: _bfs_distances(cell, free_cell_set)
+        for cell in cells
+    }
+    while len(selected) < target_count:
+        candidates = [cell for cell in cells if cell not in selected_set]
+        next_cell = max(
+            candidates,
+            key=lambda cell: (
+                min(all_distances[cell].get(chosen, 0) for chosen in selected),
+                -cell[0],
+                -cell[1],
+            ),
+        )
+        selected.append(next_cell)
+        selected_set.add(next_cell)
+    return sorted(selected)
+
+
+def _mark_combined_cells(
+    maze_map: list[list[int]],
+    combined_cells: list[tuple[int, int]],
+) -> list[list[object]]:
+    marked: list[list[object]] = [list(row) for row in maze_map]
+    for row, col in combined_cells:
+        if marked[row][col] == 1:
+            raise ValueError(f"Combined cell {(row, col)} is a wall")
+        marked[row][col] = "c"
+    return marked
+
+
+def _collection_env_for_mode(
+    collection_env_paras: dict,
+    mode: str,
+    diverse_cell_mode: str,
+) -> tuple[dict, list[tuple[int, int]]]:
+    env_paras = dict(collection_env_paras)
+    clean_map = _clean_collection_map(env_paras["maze_map"])
+    if mode == "play":
+        env_paras["maze_map"] = clean_map
+        return env_paras, []
+    if mode == "diverse":
+        if diverse_cell_mode == "all-free":
+            env_paras["maze_map"] = clean_map
+            return env_paras, []
+        if diverse_cell_mode != "representative-c":
+            raise ValueError(f"Unsupported diverse cell mode: {diverse_cell_mode!r}")
+        combined_cells = _select_diverse_combined_cells(clean_map)
+        env_paras["maze_map"] = _mark_combined_cells(clean_map, combined_cells)
+        return env_paras, combined_cells
+    raise ValueError(f"Unsupported AntMaze generation mode: {mode!r}")
+
+
 def _official_requirements() -> list[str]:
     requirements_path = OFFICIAL_ANTMAZE_DIR / "requirements.txt"
     return [
@@ -343,7 +499,9 @@ def _collect_shard(
     policy_file: str,
     maze_solver: str,
     action_noise: float,
-    truncate_on_success: bool,
+    mode: str,
+    diverse_cell_mode: str,
+    collection_combined_cells: list[tuple[int, int]],
     min_success_rate: float,
     max_episode_attempts: int,
 ) -> dict:
@@ -351,11 +509,7 @@ def _collect_shard(
     env = _make_env(collection_env_paras, max_episode_steps=max_episode_steps)
     collector = DataCollector(
         env,
-        step_data_callback=(
-            AntMazeSuccessStepDataCallback
-            if truncate_on_success
-            else AntMazeStepDataCallback
-        ),
+        step_data_callback=AntMazeStepDataCallback,
         record_infos=True,
     )
     np.random.seed(seed)
@@ -420,8 +574,6 @@ def _collect_shard(
         steps += 1
         step_success = bool(info.get("success", False))
         episode_success = episode_success or step_success
-        if truncate_on_success and step_success:
-            truncated = True
 
         if terminated or truncated:
             completed_success = bool(episode_success)
@@ -502,9 +654,11 @@ def _collect_shard(
             f"replaced_failed_episodes={replaced_failed_episodes}, "
             f"replacement_success_episodes={replacement_success_episodes}, "
             f"collected_steps={steps}, seed={seed}, "
+            f"mode={mode}, diverse_cell_mode={diverse_cell_mode}, "
+            f"collection_combined_cells={collection_combined_cells}, "
             f"min_success_rate={min_success_rate}, "
             f"max_episode_attempts={max_episode_attempts}, "
-            f"action_noise={action_noise}, truncate_on_success={truncate_on_success}."
+            f"action_noise={action_noise}."
         ),
         requirements=_official_requirements(),
         minari_version=_minari_version_specifier(),
@@ -522,8 +676,9 @@ def _collect_shard(
         f"discarded_failed_episodes="
         f"{discarded_post_target_failed_episodes + replaced_failed_episodes}, "
         f"collected_steps={steps}, seed={seed}, "
+        f"mode={mode}, diverse_cell_mode={diverse_cell_mode}, "
         f"min_success_rate={min_success_rate}, max_episode_attempts={max_episode_attempts}, "
-        f"action_noise={action_noise}, truncate_on_success={truncate_on_success}."
+        f"action_noise={action_noise}."
     )
     return {
         "dataset_id": dataset_id,
@@ -578,7 +733,9 @@ def _write_generation_summary(
     max_episode_attempts: int,
     seed: int,
     action_noise: float,
-    truncate_on_success: bool,
+    mode: str,
+    diverse_cell_mode: str,
+    collection_combined_cells: list[tuple[int, int]],
     shard_results: list[dict],
 ) -> tuple[int, int, float]:
     final_episodes, final_successful_episodes = _dataset_success_stats(dataset_root)
@@ -625,7 +782,11 @@ def _write_generation_summary(
         "max_episode_attempts": max_episode_attempts,
         "seed": seed,
         "action_noise": action_noise,
-        "truncate_on_success": truncate_on_success,
+        "mode": mode,
+        "diverse_cell_mode": diverse_cell_mode,
+        "collection_combined_cells": [
+            [int(row), int(col)] for row, col in collection_combined_cells
+        ],
     }
     (dataset_root / "generation_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
@@ -645,7 +806,8 @@ def generate_variant(
     policy_file: Path,
     maze_solver: str,
     action_noise: float,
-    truncate_on_success: bool,
+    mode: str,
+    diverse_cell_mode: str,
     min_success_rate: float,
     max_episode_attempts: int | None,
 ):
@@ -707,16 +869,27 @@ def generate_variant(
     if not policy_file.exists():
         raise FileNotFoundError(f"AntMaze SAC policy file not found: {policy_file}")
 
+    collection_env_paras = dict(meta.get("collection_env_paras") or meta["env_paras"])
+    collection_env_paras, collection_combined_cells = _collection_env_for_mode(
+        collection_env_paras,
+        mode,
+        diverse_cell_mode,
+    )
+    eval_env_paras = dict(meta["env_paras"])
+
+    mode_detail = (
+        f"combined_cells={collection_combined_cells}"
+        if collection_combined_cells
+        else "all free cells are reset/goal candidates"
+    )
     print(
         f"[local-antmaze-gen] {variant}: existing_episodes={existing_episodes}, "
         f"target_episodes={target_episodes}, deficit={deficit}, workers={worker_count}, "
         f"min_success_rate={min_success_rate}, max_episode_attempts={attempt_budget}, "
         f"policy_file={policy_file}, maze_solver={maze_solver}, action_noise={action_noise}, "
-        f"truncate_on_success={truncate_on_success}"
+        f"mode={mode}, diverse_cell_mode={diverse_cell_mode}, {mode_detail}"
     )
 
-    collection_env_paras = dict(meta.get("collection_env_paras") or meta["env_paras"])
-    eval_env_paras = dict(meta["env_paras"])
     shard_specs = []
     variant_seed_offset = int.from_bytes(
         hashlib.sha256(variant.encode("utf-8")).digest()[:4],
@@ -736,7 +909,9 @@ def generate_variant(
                 "policy_file": str(policy_file),
                 "maze_solver": maze_solver,
                 "action_noise": action_noise,
-                "truncate_on_success": truncate_on_success,
+                "mode": mode,
+                "diverse_cell_mode": diverse_cell_mode,
+                "collection_combined_cells": collection_combined_cells,
                 "min_success_rate": min_success_rate,
                 "max_episode_attempts": shard_attempt_limits[worker_index],
             }
@@ -787,7 +962,9 @@ def generate_variant(
             max_episode_attempts=attempt_budget,
             seed=seed,
             action_noise=action_noise,
-            truncate_on_success=truncate_on_success,
+            mode=mode,
+            diverse_cell_mode=diverse_cell_mode,
+            collection_combined_cells=collection_combined_cells,
             shard_results=shard_results,
         )
     )
@@ -844,7 +1021,8 @@ def main():
             policy_file=args.policy_file,
             maze_solver=args.maze_solver,
             action_noise=args.action_noise,
-            truncate_on_success=args.truncate_on_success,
+            mode=args.mode,
+            diverse_cell_mode=args.diverse_cell_mode,
             min_success_rate=args.min_success_rate,
             max_episode_attempts=args.max_episode_attempts,
         )

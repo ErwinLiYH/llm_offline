@@ -8,7 +8,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
-#SBATCH --time=2:00:00
+#SBATCH --time=48:00:00
 #SBATCH --array=0-8%4
 
 set -euo pipefail
@@ -22,6 +22,8 @@ MIN_SUCCESS_RATE=${MIN_SUCCESS_RATE:-0.8}
 NUM_WORKERS=${NUM_WORKERS:-16}
 SEED=${SEED:-42}
 ACTION_NOISE=${ACTION_NOISE:-0.2}
+MODE=${MODE:-diverse}
+DIVERSE_CELL_MODE=${DIVERSE_CELL_MODE:-all-free}
 MAX_EPISODE_ATTEMPTS=${MAX_EPISODE_ATTEMPTS:-}
 
 VARIANTS=(
@@ -54,13 +56,14 @@ cd "${PROJECT_ROOT}"
 echo "Job ${SLURM_JOB_ID} started at $(date --iso-8601=seconds)"
 echo "Array task: ${SLURM_ARRAY_TASK_ID}"
 echo "Node: $(hostname)"
-echo "Mode: Diverse-like local AntMaze generation"
+echo "Mode: ${MODE} local AntMaze generation"
 echo "Variant: ${VARIANT}"
 echo "Target episodes per variant: ${TARGET_EPISODES}"
 echo "Minimum saved success rate: ${MIN_SUCCESS_RATE}"
 echo "Workers per variant: ${NUM_WORKERS}"
 echo "Seed: ${SEED}"
 echo "Action noise: ${ACTION_NOISE}"
+echo "Diverse cell mode: ${DIVERSE_CELL_MODE}"
 if [[ -n "${MAX_EPISODE_ATTEMPTS}" ]]; then
     echo "Max episode attempts per variant: ${MAX_EPISODE_ATTEMPTS}"
 else
@@ -75,6 +78,8 @@ fi
     --min-success-rate "${MIN_SUCCESS_RATE}" \
     --seed "${SEED}" \
     --action-noise "${ACTION_NOISE}" \
+    --mode "${MODE}" \
+    --diverse-cell-mode "${DIVERSE_CELL_MODE}" \
     --maze-solver QIteration \
     --overwrite \
     "${EXTRA_ARGS[@]}"

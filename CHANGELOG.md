@@ -1418,3 +1418,32 @@ type: project
 - 已通过 `python -m json.tool generated_antmaze_layouts_seed42.json`
 - 已通过 `python inspect_antmaze_layouts.py --variants medium-play large-play local-layout-01 ... local-layout-09 test-layout-01 ... test-layout-04` 检查所有新增 AntMaze layout 指标和起终点合法性
 - 已额外验证 `test-layout-03` 和 `test-layout-04` 的 `open_2x2=0`、`open_2x3=0`、`open_3x2=0`
+
+---
+
+## local_antmaze_gen.py（2026-06-22）
+
+- `--truncate-on-success` 改为 `--mode {diverse,play}`；两种模式都采用官方 AntMaze fixed-horizon 语义，到达目标只记录 `info["success"]`，不再截断 episode
+- `diverse` 模式支持在本地 collection map 上确定性选择代表性 free cells 并标为 `c` 的采样方式；`play` 模式保留所有 free cells 作为 reset/goal 候选
+- `generation_summary.json` 新增 `mode` 和 `collection_combined_cells`，用于记录本次本地数据生成的采样模式和 diverse 候选 cell
+- `data/antmaze/variants.py` 的 local/test dataset style 文案改为中性的 reset/goal trajectories，避免与 `--mode play` 冲突
+
+## sbatch/dataGen.ant.slurm（2026-06-22）
+
+- 新增 `MODE` 环境变量，默认 `diverse`，提交时传给 `local_antmaze_gen.py --mode`
+- 去掉 `--truncate-on-success`，并将任务时间恢复为 `48:00:00`，适配 fixed-horizon AntMaze 数据生成
+
+## local_antmaze_gen.py（2026-06-23）
+
+- 新增 `--diverse-cell-mode {all-free,representative-c}`，默认 `all-free`
+- `--mode diverse` 默认不再在 collection map 上标 `c`，reset/goal 改为从所有 free cells 中随机采样
+- 旧的代表性 `c` cells 行为保留为显式选项：`--mode diverse --diverse-cell-mode representative-c`
+- `generation_summary.json` 新增 `diverse_cell_mode`，并继续记录 `collection_combined_cells`；默认 all-free 时该列表为空
+
+## sbatch/dataGen.ant.slurm（2026-06-23）
+
+- 新增 `DIVERSE_CELL_MODE` 环境变量，默认 `all-free`，提交给 `local_antmaze_gen.py --diverse-cell-mode`
+
+## docs（2026-06-23）
+
+- 新增 `docs/official_maze_dataset_semantics.md`，记录官方 PointMaze 与 AntMaze 数据语义差异、AntMaze `play` / `diverse` 的 reset/goal 采样区别，以及当前本地 AntMaze 生成与官方数据的对齐和差异
