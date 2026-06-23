@@ -724,6 +724,7 @@ project/
 ├── train.py                     # 训练入口，读取 config 决定训练模式
 ├── evaluate.py                  # Rollout 评估
 ├── score.py                     # PointMaze official-style normalized score / local reference 入口
+├── estimate_dataset.py          # 训练数据 step/batch 与 tokenized cache 大小预估入口
 ├── local_varient_gen.py          # local PointMaze Minari 数据生成入口
 ├── local_antmaze_gen.py          # local AntMaze Minari 数据生成入口
 ├── generate_antmaze_layouts.py   # AntMaze local/test layout 候选生成与筛选
@@ -768,6 +769,19 @@ micromamba run -n llm_offline python train.py --config config.yaml --tokenize-on
 该模式要求配置 `dataset_cache_dir`。`dataset_load_partitions: 1` 时构建或加载完整 train/val cache；`dataset_load_partitions > 1` 时 rank0 规划 shard，rank0 准备完整 val cache，并在 DDP 下按 round scatter 当前 rank 需要的 shard payload，让各 rank 并行构建本地 shard cache。完成后打印 train/val sample 与 batch 汇总、每个 epoch 和全部 epochs 的 train batch steps，并按 `batch_size * world_size` 给出每个 batch step 的近似 global sample 数；摘要同时提醒 `eval_step_interval` 按 epoch-local batch step 计数并在每个 epoch 重置。随后在 DDP 包装、optimizer、W&B、validation、rollout 和训练循环之前退出。
 
 当前 `--tokenize-only` 仍复用正常的 `load_model_and_tokenizer()`，因此会加载 Unsloth 模型并可能占用 GPU；它只保证不进入训练，不提供 CPU-only tokenizer 路径。生成的 cache signature 不包含 DDP rank/world size，之后可直接由单卡或 DDP 训练复用。
+
+快速预估当前训练配置会产生多少数据和 tokenized cache 体积：
+
+```bash
+micromamba run -n llm_offline python estimate_dataset.py \
+  --config config.yaml \
+  --world_size 4 \
+  --sample-episodes-per-variant 4
+```
+
+`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。脚本读取训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`prompt_templete_index`、`episode_keep_num`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时还会透传 `antmaze_data_config`，因此过滤、截断和 holding 后的 episode 数/step 数才是统计基础。
+
+体积估算不会写正式 dataset cache。脚本会按每个 selected variant 抽取 `--sample-episodes-per-variant` 条完整 selected episode 做真实 tokenization，把这些样本 pickle 成类似 shard cache 的结构后测量字节数，再按 `sampled_pickle_bytes * target_selected_steps / sampled_steps` 用 step ratio 外推 train、val 和 total `.pkl` 大小，单位为十进制 GB。多 prompt 导致的样本膨胀由抽样 tokenization 自然包含；`max_data_num` 会同时影响样本数和 size target。`--world_size` 只用于数学预估 DDP batch 数和 partition round `target_batches`，不初始化 DDP、不要求真实 rank 或 GPU。
 
 ---
 

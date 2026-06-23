@@ -1455,3 +1455,12 @@ type: project
 - 翻车检测使用 action 后状态的 torso z 与 quaternion body-up 方向，避免用 `z > 1.0` 误删正常跳跃；截断会同步切分 observations/actions/rewards/terminations/truncations/infos，并在缩短且存在 truncations 时标记最后一步 truncation
 - AntMaze tokenized cache signature 和 shard cache signature 纳入 normalized `antmaze_data_config`，AntMaze cache format bump 到 v4；PointMaze 默认 cache signature 不包含该配置
 - AntMaze local HDF5 fallback loader 现在读取 `infos`、`rewards`、`terminations` 和 `truncations`，供预处理和后续数据统计使用
+
+## Dataset size estimator（2026-06-23）
+
+- 新增 `estimate_dataset.py`，与 `train.py` / `evaluate.py` / `score.py` 平级；读取训练配置后完整加载原始轨迹，统计 selected train/val episode 与 step 数，并预估一个 epoch 的训练样本数和 batch 数
+- 脚本只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径；可在无 GPU 环境运行
+- 支持 `--sample-episodes-per-variant` 按每个 selected variant 抽取少量完整 episode 做真实 tokenization，并用 `sampled_pickle_bytes * target_selected_steps / sampled_steps` 按 step ratio 外推 `.pkl` cache 大小，输出 train / val / total GB
+- `--world_size` 仅用于数学预估 DDP batch 数，不初始化 DDP、不要求真实 rank/GPU；`dataset_load_partitions > 1` 时按现有 shard round 的 `target_batches` 语义估算
+- `env_family: antmaze` 时透传 `antmaze_data_config`，因此统计和抽样都基于 `filter_success` / `truncate` / `truncate_holding` 预处理后的 episodes
+- 新增 `tests/test_estimate_dataset.py` 覆盖 step-ratio 外推、`--world_size` batch 估算和 AntMaze data config 透传；`.gitignore` 增加该测试文件白名单
