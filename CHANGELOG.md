@@ -1464,3 +1464,8 @@ type: project
 - `--world_size` 仅用于数学预估 DDP batch 数，不初始化 DDP、不要求真实 rank/GPU；`dataset_load_partitions > 1` 时按现有 shard round 的 `target_batches` 语义估算
 - `env_family: antmaze` 时透传 `antmaze_data_config`，因此统计和抽样都基于 `filter_success` / `truncate` / `truncate_holding` 预处理后的 episodes
 - 新增 `tests/test_estimate_dataset.py` 覆盖 step-ratio 外推、`--world_size` batch 估算和 AntMaze data config 透传；`.gitignore` 增加该测试文件白名单
+
+## Local data generation scripts（2026-06-23）
+
+- `local_varient_gen.py` 重命名为 `local_pointmaze_gen.py`，与 `local_antmaze_gen.py` 的命名格式统一。
+- PointMaze / AntMaze 临时 shard dataset id 去掉 `local/` namespace，避免 Minari 在多进程生成时全局扫描 `~/.minari/datasets` 并撞上被删除的 `tmp*` 临时目录。

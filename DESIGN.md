@@ -589,12 +589,12 @@ env_kwargs:
 
 ### Local PointMaze data generation
 
-本地 PointMaze offline 数据由 `local_varient_gen.py` 生成，数据写入 `local_datasets/`，训练数据读取逻辑只消费最终 Minari/HDF5 数据，不在训练阶段重新生成轨迹。生成脚本复用 Farama 官方 `WaypointController` / `QIteration`，但 Minari step callback 在本仓库实现，用于控制 episode 边界并记录 `qpos`、`qvel`、`goal`。
+本地 PointMaze offline 数据由 `local_pointmaze_gen.py` 生成，数据写入 `local_datasets/`，训练数据读取逻辑只消费最终 Minari/HDF5 数据，不在训练阶段重新生成轨迹。生成脚本复用 Farama 官方 `WaypointController` / `QIteration`，但 Minari step callback 在本仓库实现，用于控制 episode 边界并记录 `qpos`、`qvel`、`goal`。
 
 默认生成逻辑保持 D4RL/Minari PointMaze 风格：`continuing_task=True`、`reset_target=True`，每次 first success 时把该 step 标记为 episode truncation。为补充“到达后保持”数据，可以使用：
 
 ```bash
-micromamba run -n d4rl_datagen python local_varient_gen.py \
+micromamba run -n d4rl_datagen python local_pointmaze_gen.py \
   --variants local-layout-07 \
   --num-workers 4 \
   --target-episodes 1000 \
@@ -725,7 +725,7 @@ project/
 ├── evaluate.py                  # Rollout 评估
 ├── score.py                     # PointMaze official-style normalized score / local reference 入口
 ├── estimate_dataset.py          # 训练数据 step/batch 与 tokenized cache 大小预估入口
-├── local_varient_gen.py          # local PointMaze Minari 数据生成入口
+├── local_pointmaze_gen.py        # local PointMaze Minari 数据生成入口
 ├── local_antmaze_gen.py          # local AntMaze Minari 数据生成入口
 ├── generate_antmaze_layouts.py   # AntMaze local/test layout 候选生成与筛选
 ├── inspect_antmaze_layouts.py    # AntMaze layout 拓扑指标检查入口

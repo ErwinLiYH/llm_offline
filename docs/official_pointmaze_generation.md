@@ -29,21 +29,21 @@ git add third_party/minari-dataset-generation-scripts .gitmodules
 
 The parent repository records the exact official commit. Do not edit files
 inside the submodule for project-specific behavior; keep compatibility logic in
-`local_varient_gen.py`.
+`local_pointmaze_gen.py`.
 
 Local PointMaze generation uses official core code:
 
 - `scripts/pointmaze/controller.py::WaypointController`
 - `scripts/pointmaze/maze_solver.py::QIteration`
 
-The Minari step callback lives in `local_varient_gen.py` so local generation
+The Minari step callback lives in `local_pointmaze_gen.py` so local generation
 does not import the official `create_pointmaze_dataset.py` check path or its
 extra diagnostics dependencies.
 
 Generate a local variant:
 
 ```bash
-micromamba run -n d4rl_datagen python local_varient_gen.py \
+micromamba run -n d4rl_datagen python local_pointmaze_gen.py \
   --variants local-layout-01 \
   --num-workers 2 \
   --target-episodes 20 \
@@ -54,7 +54,7 @@ micromamba run -n d4rl_datagen python local_varient_gen.py \
 Generate local data with a post-success hold segment:
 
 ```bash
-micromamba run -n d4rl_datagen python local_varient_gen.py \
+micromamba run -n d4rl_datagen python local_pointmaze_gen.py \
   --variants local-layout-07 \
   --num-workers 4 \
   --target-episodes 1000 \

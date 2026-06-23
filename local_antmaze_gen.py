@@ -505,7 +505,9 @@ def _collect_shard(
     min_success_rate: float,
     max_episode_attempts: int,
 ) -> dict:
-    dataset_id = f"local/antmaze-{variant}-shard-{uuid.uuid4().hex[:12]}-v0"
+    # Keep shard IDs namespace-free so Minari does not recursively scan the
+    # shared dataset root while parallel workers create/delete temporary dirs.
+    dataset_id = f"antmaze-{variant}-shard-{uuid.uuid4().hex[:12]}-v0"
     env = _make_env(collection_env_paras, max_episode_steps=max_episode_steps)
     collector = DataCollector(
         env,

@@ -570,7 +570,7 @@ def _load_variant_episodes(variant: str, family_data_config: dict | None = None)
         if not data_path.exists():
             raise FileNotFoundError(
                 f"Local PointMaze dataset for variant={variant!r} not found at {data_path}. "
-                "Generate it with local_varient_gen.py first."
+                "Generate it with local_pointmaze_gen.py first."
             )
         try:
             dataset = MinariDataset(data_path)
@@ -592,7 +592,7 @@ def _load_local_hdf5_episodes(data_path):
     if not h5_path.exists():
         raise FileNotFoundError(
             f"Local PointMaze data file not found at {h5_path}. "
-            "Generate it with local_varient_gen.py first."
+            "Generate it with local_pointmaze_gen.py first."
         )
     episodes = []
     with h5py.File(h5_path, "r") as f:
@@ -624,7 +624,7 @@ def _local_dataset_step_signature(meta: dict) -> str:
     if not data_path.exists():
         raise FileNotFoundError(
             f"Local PointMaze dataset not found at {data_path}. "
-            "Generate it with local_varient_gen.py first."
+            "Generate it with local_pointmaze_gen.py first."
         )
     try:
         dataset = MinariDataset(data_path)
@@ -636,7 +636,7 @@ def _local_dataset_step_signature(meta: dict) -> str:
         if not h5_path.exists():
             raise FileNotFoundError(
                 f"Local PointMaze data file not found at {h5_path}. "
-                "Generate it with local_varient_gen.py first."
+                "Generate it with local_pointmaze_gen.py first."
             )
         with h5py.File(h5_path, "r") as f:
             if "total_steps" in f.attrs:

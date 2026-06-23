@@ -177,7 +177,9 @@ def _collect_shard(
     post_success_hold_steps: int,
     post_success_hold_noise_std: float,
 ) -> tuple[str, str]:
-    dataset_id = f"local/pointmaze-{variant}-shard-{uuid.uuid4().hex[:12]}-v0"
+    # Keep shard IDs namespace-free so Minari does not recursively scan the
+    # shared dataset root while parallel workers create/delete temporary dirs.
+    dataset_id = f"pointmaze-{variant}-shard-{uuid.uuid4().hex[:12]}-v0"
     collect_env_paras = dict(env_paras)
     if post_success_hold_steps > 0:
         collect_env_paras["reset_target"] = False
@@ -256,7 +258,7 @@ def _collect_shard(
         num_episodes_average_score=1,
         algorithm_name="QIteration",
         code_permalink="https://github.com/Farama-Foundation/minari-dataset-generation-scripts",
-        author="local_varient_gen.py",
+        author="local_pointmaze_gen.py",
         author_email="",
         description=(
             _official_description(eval_env_id)
@@ -271,7 +273,7 @@ def _collect_shard(
     eval_env.close()
     collector.close()
     print(
-        f"[local-gen] {variant} worker={worker_index}: shard={dataset_id}, "
+        f"[local-pointmaze-gen] {variant} worker={worker_index}: shard={dataset_id}, "
         f"target_episodes={target_episodes}, successful_episodes={successful_episodes}, "
         f"collected_steps={steps}, seed={seed}, "
         f"post_success_hold_steps={post_success_hold_steps}, "
@@ -337,7 +339,7 @@ def generate_variant(
     existing_episodes = _existing_episode_count(dataset_root)
     if existing_episodes >= target_episodes:
         print(
-            f"[local-gen] {variant}: existing_episodes={existing_episodes} "
+            f"[local-pointmaze-gen] {variant}: existing_episodes={existing_episodes} "
             f">= target_episodes={target_episodes}; skipping"
         )
         return
@@ -349,7 +351,7 @@ def generate_variant(
         shard_targets[idx] += 1
 
     print(
-        f"[local-gen] {variant}: existing_episodes={existing_episodes}, "
+        f"[local-pointmaze-gen] {variant}: existing_episodes={existing_episodes}, "
         f"target_episodes={target_episodes}, deficit={deficit}, workers={worker_count}, "
         f"post_success_hold_steps={post_success_hold_steps}, "
         f"post_success_hold_noise_std={post_success_hold_noise_std}"
@@ -377,14 +379,17 @@ def generate_variant(
     try:
         for dataset_id, shard_path in shard_results:
             shard_root = Path(shard_path)
-            print(f"[local-gen] {variant}: merging shard {dataset_id}")
+            print(f"[local-pointmaze-gen] {variant}: merging shard {dataset_id}")
             _merge_shard_into_final(shard_root, dataset_root)
     finally:
         for dataset_id, _ in shard_results:
             _cleanup_dataset_id(dataset_id)
 
     final_episodes = _existing_episode_count(dataset_root)
-    print(f"[local-gen] {variant}: final_episodes={final_episodes}, dataset_path={dataset_root}")
+    print(
+        f"[local-pointmaze-gen] {variant}: final_episodes={final_episodes}, "
+        f"dataset_path={dataset_root}"
+    )
 
 
 def main():

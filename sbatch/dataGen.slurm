@@ -18,7 +18,7 @@ echo "Job ${SLURM_JOB_ID} started at $(date --iso-8601=seconds)"
 echo "Node: $(hostname)"
 
 /home/u6mx/yl1118.u6mx/miniforge3/bin/conda run --no-capture-output -n d4rl_datagen \
-    python -u local_varient_gen.py \
+    python -u local_pointmaze_gen.py \
     --variants local-layout-10 local-layout-11 local-layout-12 local-layout-13 test-layout-01 test-layout-02 test-layout-03 \
     --num-workers 10 \
     --target-episodes 5000 \
