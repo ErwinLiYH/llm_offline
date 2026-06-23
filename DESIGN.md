@@ -209,6 +209,9 @@ Action:
 - text action 是 8 个逗号分隔的整数百分位，actuator 顺序为 back-right hip/ankle、front-left hip/ankle、front-right hip/ankle、back-left hip/ankle
 - history 仅保留过去 torso xy、对应格子和实际执行动作，避免把 27 维本体状态重复塞入 prompt
 - `data/antmaze/dataset.py` 复用参数化后的 goal-maze episode cache/tokenization 管线，因此支持 episode split、partition cache、history、全部 action token mode 和多进程 tokenization
+- `antmaze_data_config` 是 AntMaze 专属训练数据预处理配置，默认 `filter_success: false`、`truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` 抽样和 train/val split 之前；multi-variant episode balancing 与 partition shard planning 都基于预处理后的 episode 数和长度。
+- `filter_success: true` 会先按原始 `infos.success.any()` 丢弃失败 episode，减少后续截断和 tokenization 工作量；若同时启用截断，截断后还会再次检查 success，避免“先翻车、后成功”的原始 episode 在 success 被截掉后继续进入训练。
+- `truncate: true` 会在第一次 success 或第一次保守翻车事件后截断 episode；`truncate_holding: N` 表示事件 transition 后额外保留 `N` 个 action 样本。`infos.success` 长度为 `T+1` 时用 `success[1:]` 对齐 action transition，长度为 `T` 时直接使用。翻车检测优先看 action 后状态的 `observation[...,0]` torso z 和归一化 quaternion `observation[...,1:5]`，规则固定为 `z < 0.35 and body_up_z < 0.0`；没有可用 quaternion 时退化为 `z < 0.30`，不使用 `z > 1.0` 作为翻车条件。
 
 ### 数据处理
 

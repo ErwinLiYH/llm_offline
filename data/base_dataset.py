@@ -78,6 +78,7 @@ class DatasetBuildRequest:
     balance_variant_episode_count: bool = False
     balanced_train_episode_count: int | None = None
     sampling_seed: int = 0
+    family_data_config: dict[str, Any] | None = None
 
     # Optional prompt history.
     history_num: int = 0
@@ -124,6 +125,7 @@ class BaseOfflineDataset(ABC, Dataset):
         cls,
         variant: str,
         episode_keep_num: int | None,
+        family_data_config: dict[str, Any] | None = None,
     ) -> VariantEpisodeStats:
         """Return episode statistics used by multi-variant balancing.
 

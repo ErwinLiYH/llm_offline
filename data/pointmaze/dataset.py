@@ -4,6 +4,7 @@ import os
 import pickle
 import hashlib
 import importlib
+import inspect
 import math
 import signal
 import time
@@ -561,7 +562,7 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
     return results
 
 
-def _load_variant_episodes(variant: str):
+def _load_variant_episodes(variant: str, family_data_config: dict | None = None):
     meta = POINTMAZE_VARIANTS[variant]
     if get_pointmaze_variant_type(meta) == "local":
         dataset_root = resolve_local_dataset_path(meta["dataset_path"])
@@ -671,6 +672,24 @@ def _compute_sampled_episode_target(total_episodes: int, episode_keep_num: int |
     return min(total_episodes, episode_keep_num)
 
 
+def _load_episodes_with_family_config(episode_loader, variant: str, family_data_config: dict | None):
+    if family_data_config is None:
+        return episode_loader(variant)
+    try:
+        signature = inspect.signature(episode_loader)
+    except (TypeError, ValueError):
+        return episode_loader(variant, family_data_config=family_data_config)
+    parameters = signature.parameters.values()
+    accepts_family_config = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        or parameter.name == "family_data_config"
+        for parameter in parameters
+    )
+    if accepts_family_config:
+        return episode_loader(variant, family_data_config=family_data_config)
+    return episode_loader(variant)
+
+
 def _variant_sampling_seed(variant: str, sampling_seed: int) -> int:
     digest = hashlib.sha256(f"{variant}:{sampling_seed}".encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big", signed=False)
@@ -681,8 +700,13 @@ def _collect_variant_episode_stats(
     episode_keep_num: int | None,
     *,
     episode_loader=_load_variant_episodes,
+    family_data_config: dict | None = None,
 ) -> VariantEpisodeStats:
-    _, episodes, step_counts = episode_loader(variant)
+    _, episodes, step_counts = _load_episodes_with_family_config(
+        episode_loader,
+        variant,
+        family_data_config,
+    )
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
     sampled_episode_target = _compute_sampled_episode_target(total_episodes, episode_keep_num)
@@ -703,6 +727,7 @@ def select_variant_episode_indices(
     balanced_train_target: int | None = None,
     *,
     episode_loader=_load_variant_episodes,
+    family_data_config: dict | None = None,
 ) -> dict:
     if not (0.0 < train_data_ratio < 1.0):
         raise ValueError(
@@ -712,7 +737,11 @@ def select_variant_episode_indices(
     if not isinstance(sampling_seed, int):
         raise ValueError(f"sampling_seed must be an int, got {type(sampling_seed).__name__}")
 
-    _, episodes, step_counts = episode_loader(variant)
+    _, episodes, step_counts = _load_episodes_with_family_config(
+        episode_loader,
+        variant,
+        family_data_config,
+    )
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
     initial_sampled_target = _compute_sampled_episode_target(total_episodes, episode_keep_num)
@@ -957,6 +986,7 @@ class PointMazeBuildConfig:
     balance_variant_episode_count: bool
     balanced_train_episode_count: int | None
     sampling_seed: int
+    family_data_config: dict | None
     history_num: int
     history_stride: int
     action_token_mode: str
@@ -1001,11 +1031,17 @@ class PointMazeDataset(BaseOfflineDataset):
         self._samples = samples
 
     @classmethod
-    def collect_variant_episode_stats(cls, variant: str, episode_keep_num: int | None) -> VariantEpisodeStats:
+    def collect_variant_episode_stats(
+        cls,
+        variant: str,
+        episode_keep_num: int | None,
+        family_data_config: dict | None = None,
+    ) -> VariantEpisodeStats:
         return _collect_variant_episode_stats(
             variant,
             episode_keep_num,
             episode_loader=cls._load_variant_episodes,
+            family_data_config=family_data_config,
         )
 
     @classmethod
@@ -1048,6 +1084,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 sampling_seed=config.sampling_seed,
                 balanced_train_target=config.balanced_train_episode_count,
                 episode_loader=cls._load_variant_episodes,
+                family_data_config=config.family_data_config,
             )
             episodes = selection["episodes"]
             step_counts = [len(episode.actions) for episode in episodes]
@@ -1142,7 +1179,7 @@ class PointMazeDataset(BaseOfflineDataset):
         return cls.ACTION_DIM
 
     @classmethod
-    def _load_variant_episodes(cls, variant: str):
+    def _load_variant_episodes(cls, variant: str, family_data_config: dict | None = None):
         return _load_variant_episodes(variant)
 
     @classmethod
@@ -1203,6 +1240,7 @@ class PointMazeDataset(BaseOfflineDataset):
                     sampling_seed=base_config.sampling_seed,
                     balanced_train_target=base_config.balanced_train_episode_count,
                     episode_loader=cls._load_variant_episodes,
+                    family_data_config=base_config.family_data_config,
                 )
                 selection = _apply_selection_partition(selection, base_config)
             selection_for_summary = dict(selection)
@@ -1361,6 +1399,7 @@ class PointMazeDataset(BaseOfflineDataset):
             balance_variant_episode_count=request.balance_variant_episode_count,
             balanced_train_episode_count=request.balanced_train_episode_count,
             sampling_seed=request.sampling_seed,
+            family_data_config=request.family_data_config,
             history_num=request.history_num,
             history_stride=request.history_stride,
             action_token_mode=action_token_mode,
@@ -1461,6 +1500,8 @@ class PointMazeDataset(BaseOfflineDataset):
             "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
         }
+        if config.family_data_config is not None:
+            payload["family_data_config"] = config.family_data_config
         if config.episode_segments is not None:
             payload["split"] = config.split
             payload["dataset_partition_count"] = config.dataset_partition_count
@@ -1738,6 +1779,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 "balance_variant_episode_count",
                 "balanced_train_episode_count",
                 "sampling_seed",
+                "family_data_config",
                 "history_num",
                 "history_stride",
                 "action_token_mode",

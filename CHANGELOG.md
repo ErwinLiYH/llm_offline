@@ -1447,3 +1447,11 @@ type: project
 ## docs（2026-06-23）
 
 - 新增 `docs/official_maze_dataset_semantics.md`，记录官方 PointMaze 与 AntMaze 数据语义差异、AntMaze `play` / `diverse` 的 reset/goal 采样区别，以及当前本地 AntMaze 生成与官方数据的对齐和差异
+
+## AntMaze training data preprocessing（2026-06-23）
+
+- `config.antmaze.yaml` 新增 `antmaze_data_config`，默认 `filter_success: false`、`truncate: false`、`truncate_holding: 0`，仅在 `env_family: antmaze` 的训练数据构建中生效
+- AntMaze raw episodes 加载后、`episode_keep_num` 抽样和 train/val split 前，可按原始 `infos.success` 过滤失败 episode，并可在第一次 success 或保守翻车事件后截断轨迹
+- 翻车检测使用 action 后状态的 torso z 与 quaternion body-up 方向，避免用 `z > 1.0` 误删正常跳跃；截断会同步切分 observations/actions/rewards/terminations/truncations/infos，并在缩短且存在 truncations 时标记最后一步 truncation
+- AntMaze tokenized cache signature 和 shard cache signature 纳入 normalized `antmaze_data_config`，AntMaze cache format bump 到 v4；PointMaze 默认 cache signature 不包含该配置
+- AntMaze local HDF5 fallback loader 现在读取 `infos`、`rewards`、`terminations` 和 `truncations`，供预处理和后续数据统计使用

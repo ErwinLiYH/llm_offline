@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import h5py
 import gymnasium as gym
 import gymnasium_robotics  # noqa: F401  registers AntMaze envs
 import numpy as np
@@ -14,9 +15,14 @@ from tokenizers.pre_tokenizers import Whitespace
 from transformers import PreTrainedTokenizerFast
 
 from data.antmaze import formatting
-from data.antmaze.dataset import AntMazeDataset
+from data.antmaze.dataset import (
+    AntMazeDataset,
+    _apply_antmaze_data_config,
+    _load_local_antmaze_hdf5_episodes,
+)
 from data.antmaze.variants import ANTMAZE_VARIANTS
 from data.base_dataset import DatasetBuildRequest
+from data.pointmaze.dataset import PointMazeDataset
 from data.registry import get_action_dim, resolve_variant_env_spec
 from utils.maze_sensing import _neighbor_status
 from utils.prompt_loader import load_template_map, render_template
@@ -40,6 +46,39 @@ def _fake_episodes():
         actions = np.full((2, 8), 0.1 * (episode_idx + 1), dtype=np.float32)
         episodes.append(SimpleNamespace(observations=observations, actions=actions))
     return episodes
+
+
+def _fake_antmaze_preprocess_episode(
+    *,
+    action_len: int = 6,
+    success_state_indices: list[int] | None = None,
+    fall_state_indices: list[int] | None = None,
+):
+    success_state_indices = success_state_indices or []
+    fall_state_indices = fall_state_indices or []
+    observation = np.zeros((action_len + 1, 27), dtype=np.float32)
+    observation[:, 0] = 0.55
+    observation[:, 1] = 1.0
+    for state_idx in fall_state_indices:
+        observation[state_idx, 0] = 0.20
+        observation[state_idx, 1:5] = np.asarray([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+
+    success = np.zeros(action_len + 1, dtype=bool)
+    for state_idx in success_state_indices:
+        success[state_idx] = True
+
+    return SimpleNamespace(
+        observations={
+            "observation": observation,
+            "achieved_goal": np.zeros((action_len + 1, 2), dtype=np.float32),
+            "desired_goal": np.ones((action_len + 1, 2), dtype=np.float32),
+        },
+        actions=np.zeros((action_len, 8), dtype=np.float32),
+        rewards=np.zeros(action_len, dtype=np.float32),
+        terminations=np.zeros(action_len, dtype=bool),
+        truncations=np.zeros(action_len, dtype=bool),
+        infos={"success": success},
+    )
 
 
 def _make_test_tokenizer(path: str):
@@ -73,6 +112,152 @@ def _make_test_tokenizer(path: str):
 
 
 class AntMazeSupportTest(unittest.TestCase):
+    def test_data_config_filter_success_removes_raw_failed_episodes_before_truncate(self):
+        episodes = [
+            _fake_antmaze_preprocess_episode(success_state_indices=[]),
+            _fake_antmaze_preprocess_episode(success_state_indices=[4]),
+        ]
+
+        processed = _apply_antmaze_data_config(
+            episodes,
+            {"filter_success": True, "truncate": False, "truncate_holding": 0},
+            variant="umaze",
+        )
+
+        self.assertEqual(len(processed), 1)
+        self.assertTrue(bool(processed[0].infos["success"].any()))
+
+    def test_data_config_truncates_after_first_success_with_holding(self):
+        episode = _fake_antmaze_preprocess_episode(
+            action_len=6,
+            success_state_indices=[3],
+        )
+
+        processed = _apply_antmaze_data_config(
+            [episode],
+            {"filter_success": False, "truncate": True, "truncate_holding": 2},
+            variant="umaze",
+        )
+        truncated = processed[0]
+
+        self.assertEqual(len(truncated.actions), 5)
+        self.assertEqual(truncated.observations["observation"].shape[0], 6)
+        self.assertEqual(truncated.infos["success"].shape[0], 6)
+        self.assertTrue(bool(truncated.truncations[-1]))
+
+    def test_data_config_truncates_on_conservative_fall_detection(self):
+        episode = _fake_antmaze_preprocess_episode(
+            action_len=6,
+            fall_state_indices=[2],
+        )
+
+        processed = _apply_antmaze_data_config(
+            [episode],
+            {"filter_success": False, "truncate": True, "truncate_holding": 0},
+            variant="umaze",
+        )
+
+        self.assertEqual(len(processed[0].actions), 2)
+        self.assertTrue(bool(processed[0].truncations[-1]))
+
+    def test_data_config_filter_drops_episode_when_fall_truncates_before_success(self):
+        episode = _fake_antmaze_preprocess_episode(
+            action_len=6,
+            success_state_indices=[5],
+            fall_state_indices=[2],
+        )
+
+        with self.assertRaisesRegex(ValueError, "removed all episodes"):
+            _apply_antmaze_data_config(
+                [episode],
+                {"filter_success": True, "truncate": True, "truncate_holding": 0},
+                variant="umaze",
+            )
+
+    def test_antmaze_data_config_changes_cache_signature(self):
+        with tempfile.TemporaryDirectory() as tokenizer_dir:
+            tokenizer = _make_test_tokenizer(tokenizer_dir)
+            base_request = DatasetBuildRequest(
+                variant="umaze",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=8,
+            )
+            filtered_request = DatasetBuildRequest(
+                variant="umaze",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=8,
+                family_data_config={
+                    "filter_success": True,
+                    "truncate": True,
+                    "truncate_holding": 1,
+                },
+            )
+
+            base_config = AntMazeDataset._normalize_request(base_request)
+            filtered_config = AntMazeDataset._normalize_request(filtered_request)
+            base_payload = AntMazeDataset._cache_signature_payload(base_config)
+            filtered_payload = AntMazeDataset._cache_signature_payload(filtered_config)
+
+        self.assertEqual(base_payload["family_data_config"]["filter_success"], False)
+        self.assertEqual(filtered_payload["family_data_config"]["filter_success"], True)
+        self.assertEqual(AntMazeDataset.CACHE_FORMAT, "antmaze_hash_signature_v4")
+        self.assertNotEqual(
+            AntMazeDataset._hash_json_payload(base_payload),
+            AntMazeDataset._hash_json_payload(filtered_payload),
+        )
+
+    def test_pointmaze_request_does_not_include_antmaze_data_config_by_default(self):
+        with tempfile.TemporaryDirectory() as tokenizer_dir:
+            tokenizer = _make_test_tokenizer(tokenizer_dir)
+            request = DatasetBuildRequest(
+                variant="open",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["0"],
+                action_token_mode="text",
+                action_dim=2,
+            )
+            config = PointMazeDataset._normalize_request(request)
+            payload = PointMazeDataset._cache_signature_payload(config)
+
+        self.assertNotIn("family_data_config", payload)
+
+    def test_local_antmaze_hdf5_fallback_reads_infos_and_terminal_fields(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            data_path = Path(root_dir)
+            h5_path = data_path / "main_data.hdf5"
+            with h5py.File(h5_path, "w") as f:
+                group = f.create_group("episode_0")
+                obs_group = group.create_group("observations")
+                obs_group.create_dataset("observation", data=np.zeros((3, 27), dtype=np.float32))
+                obs_group.create_dataset("achieved_goal", data=np.zeros((3, 2), dtype=np.float32))
+                obs_group.create_dataset("desired_goal", data=np.ones((3, 2), dtype=np.float32))
+                group.create_dataset("actions", data=np.zeros((2, 8), dtype=np.float32))
+                group.create_dataset("rewards", data=np.asarray([0.0, 1.0], dtype=np.float32))
+                group.create_dataset("terminations", data=np.asarray([False, True]))
+                group.create_dataset("truncations", data=np.asarray([False, False]))
+                infos_group = group.create_group("infos")
+                infos_group.create_dataset("success", data=np.asarray([False, False, True]))
+
+            episodes = _load_local_antmaze_hdf5_episodes(data_path)
+
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(episodes[0].rewards.shape, (2,))
+        self.assertTrue(bool(episodes[0].terminations[-1]))
+        self.assertTrue(bool(episodes[0].infos["success"][-1]))
+
     def test_corner_risk_distinguishes_new_corners_from_continuous_walls(self):
         row = 3
         col = 3
@@ -184,17 +369,19 @@ class AntMazeSupportTest(unittest.TestCase):
                 )
 
     def test_registry_contains_official_d4rl_variants(self):
-        self.assertEqual(
-            get_available_variants("antmaze"),
-            [
-                "umaze",
-                "umaze-diverse",
-                "medium-play",
-                "medium-diverse",
-                "large-play",
-                "large-diverse",
-            ],
-        )
+        official_variants = [
+            "umaze",
+            "umaze-diverse",
+            "medium-play",
+            "medium-diverse",
+            "large-play",
+            "large-diverse",
+        ]
+        available_variants = get_available_variants("antmaze")
+
+        self.assertEqual(available_variants[: len(official_variants)], official_variants)
+        self.assertTrue(any(variant.startswith("local-layout-") for variant in available_variants))
+        self.assertTrue(any(variant.startswith("test-layout-") for variant in available_variants))
         self.assertEqual(get_action_dim("antmaze", ["umaze", "large-diverse"]), 8)
 
     def test_registered_eval_env_matches_d4rl_observation_contract(self):
@@ -211,6 +398,8 @@ class AntMazeSupportTest(unittest.TestCase):
 
     def test_training_map_cell_conversion_matches_registered_env_geometry(self):
         for variant, meta in ANTMAZE_VARIANTS.items():
+            if "env_id" not in meta:
+                continue
             with self.subTest(variant=variant):
                 env = gym.make(meta["env_id"])
                 try:
@@ -348,7 +537,9 @@ class AntMazeSupportTest(unittest.TestCase):
                     **history_payload,
                 )
                 self.assertIn("Ant quadruped", rendered)
-                self.assertIn("Torso xy", rendered)
+                self.assertIn("Position:", rendered)
+                self.assertIn("Goal:", rendered)
+                self.assertIn("Torso:", rendered)
 
                 expects_location = (
                     name == "0"

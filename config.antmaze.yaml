@@ -39,6 +39,10 @@ prompt_templete_index: ["parallel_full_sensing"]  # prompt file names without .t
 dataset_workers: 3            # processes for parallel episode tokenization
 dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable
 dataset_load_partitions: 1    # >1 splits train tokenized data into episode shards; requires dataset_cache_dir
+antmaze_data_config:
+  filter_success: false       # true = drop raw episodes whose infos.success never becomes true before sampling/splitting
+  truncate: false             # true = cut each episode after first success or conservative fall event before tokenization
+  truncate_holding: 0         # extra action samples kept after the event transition; must be an integer >= 0
 dataloader_config:
   num_workers: 0              # prepare train/val batches in the training process
   pin_memory: false           # match the pre-dataloader_config behavior
