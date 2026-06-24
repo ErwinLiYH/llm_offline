@@ -1469,3 +1469,13 @@ type: project
 
 - `local_varient_gen.py` 重命名为 `local_pointmaze_gen.py`，与 `local_antmaze_gen.py` 的命名格式统一。
 - PointMaze / AntMaze 临时 shard dataset id 去掉 `local/` namespace，避免 Minari 在多进程生成时全局扫描 `~/.minari/datasets` 并撞上被删除的 `tmp*` 临时目录。
+
+## Dataset memory estimator（2026-06-24）
+
+- `estimate_dataset.py` 在原有 `.pkl` cache 磁盘体积估算之外，新增 tokenized `dataset._samples` 的 Python 常驻内存估算；实现为递归 `sys.getsizeof(...)`，对 `list` / `dict` / `tuple` / `set` / `np.ndarray` / `torch.Tensor` / 普通对象属性做深度统计，并对共享引用只计一次
+- `SampleFootprint` 新增 `sampled_memory_bytes` 和 `memory_bytes_per_step`，估算时对采样 tokenized samples 直接测量内存 footprint，再按 selected step ratio 外推 train / val / total 内存大小
+- 文本报告新增 `mem_B/step`、`mem_train_GB` 和 `Python in-memory tokenized samples estimate`，同时保留原有 `pkl_B/step` 与 `Tokenized .pkl size estimate`，避免把 pickle 文件大小误读为训练常驻内存
+- JSON 输出新增顶层 `memory` 块，包含 `train_bytes`、`val_bytes`、`total_bytes`、`*_gb`、估算方法说明和 scope 说明；`sampling` 与每个 variant 也新增对应 memory 字段
+- `dataset_load_partitions > 1` 时额外输出 `peak_train_partition_bytes` / `peak_train_partition_plus_val_bytes`，用于估算分区训练时单轮常驻 tokenized train shard 以及加上完整 val split 后的内存压力，而不是把所有 train shards 当作同时常驻
+- 明确内存估算范围只覆盖 tokenized `dataset._samples` Python 对象，不包含 raw episodes、tokenizer、DataLoader worker 副本、prefetch batches、模型、optimizer、梯度和 activations
+- `sbatch/est_data.isb.slurm` 默认 walltime 调整为 `00:30:00`，适配 estimator 的实际运行时长；需要更长时间时仍可用 `sbatch --time=...` 覆盖

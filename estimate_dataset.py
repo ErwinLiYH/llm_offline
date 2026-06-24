@@ -12,6 +12,7 @@ import json
 import math
 import pickle
 import sys
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -82,6 +83,7 @@ class SampleFootprint:
     sampled_steps: int
     sampled_samples: int
     sampled_pickle_bytes: int
+    sampled_memory_bytes: int
     sampled_tokens: int
 
     @property
@@ -89,6 +91,12 @@ class SampleFootprint:
         if self.sampled_steps < 1:
             return 0.0
         return self.sampled_pickle_bytes / self.sampled_steps
+
+    @property
+    def memory_bytes_per_step(self) -> float:
+        if self.sampled_steps < 1:
+            return 0.0
+        return self.sampled_memory_bytes / self.sampled_steps
 
     @property
     def tokens_per_step(self) -> float:
@@ -383,6 +391,30 @@ def estimate_bytes_for_steps(sampled_bytes: int, sampled_steps: int, target_step
     return float(sampled_bytes) * float(target_steps) / float(sampled_steps)
 
 
+def deep_getsizeof(obj: Any, seen: set[int] | None = None) -> int:
+    """Return recursive CPython object size, counting shared references once."""
+    if seen is None:
+        seen = set()
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    seen.add(obj_id)
+
+    size = sys.getsizeof(obj)
+    if isinstance(obj, dict):
+        size += sum(deep_getsizeof(k, seen) + deep_getsizeof(v, seen) for k, v in obj.items())
+    elif isinstance(obj, (list, tuple, set, frozenset, deque)):
+        size += sum(deep_getsizeof(item, seen) for item in obj)
+    elif isinstance(obj, np.ndarray):
+        if not obj.flags.owndata:
+            size += int(obj.nbytes)
+    elif isinstance(obj, torch.Tensor):
+        size += int(obj.element_size() * obj.nelement())
+    elif hasattr(obj, "__dict__"):
+        size += deep_getsizeof(vars(obj), seen)
+    return int(size)
+
+
 def _ceil_div(numerator: int, denominator: int) -> int:
     return int(math.ceil(int(numerator) / int(denominator)))
 
@@ -556,6 +588,7 @@ def tokenize_sample_footprint(
         "samples": samples,
     }
     sampled_pickle_bytes = len(pickle.dumps(cache_like))
+    sampled_memory_bytes = deep_getsizeof(samples)
     sampled_tokens = sum(len(sample["input_ids"]) for sample in samples)
     sampled_steps = sum(int(segment["step_count"]) for segment in segments)
     return SampleFootprint(
@@ -564,6 +597,7 @@ def tokenize_sample_footprint(
         sampled_steps=int(sampled_steps),
         sampled_samples=len(samples),
         sampled_pickle_bytes=int(sampled_pickle_bytes),
+        sampled_memory_bytes=int(sampled_memory_bytes),
         sampled_tokens=int(sampled_tokens),
     )
 
@@ -589,6 +623,39 @@ def _train_effective_steps_for_size(data: VariantData, config: dict, partition_c
     return effective_steps
 
 
+def _partition_train_memory_bytes(
+    variant_data: list[VariantData],
+    footprints_by_variant: dict[str, SampleFootprint],
+    config: dict,
+    partition_count: int,
+) -> list[float]:
+    if partition_count <= 1:
+        return []
+
+    prompt_count = len(config["prompt_templete_index"])
+    max_data_num = config.get("max_data_num")
+    partition_bytes = [0.0 for _ in range(partition_count)]
+    for data in variant_data:
+        footprint = footprints_by_variant[data.variant]
+        shards = split_episode_segments_for_partitions(
+            data.train_indices,
+            data.step_counts,
+            partition_count=partition_count,
+            prompt_count=prompt_count,
+            variant=data.variant,
+            sampling_seed=int(config.get("sampling_seed", 0)),
+        )
+        for partition_index, segments in enumerate(shards):
+            shard_steps = sum(int(segment["step_count"]) for segment in segments)
+            effective_steps = _effective_steps_for_size(shard_steps, prompt_count, max_data_num)
+            partition_bytes[partition_index] += estimate_bytes_for_steps(
+                footprint.sampled_memory_bytes,
+                footprint.sampled_steps,
+                effective_steps,
+            )
+    return partition_bytes
+
+
 def build_estimate(
     config: dict,
     variant_data: list[VariantData],
@@ -608,6 +675,9 @@ def build_estimate(
     total_sampled_samples = 0
     total_sampled_tokens = 0
     total_sampled_bytes = 0
+    total_sampled_memory_bytes = 0
+    total_train_memory_bytes = 0.0
+    total_val_memory_bytes = 0.0
 
     for data in variant_data:
         footprint = footprints_by_variant[data.variant]
@@ -623,12 +693,25 @@ def build_estimate(
             footprint.sampled_steps,
             val_effective_steps,
         )
+        train_memory_bytes = estimate_bytes_for_steps(
+            footprint.sampled_memory_bytes,
+            footprint.sampled_steps,
+            train_effective_steps,
+        )
+        val_memory_bytes = estimate_bytes_for_steps(
+            footprint.sampled_memory_bytes,
+            footprint.sampled_steps,
+            val_effective_steps,
+        )
         total_train_bytes += train_bytes
         total_val_bytes += val_bytes
+        total_train_memory_bytes += train_memory_bytes
+        total_val_memory_bytes += val_memory_bytes
         total_sampled_steps += footprint.sampled_steps
         total_sampled_samples += footprint.sampled_samples
         total_sampled_tokens += footprint.sampled_tokens
         total_sampled_bytes += footprint.sampled_pickle_bytes
+        total_sampled_memory_bytes += footprint.sampled_memory_bytes
         variants.append(
             {
                 "variant": data.variant,
@@ -647,13 +730,19 @@ def build_estimate(
                 "sampled_steps": footprint.sampled_steps,
                 "sampled_samples": footprint.sampled_samples,
                 "sampled_pickle_bytes": footprint.sampled_pickle_bytes,
+                "sampled_memory_bytes": footprint.sampled_memory_bytes,
                 "sampled_tokens": footprint.sampled_tokens,
                 "bytes_per_step": footprint.bytes_per_step,
+                "memory_bytes_per_step": footprint.memory_bytes_per_step,
                 "tokens_per_step": footprint.tokens_per_step,
                 "estimated_train_bytes": train_bytes,
                 "estimated_val_bytes": val_bytes,
                 "estimated_train_gb": train_bytes / BYTES_PER_GB,
                 "estimated_val_gb": val_bytes / BYTES_PER_GB,
+                "estimated_train_memory_bytes": train_memory_bytes,
+                "estimated_val_memory_bytes": val_memory_bytes,
+                "estimated_train_memory_gb": train_memory_bytes / BYTES_PER_GB,
+                "estimated_val_memory_gb": val_memory_bytes / BYTES_PER_GB,
             }
         )
 
@@ -662,6 +751,15 @@ def build_estimate(
         config,
         partition_count=partition_count,
         world_size=world_size,
+    )
+    partition_memory_bytes = _partition_train_memory_bytes(
+        variant_data,
+        footprints_by_variant,
+        config,
+        partition_count,
+    )
+    peak_train_partition_bytes = (
+        max(partition_memory_bytes) if partition_memory_bytes else total_train_memory_bytes
     )
     return {
         "config": {
@@ -682,6 +780,7 @@ def build_estimate(
             "sampled_samples": int(total_sampled_samples),
             "sampled_tokens": int(total_sampled_tokens),
             "sampled_pickle_bytes": int(total_sampled_bytes),
+            "sampled_memory_bytes": int(total_sampled_memory_bytes),
             "tokens_per_step": (
                 float(total_sampled_tokens) / float(total_sampled_steps)
                 if total_sampled_steps
@@ -689,6 +788,11 @@ def build_estimate(
             ),
             "bytes_per_step": (
                 float(total_sampled_bytes) / float(total_sampled_steps)
+                if total_sampled_steps
+                else 0.0
+            ),
+            "memory_bytes_per_step": (
+                float(total_sampled_memory_bytes) / float(total_sampled_steps)
                 if total_sampled_steps
                 else 0.0
             ),
@@ -702,6 +806,30 @@ def build_estimate(
             "val_gb": total_val_bytes / BYTES_PER_GB,
             "total_gb": (total_train_bytes + total_val_bytes) / BYTES_PER_GB,
         },
+        "memory": {
+            "method": "recursive sys.getsizeof(dataset._samples); shared objects counted once",
+            "scope": (
+                "loaded tokenized sample Python objects only; excludes raw episodes, tokenizer, "
+                "DataLoader worker copies/prefetch batches, model, optimizer, gradients, and activations"
+            ),
+            "train_bytes": total_train_memory_bytes,
+            "val_bytes": total_val_memory_bytes,
+            "total_bytes": total_train_memory_bytes + total_val_memory_bytes,
+            "train_gb": total_train_memory_bytes / BYTES_PER_GB,
+            "val_gb": total_val_memory_bytes / BYTES_PER_GB,
+            "total_gb": (total_train_memory_bytes + total_val_memory_bytes) / BYTES_PER_GB,
+            "peak_train_partition_bytes": peak_train_partition_bytes,
+            "peak_train_partition_gb": peak_train_partition_bytes / BYTES_PER_GB,
+            "peak_train_partition_plus_val_bytes": (
+                peak_train_partition_bytes + total_val_memory_bytes
+            ),
+            "peak_train_partition_plus_val_gb": (
+                peak_train_partition_bytes + total_val_memory_bytes
+            )
+            / BYTES_PER_GB,
+            "partition_train_bytes": partition_memory_bytes,
+            "partition_train_gb": [value / BYTES_PER_GB for value in partition_memory_bytes],
+        },
     }
 
 
@@ -712,9 +840,10 @@ def _format_gb(bytes_value: float) -> str:
 def print_text_report(estimate: dict) -> None:
     cfg = estimate["config"]
     size = estimate["size"]
+    memory = estimate["memory"]
     epoch = estimate["epoch"]
     sampling = estimate["sampling"]
-    print("=" * 88)
+    print("=" * 112)
     print("[estimate] DATASET SIZE ESTIMATE")
     print(
         f"[estimate] env_family={cfg['env_family']}, model={cfg['model_name']}, "
@@ -730,29 +859,31 @@ def print_text_report(estimate: dict) -> None:
             "[estimate] max_data_num is set; sample counts and size targets are capped "
             "the same way as dataset construction."
         )
-    print("-" * 88)
+    print("-" * 112)
     header = (
         "variant",
         "train_steps",
         "val_steps",
         "sample_steps",
         "tokens/step",
-        "bytes/step",
-        "train_GB",
-        "val_GB",
+        "pkl_B/step",
+        "mem_B/step",
+        "pkl_train_GB",
+        "mem_train_GB",
     )
     print(
         f"{header[0]:<22} {header[1]:>12} {header[2]:>10} {header[3]:>12} "
-        f"{header[4]:>12} {header[5]:>12} {header[6]:>10} {header[7]:>10}"
+        f"{header[4]:>12} {header[5]:>12} {header[6]:>12} {header[7]:>12} "
+        f"{header[8]:>12}"
     )
     for row in estimate["variants"]:
         print(
             f"{row['variant']:<22} {row['train_steps']:>12} {row['val_steps']:>10} "
             f"{row['sampled_steps']:>12} {row['tokens_per_step']:>12.2f} "
-            f"{row['bytes_per_step']:>12.2f} {row['estimated_train_gb']:>10.4f} "
-            f"{row['estimated_val_gb']:>10.4f}"
+            f"{row['bytes_per_step']:>12.2f} {row['memory_bytes_per_step']:>12.2f} "
+            f"{row['estimated_train_gb']:>12.4f} {row['estimated_train_memory_gb']:>12.4f}"
         )
-    print("-" * 88)
+    print("-" * 112)
     print(
         "[estimate] One epoch: "
         f"selected_train_samples={epoch['selected_train_samples']}, "
@@ -764,7 +895,8 @@ def print_text_report(estimate: dict) -> None:
         "[estimate] Sampled for tokenization: "
         f"steps={sampling['sampled_steps']}, samples={sampling['sampled_samples']}, "
         f"tokens/step={sampling['tokens_per_step']:.2f}, "
-        f"bytes/step={sampling['bytes_per_step']:.2f}"
+        f"pkl_bytes/step={sampling['bytes_per_step']:.2f}, "
+        f"memory_bytes/step={sampling['memory_bytes_per_step']:.2f}"
     )
     print(
         "[estimate] Tokenized .pkl size estimate: "
@@ -772,7 +904,23 @@ def print_text_report(estimate: dict) -> None:
         f"val={_format_gb(size['val_bytes'])}, "
         f"total={_format_gb(size['total_bytes'])}"
     )
-    print("=" * 88)
+    print(
+        "[estimate] Python in-memory tokenized samples estimate: "
+        f"train={_format_gb(memory['train_bytes'])}, "
+        f"val={_format_gb(memory['val_bytes'])}, "
+        f"total={_format_gb(memory['total_bytes'])}"
+    )
+    if cfg["dataset_load_partitions"] > 1:
+        print(
+            "[estimate] Partitioned training resident estimate: "
+            f"peak_train_shard={_format_gb(memory['peak_train_partition_bytes'])}, "
+            f"peak_train_shard_plus_val={_format_gb(memory['peak_train_partition_plus_val_bytes'])}"
+        )
+    print(
+        "[estimate] Memory scope: tokenized dataset._samples Python objects only; excludes raw data, "
+        "tokenizer/model/optimizer, DataLoader worker copies, prefetch batches, and activations."
+    )
+    print("=" * 112)
 
 
 def main() -> None:

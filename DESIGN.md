@@ -783,6 +783,8 @@ micromamba run -n llm_offline python estimate_dataset.py \
 
 体积估算不会写正式 dataset cache。脚本会按每个 selected variant 抽取 `--sample-episodes-per-variant` 条完整 selected episode 做真实 tokenization，把这些样本 pickle 成类似 shard cache 的结构后测量字节数，再按 `sampled_pickle_bytes * target_selected_steps / sampled_steps` 用 step ratio 外推 train、val 和 total `.pkl` 大小，单位为十进制 GB。多 prompt 导致的样本膨胀由抽样 tokenization 自然包含；`max_data_num` 会同时影响样本数和 size target。`--world_size` 只用于数学预估 DDP batch 数和 partition round `target_batches`，不初始化 DDP、不要求真实 rank 或 GPU。
 
+除 `.pkl` 磁盘体积外，`estimate_dataset.py` 还会对采样得到的 tokenized `dataset._samples` 做递归 `sys.getsizeof(...)`，估算 Python `list` / `dict` / `int` / `float` 等对象形态下的常驻内存，并同样按 step ratio 外推。文本报告中 `pkl_B/step` / `pkl_train_GB` 对应未压缩 pickle cache 文件大小，`mem_B/step` / `mem_train_GB` 和 `Python in-memory tokenized samples estimate` 对应 tokenized samples Python 对象内存；JSON 输出的顶层 `memory` 块包含相同信息。该内存估算只覆盖 tokenized sample 对象，不包含 raw episodes、tokenizer、DataLoader worker 副本、prefetch batch、模型、optimizer、梯度或 activation。若 `dataset_load_partitions > 1`，报告还会给出 `peak_train_partition` 和 `peak_train_partition_plus_val`，用于估算分区训练单轮常驻 train shard 以及加上完整 val split 后的内存压力，而不是把所有 train shards 当作同时常驻。
+
 ---
 
 ### 关键实现细节
