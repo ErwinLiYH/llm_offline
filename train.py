@@ -742,6 +742,14 @@ def _partition_config(config: dict, partition_count: int, partition_index: int) 
     return partition_config
 
 
+def _validation_cache_config(config: dict, partition_count: int) -> dict:
+    if partition_count <= 1:
+        return dict(config)
+    # Val remains logically unpartitioned, but the partition marker makes the
+    # dataset cache split-specific instead of reusing the train+val sampled pool.
+    return _partition_config(config, partition_count, 0)
+
+
 def _build_partition_data_loaders(
     config: dict,
     tokenizer,
@@ -1129,8 +1137,9 @@ def _prewarm_partition_caches(
     val_loader = None
     if dist_context.is_main_process:
         rank_zero_print(dist_context, "[train] Preparing full validation dataset on rank0")
+        val_config = _validation_cache_config(config, partition_count)
         _, val_loader = _build_data_loaders_once(
-            config,
+            val_config,
             tokenizer,
             selected_variants,
             dist_context,

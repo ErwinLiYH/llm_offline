@@ -9,10 +9,87 @@ unsloth_stub = types.ModuleType("unsloth")
 unsloth_stub.FastLanguageModel = object()
 sys.modules.setdefault("unsloth", unsloth_stub)
 
-from data.pointmaze.dataset import split_episode_segments_for_partitions
-from train import _compute_partition_round_stats, resolve_dataset_load_partitions
+from data.pointmaze.dataset import (
+    PointMazeDataset,
+    select_variant_episode_indices,
+    split_episode_segments_for_partitions,
+)
+from train import (
+    _compute_partition_round_stats,
+    _validation_cache_config,
+    build_dataset_request,
+    resolve_dataset_load_partitions,
+)
 from utils.distributed import DistributedContext
 from utils.distributed_sampler import LocalShardPaddingSampler
+
+
+def _fake_episode_loader(_variant, family_data_config=None):
+    del family_data_config
+    step_counts = [3, 5, 2, 7, 4, 6, 8, 1, 9, 10]
+    episodes = [
+        types.SimpleNamespace(actions=[None] * step_count)
+        for step_count in step_counts
+    ]
+    return {}, episodes, step_counts
+
+
+class EpisodeSplitTest(unittest.TestCase):
+    def test_train_and_val_episode_indices_are_disjoint(self):
+        selection = select_variant_episode_indices(
+            "unit",
+            train_data_ratio=0.6,
+            episode_keep_num=7,
+            sampling_seed=42,
+            episode_loader=_fake_episode_loader,
+        )
+
+        train_indices = set(selection["train_indices"])
+        val_indices = set(selection["val_indices"])
+
+        self.assertTrue(train_indices.isdisjoint(val_indices))
+        self.assertEqual(len(train_indices | val_indices), selection["sampled_episode_count"])
+        self.assertEqual(len(train_indices), selection["train_episode_count"])
+        self.assertEqual(len(val_indices), selection["val_episode_count"])
+
+    def test_train_shards_use_only_train_timesteps_once(self):
+        selection = select_variant_episode_indices(
+            "unit",
+            train_data_ratio=0.6,
+            episode_keep_num=8,
+            sampling_seed=7,
+            episode_loader=_fake_episode_loader,
+        )
+        _, _, step_counts = _fake_episode_loader("unit")
+        train_indices = set(selection["train_indices"])
+        val_indices = set(selection["val_indices"])
+
+        shards = split_episode_segments_for_partitions(
+            list(selection["train_indices"]),
+            step_counts,
+            partition_count=3,
+            prompt_count=1,
+            variant="unit",
+            sampling_seed=7,
+        )
+
+        covered_train_timesteps = set()
+        for shard in shards:
+            for segment in shard:
+                episode_idx = int(segment["episode_idx"])
+                self.assertIn(episode_idx, train_indices)
+                self.assertNotIn(episode_idx, val_indices)
+                for timestep in range(int(segment["start_t"]), int(segment["end_t"])):
+                    key = (episode_idx, timestep)
+                    self.assertNotIn(key, covered_train_timesteps)
+                    covered_train_timesteps.add(key)
+
+        expected_train_timesteps = {
+            (episode_idx, timestep)
+            for episode_idx in train_indices
+            for timestep in range(step_counts[episode_idx])
+        }
+        self.assertEqual(covered_train_timesteps, expected_train_timesteps)
 
 
 class EpisodeSegmentPlannerTest(unittest.TestCase):
@@ -124,6 +201,62 @@ class PartitionRoundStatsTest(unittest.TestCase):
                     },
                     context,
                 )
+
+
+class ValidationCacheConfigTest(unittest.TestCase):
+    def test_partitioned_validation_cache_request_is_split_specific(self):
+        base_config = {
+            "env_family": "pointmaze",
+            "model_name": "unit-tokenizer",
+            "max_length": 128,
+            "dataset_workers": 1,
+            "action_dim": 2,
+        }
+
+        val_config = _validation_cache_config(base_config, partition_count=4)
+        request = build_dataset_request(val_config, object(), "umaze", "val")
+
+        self.assertEqual(request.dataset_partition_count, 4)
+        self.assertEqual(request.dataset_partition_index, 0)
+        self.assertNotIn("dataset_partition_count", base_config)
+        self.assertNotIn("dataset_partition_index", base_config)
+
+    def test_partition_marker_makes_dataset_select_val_indices_only(self):
+        selection = {"train_indices": [0, 1, 2], "val_indices": [3, 4]}
+        non_partitioned_val = types.SimpleNamespace(
+            episode_segments=None,
+            dataset_partition_count=1,
+            split="val",
+        )
+        partitioned_val = types.SimpleNamespace(
+            episode_segments=None,
+            dataset_partition_count=4,
+            split="val",
+        )
+
+        self.assertEqual(
+            PointMazeDataset._selected_indices_for_config(non_partitioned_val, selection),
+            [0, 1, 2, 3, 4],
+        )
+        self.assertEqual(
+            PointMazeDataset._selected_indices_for_config(partitioned_val, selection),
+            [3, 4],
+        )
+
+    def test_single_partition_validation_cache_config_preserves_default_request(self):
+        base_config = {
+            "env_family": "pointmaze",
+            "model_name": "unit-tokenizer",
+            "max_length": 128,
+            "dataset_workers": 1,
+            "action_dim": 2,
+        }
+
+        val_config = _validation_cache_config(base_config, partition_count=1)
+        request = build_dataset_request(val_config, object(), "umaze", "val")
+
+        self.assertEqual(request.dataset_partition_count, 1)
+        self.assertIsNone(request.dataset_partition_index)
 
 
 if __name__ == "__main__":
