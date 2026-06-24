@@ -1,0 +1,161 @@
+# General settings
+env_family: antmaze
+
+model_name: Qwen/Qwen3-0.6B
+load_in_4bit: false       # true = enable Unsloth 4-bit quantized loading
+max_length: 1024
+
+checkpoint_root: /scratch/u6mx/yl1118.u6mx/checkpoints  # root directory for saved checkpoints
+result_root: /scratch/u6mx/yl1118.u6mx/resultsV2        # root directory for train/eval result outputs
+# experiment_id: ab12cd34     # optional; if omitted, auto-generated per run
+
+## Weights & Biases logging
+wandb_enabled: true        # true = log train/val/eval metrics to W&B
+wandb_project: llm_offline_parallel # W&B project name when enabled
+wandb_entity: null         # optional W&B entity/team; null uses the SDK default
+wandb_mode: null           # optional: online | offline | disabled; null uses the SDK default
+wandb_log_interval: 10     # log train loss every n global train batches
+
+## System resource monitor
+resource_monitor_enabled: true        # true = write latest RAM/GPU status to sys_info/<experiment_id>.txt
+resource_monitor_interval_seconds: 5.0 # sample interval when resource_monitor_enabled=true
+
+## Parallel training
+parallel_backend: ddp          # single | ddp; use torchrun with --parallel_backend ddp for multi-GPU
+ddp_find_unused_parameters: false # keep false for LoRA/Unsloth unless DDP reports unused parameters
+distributed_timeout_seconds: 7200 # allow rank0 time to build missing shared caches before DDP barriers
+
+
+# Train-related settings
+
+## Variant selection
+train_mode: all        # single | all | except
+train_varients: [
+  local-layout-01, local-layout-02, local-layout-03,
+  local-layout-04, local-layout-05, local-layout-06,
+  local-layout-07, local-layout-08, local-layout-09
+]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
+
+## Prompt templates
+prompt_templete_index: ["parallel_full_sensing"]  # prompt file names without .txt used for each training split
+
+## Data
+dataset_workers: 4            # tokenization worker processes per rank
+dataset_cache_dir: /scratch/u6mx/yl1118.u6mx/dataset_cache  # cache tokenized dataset to disk; comment out to disable
+dataset_load_partitions: 4    # >1 splits train tokenized data into shard caches; DDP requires >= world_size and divisible by world_size
+antmaze_data_config:
+  filter_success: true        # drop raw episodes whose infos.success never becomes true before sampling/splitting
+  truncate: true              # cut each episode after first success or conservative fall event before tokenization
+  truncate_holding: 50        # keep this many extra action samples after the event transition
+dataloader_config:
+  num_workers: 0              # prepare train/val batches in the training process
+  pin_memory: false           # match the pre-dataloader_config behavior
+  persistent_workers: false   # no DataLoader worker processes to keep alive
+  prefetch_factor: null       # prefetching requires num_workers > 0
+  non_blocking: false         # use synchronous CPU-to-GPU tensor copies
+train_data_ratio: 0.95         # train split ratio inside the sampled episode pool; val gets the remainder
+episode_keep_num: 800           # max episodes sampled before train/val splitting; if dataset has fewer, use all
+balance_variant_episode_count: false  # true = align each selected variant's sampled episode pool to the smallest target
+sampling_seed: 42              # reproducible seed for episode-level train/val sampling
+# max_data_num: 320            # debug only: cap samples per dataset split; comment out for formal training
+
+## History prompts
+history_num: 0                 # number of sampled history transitions to include in each prompt; 0 disables history
+history_stride: 1              # sample every n past transitions when building history
+
+## Action mode
+action_token_mode: parallel_gaussian  # text | bin | gaussian_bin | mtp_bin | parallel_l1 | parallel_gaussian | parallel_t
+
+### Shared by bin / gaussian_bin / mtp_bin
+# action_num_bins: 50             # shared action-bin tokens: <act_00> ... <act_49>
+# new_token: false                # false = reuse stable low-frequency tokenizer IDs internally; true = add <act_XX> special tokens
+# action_bin_min: -1.0
+# action_bin_max: 1.0
+
+### gaussian_bin only
+# action_soft_label_sigma: 1.0    # soft-label width in bin-index units
+# # action_soft_label_radius: 3     # train center bin plus n neighboring bins on each side
+# action_loss_weight: 1.0         # action-token loss weight
+# action_stop_loss_weight: 1.0    # chat-end token loss weight
+
+### mtp_bin only
+# mtp_k: null                     # null defaults to action_dim - 1
+# mtp_lcm_weight: 1.0             # latent consistency matching weight
+# mtp_quadratic_decoding: false   # eval; false trusts the first MTP NTP+AQT proposal directly
+
+### Shared by parallel_l1 / parallel_gaussian / parallel_t
+action_query_len: 8             # learned query/workspace length, defaults to action_dim; AntMaze action_dim is 8
+action_head_num_blocks: 8       # MLPResNet residual block count, defaults to 2
+action_head_dropout: 0.05       # dropout inside the continuous action MLP head only; 0 disables
+action_head_weight_decay: 0.0001 # AdamW weight decay for continuous action MLP Linear weights only
+
+### Shared by parallel_gaussian / parallel_t
+gaussian_log_std_init: -1.0
+gaussian_log_std_min: -2.5      # lower clamp for policy log std/log scale
+gaussian_log_std_max: 0.5       # upper clamp for policy log std/log scale
+
+### parallel_t only
+# student_t_df: 3.0               # Student-t degrees of freedom
+# continuous_mean_l1_weight: 0.2  # add alpha * L1(mean, action) to Student-t NLL
+
+## Optimization
+learning_rate: 0.0001
+min_lr_ratio: 0.1               # final LR = learning_rate * min_lr_ratio for linear/cosine
+lr_scheduler_type: cosine       # constant | linear | cosine; warmup applies before the selected schedule
+lr_decay_ref_epochs: 9.0        # optional decay duration after warmup, measured in reference epochs; lr_decay_steps overrides it
+warmup_ratio: 0.1              # fraction used for LR warmup when warmup_steps is omitted
+warmup_ratio_ref_epoch: 1.0     # warmup reference epochs; warmup_steps = steps/epoch * this * warmup_ratio
+# warmup_steps: 200             # optional fixed optimizer-step warmup override
+# lr_decay_steps: 30000         # optional fixed optimizer-step decay duration after warmup
+num_epochs: 10
+batch_size: 32
+gradient_accumulation_steps: 1
+
+# LoRA
+lora_r: 128
+lora_alpha: 128
+lora_dropout: 0
+# lora_target_modules: ["q_proj", "v_proj"]
+# lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+# lora_layers_to_transform: [3, 8, 13, 18, 23, 27]
+lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+
+# Eval-related settings
+
+## Epoch-level and optional step-level environment evaluation
+eval_num_episodes: 20    # rollout episodes per variant per training eval; 0 = disable rollout eval
+eval_seed: 64             # episode reset seeds are eval_seed, eval_seed+1, ... for every eval
+eval_step_interval: 50000    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
+step_eval_skip: 1000         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
+eval_mode: all              # optional; defaults to following train_mode
+eval_variants: [
+  test-layout-01, test-layout-02, test-layout-03,
+  local-layout-01, local-layout-02, local-layout-03,
+  local-layout-04, local-layout-05, local-layout-06,
+  local-layout-07, local-layout-08, local-layout-09
+]  # single: one variant; all: selected variants or omit for all; except: excluded variants
+eval_parallel_episodes: 5   # continuous modes only; batch this many active episodes per rank
+eval_distribute_variants: true  # DDP only; assign different eval variants to different ranks
+training_eval_rollout_isolated: true  # run training-time rollout in single-process evaluate.py subprocesses
+eval_env_kwargs:
+  continuing_task: false
+  reset_target: false
+
+## Parsing and logs
+parse_retry_limit: 3
+record_step_logs: true   # whether to save one txt per eval step under the eval result artifacts directory
+action_sampling: false    # true = sample actions during rollout eval; false = greedy decoding
+action_temperature: 0.7  # lower = closer to argmax; higher = more random
+action_top_p: 0.9        # nucleus sampling threshold when action_sampling=true
+action_top_k: 0          # 0 disables top-k filtering
+
+## Video recording
+record_video: true       # whether to save rollout videos during training eval
+record_all: true         # true = record every eval episode; overrides video_episode_index
+video_episode_index: 0   # int or list of ints; which eval episodes to record when record_all=false
+video_fps: 30
+video_format: mp4        # gif works out of the box; mp4 requires ffmpeg backend support
+video_save_workers: 5    # 0 = synchronous; >0 = concurrent background encoding threads
+video_save_max_pending: 10  # AntMaze records follow and global videos; count both in pending tasks
+mujoco_gl: egl           # headless MuJoCo recording backend on this machine
