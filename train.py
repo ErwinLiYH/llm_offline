@@ -1085,6 +1085,24 @@ def _release_loaders(*loaders) -> None:
     gc.collect()
 
 
+def _assert_model_on_device(model, device: torch.device) -> None:
+    mismatches = []
+    for name, parameter in model.named_parameters():
+        if parameter.device != device:
+            mismatches.append((name, parameter.device))
+            if len(mismatches) >= 5:
+                break
+    if not mismatches:
+        return
+
+    details = ", ".join(f"{name} on {param_device}" for name, param_device in mismatches)
+    raise RuntimeError(
+        "DDP requires every model parameter to be on the rank-local device "
+        f"{device}, but found: {details}. Check Unsloth device_map and "
+        "CUDA_VISIBLE_DEVICES."
+    )
+
+
 def _prewarm_partition_caches(
     config: dict,
     tokenizer,
@@ -4423,6 +4441,7 @@ def main():
         model.to(device)
 
         if dist_context.is_distributed:
+            _assert_model_on_device(model, device)
             model = DistributedDataParallel(
                 model,
                 device_ids=[dist_context.local_rank],

@@ -35,6 +35,49 @@ from utils.action_bins import (
 ACTION_BIN_LORA_MODULES = ("embed_tokens", "lm_head")
 
 
+def _env_int(name: str, default: int | None = None) -> int | None:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _resolve_unsloth_device_map(config: dict | None = None):
+    """Keep each torchrun worker on its local GPU during Unsloth loading."""
+    config = config or {}
+    configured_device_map = config.get("model_device_map")
+    if configured_device_map is not None:
+        return configured_device_map
+
+    backend = str(config.get("parallel_backend", "") or "").strip().lower()
+    if backend and backend != "ddp":
+        return None
+
+    world_size = _env_int("WORLD_SIZE", 1) or 1
+    if world_size <= 1:
+        return None
+
+    local_rank = _env_int("LOCAL_RANK", 0) or 0
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible_devices:
+        devices = [item.strip() for item in visible_devices.split(",") if item.strip()]
+        if len(devices) == 1:
+            local_rank = 0
+
+    return {"": f"cuda:{local_rank}"}
+
+
+def _fast_language_model_from_pretrained(runtime_config: dict | None = None, **kwargs):
+    device_map = _resolve_unsloth_device_map(runtime_config)
+    if device_map is not None:
+        kwargs["device_map"] = device_map
+        print(f"[model] Unsloth device_map: {device_map}")
+    return FastLanguageModel.from_pretrained(**kwargs)
+
+
 def _chat_template_targets(tokenizer):
     """Return outer and inner tokenizer-like objects that may need chat_template."""
     targets = [tokenizer]
@@ -222,7 +265,8 @@ def load_model_and_tokenizer(config: dict):
     model_name = config["model_name"]
     load_in_4bit = config.get("load_in_4bit", False)
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    model, tokenizer = _fast_language_model_from_pretrained(
+        config,
         model_name=model_name,
         max_seq_length=config["max_length"],
         dtype=None,           # auto-detect: bf16 on Ampere+, fp16 otherwise
@@ -280,7 +324,8 @@ def load_model_and_tokenizer_for_training_checkpoint(
     if load_in_4bit is None:
         load_in_4bit = config.get("load_in_4bit", saved_config.get("load_in_4bit", False))
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    model, tokenizer = _fast_language_model_from_pretrained(
+        config,
         model_name=model_path,
         max_seq_length=max_seq_length,
         dtype=None,
@@ -341,7 +386,11 @@ def load_model_and_tokenizer_for_training_checkpoint(
     return model, tokenizer
 
 
-def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
+def load_from_checkpoint(
+    model_path: str,
+    load_in_4bit: bool | None = None,
+    runtime_config: dict | None = None,
+):
     """Load a model for evaluation using Unsloth.
 
     If model_path contains adapter_config.json, loads as a LoRA checkpoint
@@ -365,7 +414,9 @@ def load_from_checkpoint(model_path: str, load_in_4bit: bool | None = None):
 
     if load_in_4bit is None:
         load_in_4bit = saved_config.get("load_in_4bit", False)
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    load_runtime_config = runtime_config or saved_config
+    model, tokenizer = _fast_language_model_from_pretrained(
+        load_runtime_config,
         model_name=model_path,
         max_seq_length=max_seq_length,
         dtype=None,

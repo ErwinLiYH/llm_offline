@@ -1465,6 +1465,7 @@ def main():
         model, tokenizer = load_from_checkpoint(
             config["model_path"],
             load_in_4bit=config.get("load_in_4bit"),
+            runtime_config=config,
         )
         model.to(device)
         model.eval()
