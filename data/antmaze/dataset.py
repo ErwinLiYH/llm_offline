@@ -378,6 +378,7 @@ class AntMazeDataset(PointMazeDataset):
                 )
             try:
                 dataset = MinariDataset(data_path)
+                episodes = list(dataset.iterate_episodes())
             except ValueError as exc:
                 if "No data found in data path" not in str(exc):
                     raise

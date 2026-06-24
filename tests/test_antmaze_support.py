@@ -216,6 +216,42 @@ class AntMazeSupportTest(unittest.TestCase):
             AntMazeDataset._hash_json_payload(filtered_payload),
         )
 
+    def test_local_minari_dataset_success_path_loads_episodes_before_preprocessing(self):
+        episode = _fake_antmaze_preprocess_episode(success_state_indices=[2])
+        fake_dataset = mock.Mock()
+        fake_dataset.iterate_episodes.return_value = [episode]
+        variant_meta = dict(ANTMAZE_VARIANTS["local-layout-01"])
+
+        with tempfile.TemporaryDirectory() as root_dir:
+            data_path = Path(root_dir) / "data"
+            data_path.mkdir()
+            with (
+                mock.patch.dict(
+                    AntMazeDataset.VARIANTS,
+                    {"unit-local": variant_meta},
+                ),
+                mock.patch(
+                    "data.antmaze.dataset.resolve_local_dataset_path",
+                    return_value=Path(root_dir),
+                ),
+                mock.patch(
+                    "data.antmaze.dataset.MinariDataset",
+                    return_value=fake_dataset,
+                ),
+            ):
+                _meta, episodes, step_counts = AntMazeDataset._load_variant_episodes(
+                    "unit-local",
+                    {
+                        "filter_success": True,
+                        "truncate": True,
+                        "truncate_holding": 1,
+                    },
+                )
+
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(step_counts, [3])
+        fake_dataset.iterate_episodes.assert_called_once_with()
+
     def test_pointmaze_request_does_not_include_antmaze_data_config_by_default(self):
         with tempfile.TemporaryDirectory() as tokenizer_dir:
             tokenizer = _make_test_tokenizer(tokenizer_dir)
