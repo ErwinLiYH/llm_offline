@@ -12,6 +12,28 @@ def _format_visual_map(maze_map: list[list[int]]) -> str:
     )
 
 
+def _maze_from_strings(rows: list[str]) -> list[list[int]]:
+    if not rows:
+        raise ValueError("maze rows must be non-empty")
+    width = len(rows[0])
+    if width == 0:
+        raise ValueError("maze rows must be non-empty")
+    if any(len(row) != width for row in rows):
+        raise ValueError(f"maze rows must have equal width: {rows}")
+    maze = []
+    for row in rows:
+        parsed_row = []
+        for cell in row:
+            if cell == "#":
+                parsed_row.append(1)
+            elif cell == ".":
+                parsed_row.append(0)
+            else:
+                raise ValueError(f"Unsupported maze cell: {cell!r}")
+        maze.append(parsed_row)
+    return maze
+
+
 def _build_prompt_vars(
     *,
     env_name: str,
@@ -309,6 +331,327 @@ _TEST_LAYOUT_03 = [
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],  #############
 ]
 
+# local-layoutV2-01: size=13x13, static_difficulty=56.24
+_LOCAL_LAYOUT_V2_01 = _maze_from_strings([
+    "#############",
+    "#.....#.....#",
+    "#.#.#.#.#.###",
+    "#...#.......#",
+    "#.#.#.#.#.#.#",
+    "#.#.#.#...#.#",
+    "###.#.###.#.#",
+    "#...#.......#",
+    "#.#.#.###.#.#",
+    "#...#...#...#",
+    "#.#.###.###.#",
+    "#.#...#.....#",
+    "#############",
+])
+
+# local-layoutV2-02: size=11x13, static_difficulty=56.80
+_LOCAL_LAYOUT_V2_02 = _maze_from_strings([
+    "#############",
+    "#...#.....#.#",
+    "#.#.#.#.#.#.#",
+    "#...#...#...#",
+    "#.#.###.#####",
+    "#.......#...#",
+    "#.#####.#.#.#",
+    "#.#.........#",
+    "#.###.#.#.#.#",
+    "#.....#...#.#",
+    "#############",
+])
+
+# local-layoutV2-03: size=13x11, static_difficulty=59.55
+_LOCAL_LAYOUT_V2_03 = _maze_from_strings([
+    "###########",
+    "#.........#",
+    "#.#####.###",
+    "#.....#...#",
+    "#.#.###.#.#",
+    "#.#.......#",
+    "#.#.#####.#",
+    "#.#.......#",
+    "#.#.#.#####",
+    "#.#...#...#",
+    "#.###.#.#.#",
+    "#.......#.#",
+    "###########",
+])
+
+# local-layoutV2-04: size=11x13, static_difficulty=58.80
+_LOCAL_LAYOUT_V2_04 = _maze_from_strings([
+    "#############",
+    "#...........#",
+    "#.#####.#.#.#",
+    "#.#.....#.#.#",
+    "#.###.#.#.#.#",
+    "#...#.#.#...#",
+    "#.###.#.#.#.#",
+    "#.#...#...#.#",
+    "#.#.#####.#.#",
+    "#.#.......#.#",
+    "#############",
+])
+
+# local-layoutV2-05: size=11x15, static_difficulty=61.01
+_LOCAL_LAYOUT_V2_05 = _maze_from_strings([
+    "###############",
+    "#.....#...#...#",
+    "#.#####.#.#.#.#",
+    "#.......#.....#",
+    "#.#.#########.#",
+    "#...#...#.....#",
+    "#.###.#.#.#.#.#",
+    "#.#...#...#.#.#",
+    "#.#.#.#####.#.#",
+    "#...#.#.....#.#",
+    "###############",
+])
+
+# local-layoutV2-06: size=15x11, static_difficulty=63.62
+_LOCAL_LAYOUT_V2_06 = _maze_from_strings([
+    "###########",
+    "#.....#.#.#",
+    "#####.#.#.#",
+    "#.....#...#",
+    "#.#######.#",
+    "#...#.....#",
+    "#.#.#.#####",
+    "#...#.....#",
+    "#.###.###.#",
+    "#.....#...#",
+    "#.###.#.#.#",
+    "#...#.#.#.#",
+    "#.#.#.#.#.#",
+    "#...#.....#",
+    "###########",
+])
+
+# local-layoutV2-07: size=15x13, static_difficulty=63.06
+_LOCAL_LAYOUT_V2_07 = _maze_from_strings([
+    "#############",
+    "#.#.......#.#",
+    "#.#####.#.#.#",
+    "#.#.....#.#.#",
+    "#.#.#####.#.#",
+    "#...#.......#",
+    "#####.#####.#",
+    "#...#...#...#",
+    "#.#.###.###.#",
+    "#.....#...#.#",
+    "###.#.#.#.#.#",
+    "#...#.......#",
+    "#.#######.#.#",
+    "#...........#",
+    "#############",
+])
+
+# local-layoutV2-08: size=15x11, static_difficulty=64.17
+_LOCAL_LAYOUT_V2_08 = _maze_from_strings([
+    "###########",
+    "#.....#...#",
+    "#.#####.###",
+    "#.....#...#",
+    "###.#.#.#.#",
+    "#.......#.#",
+    "#.#####.#.#",
+    "#.#.....#.#",
+    "#.#.#####.#",
+    "#...#.....#",
+    "#.#.#.#####",
+    "#.....#...#",
+    "#.###.###.#",
+    "#.........#",
+    "###########",
+])
+
+# local-layoutV2-09: size=13x15, static_difficulty=68.83
+_LOCAL_LAYOUT_V2_09 = _maze_from_strings([
+    "###############",
+    "#.#...........#",
+    "#.#.###.#.###.#",
+    "#.....#.......#",
+    "#.#######.#.###",
+    "#...#.....#.#.#",
+    "#.#.#.#.###.#.#",
+    "#.#.#.#.#.#...#",
+    "#.#.#.#.#.###.#",
+    "#...#.#.#.#.#.#",
+    "#.###.###.#.#.#",
+    "#...#.....#...#",
+    "###############",
+])
+
+# local-layoutV2-10: size=13x15, static_difficulty=69.06
+_LOCAL_LAYOUT_V2_10 = _maze_from_strings([
+    "###############",
+    "#...........#.#",
+    "#.#####.#.#.#.#",
+    "#.#.......#...#",
+    "#.#.###.#.###.#",
+    "#.....#...#...#",
+    "#######.###.#.#",
+    "#.....#.#...#.#",
+    "#.###.#.###.#.#",
+    "#.#.....#.#...#",
+    "#.#######.###.#",
+    "#.........#...#",
+    "###############",
+])
+
+# local-layoutV2-11: size=15x15, static_difficulty=65.79
+_LOCAL_LAYOUT_V2_11 = _maze_from_strings([
+    "###############",
+    "#.............#",
+    "#.#.#########.#",
+    "#...#.........#",
+    "###.#.#######.#",
+    "#...#.#.....#.#",
+    "#####.#.#.#.#.#",
+    "#...#.#.#...#.#",
+    "#.###.###.#.#.#",
+    "#...#.#...#.#.#",
+    "###.#.#.#.###.#",
+    "#.#.#.#.#.#...#",
+    "#.#.#.#.###.#.#",
+    "#.............#",
+    "###############",
+])
+
+# local-layoutV2-12: size=15x13, static_difficulty=67.48
+_LOCAL_LAYOUT_V2_12 = _maze_from_strings([
+    "#############",
+    "#...........#",
+    "#.#.###.#.#.#",
+    "#.#.#...#...#",
+    "###.#.###.#.#",
+    "#...#...#.#.#",
+    "#.###.#.#.#.#",
+    "#.......#.#.#",
+    "#.###.###.###",
+    "#.......#...#",
+    "###########.#",
+    "#.....#.....#",
+    "#.#####.###.#",
+    "#.......#...#",
+    "#############",
+])
+
+# test-layoutV2-01: size=11x11, static_difficulty=56.27
+_TEST_LAYOUT_V2_01 = _maze_from_strings([
+    "###########",
+    "#.#.......#",
+    "#.#.#.#####",
+    "#.#.#.....#",
+    "#.#.#.#.#.#",
+    "#.......#.#",
+    "#.###.#.#.#",
+    "#.#.....#.#",
+    "#.#.###.#.#",
+    "#.#.......#",
+    "###########",
+])
+
+# test-layoutV2-02: size=11x11, static_difficulty=56.57
+_TEST_LAYOUT_V2_02 = _maze_from_strings([
+    "###########",
+    "#.......#.#",
+    "#####.#.#.#",
+    "#.....#.#.#",
+    "#.###.#.#.#",
+    "#.#.......#",
+    "###.#.###.#",
+    "#.......#.#",
+    "#.#####.#.#",
+    "#.........#",
+    "###########",
+])
+
+# test-layoutV2-03: size=13x13, static_difficulty=63.04
+_TEST_LAYOUT_V2_03 = _maze_from_strings([
+    "#############",
+    "#.#.........#",
+    "#.#.#.###.#.#",
+    "#...#.....#.#",
+    "#.###.#.#####",
+    "#.#...#.#...#",
+    "#.#.#.#.#.#.#",
+    "#.....#...#.#",
+    "#.#.#.#.###.#",
+    "#.....#...#.#",
+    "###.#.###.#.#",
+    "#...#.....#.#",
+    "#############",
+])
+
+# test-layoutV2-04: size=9x15, static_difficulty=63.95
+_TEST_LAYOUT_V2_04 = _maze_from_strings([
+    "###############",
+    "#.......#.....#",
+    "#.#.###.#.#.#.#",
+    "#.....#.......#",
+    "#.###.###.#.#.#",
+    "#.....#.#.#.#.#",
+    "#######.#.#.#.#",
+    "#...........#.#",
+    "###############",
+])
+
+# test-layoutV2-05: size=15x15, static_difficulty=68.59
+_TEST_LAYOUT_V2_05 = _maze_from_strings([
+    "###############",
+    "#.......#...#.#",
+    "#.###.#.#.#.#.#",
+    "#.....#.#.#...#",
+    "#.###.#.#.#.#.#",
+    "#.#...#...#...#",
+    "#.#.#.#####.###",
+    "#...#.....#...#",
+    "#.###.###.###.#",
+    "#.........#...#",
+    "#.#########.###",
+    "#.......#...#.#",
+    "#########.#.#.#",
+    "#.............#",
+    "###############",
+])
+
+# test-layoutV2-06: size=15x13, static_difficulty=69.57
+_TEST_LAYOUT_V2_06 = _maze_from_strings([
+    "#############",
+    "#.#.........#",
+    "#.#.#.###.#.#",
+    "#...#.....#.#",
+    "#.#.#####.###",
+    "#.......#...#",
+    "###########.#",
+    "#...........#",
+    "#.#.#.#####.#",
+    "#.#...#...#.#",
+    "#.#####.###.#",
+    "#...#...#...#",
+    "###.#.#.#.###",
+    "#...#.#.....#",
+    "#############",
+])
+
+_POINTMAZE_V2_DESCS = {
+    "55-60": (
+        "A generated V2 PointMaze layout in the 55-60 static-difficulty band, with moderate branches and bottlenecks.",
+        "一个生成的 V2 PointMaze 布局，静态难度位于 55-60 档，包含中等数量的分支和瓶颈。",
+    ),
+    "60-65": (
+        "A generated V2 PointMaze layout in the 60-65 static-difficulty band, with longer routes and tighter corridor choices.",
+        "一个生成的 V2 PointMaze 布局，静态难度位于 60-65 档，包含更长路线和更紧凑的走廊选择。",
+    ),
+    "65-70": (
+        "A generated V2 PointMaze layout in the 65-70 static-difficulty band, with long routes, dead ends, and repeated bottlenecks.",
+        "一个生成的 V2 PointMaze 布局，静态难度位于 65-70 档，包含长路线、死路和重复瓶颈。",
+    ),
+}
+
 
 def _build_local_variant(
     *,
@@ -551,6 +894,132 @@ POINTMAZE_VARIANTS = {
         maze_map=_TEST_LAYOUT_03,
         structure_desc_en="A 13x13 large test layout with repeated corridor modules, narrow gates, and lower cross-connections.",
         structure_desc_zh="一个 13x13 的大型测试布局，包含重复走廊模块、狭窄门洞和底部交叉连接。",
+    ),
+    "local-layoutV2-01": _build_local_variant(
+        variant_name="local-layoutV2-01",
+        env_name="PointMaze Local Layout V2 01",
+        maze_map=_LOCAL_LAYOUT_V2_01,
+        structure_desc_en=_POINTMAZE_V2_DESCS["55-60"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["55-60"][1],
+    ),
+    "local-layoutV2-02": _build_local_variant(
+        variant_name="local-layoutV2-02",
+        env_name="PointMaze Local Layout V2 02",
+        maze_map=_LOCAL_LAYOUT_V2_02,
+        structure_desc_en=_POINTMAZE_V2_DESCS["55-60"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["55-60"][1],
+    ),
+    "local-layoutV2-03": _build_local_variant(
+        variant_name="local-layoutV2-03",
+        env_name="PointMaze Local Layout V2 03",
+        maze_map=_LOCAL_LAYOUT_V2_03,
+        structure_desc_en=_POINTMAZE_V2_DESCS["55-60"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["55-60"][1],
+    ),
+    "local-layoutV2-04": _build_local_variant(
+        variant_name="local-layoutV2-04",
+        env_name="PointMaze Local Layout V2 04",
+        maze_map=_LOCAL_LAYOUT_V2_04,
+        structure_desc_en=_POINTMAZE_V2_DESCS["55-60"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["55-60"][1],
+    ),
+    "local-layoutV2-05": _build_local_variant(
+        variant_name="local-layoutV2-05",
+        env_name="PointMaze Local Layout V2 05",
+        maze_map=_LOCAL_LAYOUT_V2_05,
+        structure_desc_en=_POINTMAZE_V2_DESCS["60-65"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["60-65"][1],
+    ),
+    "local-layoutV2-06": _build_local_variant(
+        variant_name="local-layoutV2-06",
+        env_name="PointMaze Local Layout V2 06",
+        maze_map=_LOCAL_LAYOUT_V2_06,
+        structure_desc_en=_POINTMAZE_V2_DESCS["60-65"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["60-65"][1],
+    ),
+    "local-layoutV2-07": _build_local_variant(
+        variant_name="local-layoutV2-07",
+        env_name="PointMaze Local Layout V2 07",
+        maze_map=_LOCAL_LAYOUT_V2_07,
+        structure_desc_en=_POINTMAZE_V2_DESCS["60-65"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["60-65"][1],
+    ),
+    "local-layoutV2-08": _build_local_variant(
+        variant_name="local-layoutV2-08",
+        env_name="PointMaze Local Layout V2 08",
+        maze_map=_LOCAL_LAYOUT_V2_08,
+        structure_desc_en=_POINTMAZE_V2_DESCS["60-65"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["60-65"][1],
+    ),
+    "local-layoutV2-09": _build_local_variant(
+        variant_name="local-layoutV2-09",
+        env_name="PointMaze Local Layout V2 09",
+        maze_map=_LOCAL_LAYOUT_V2_09,
+        structure_desc_en=_POINTMAZE_V2_DESCS["65-70"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["65-70"][1],
+    ),
+    "local-layoutV2-10": _build_local_variant(
+        variant_name="local-layoutV2-10",
+        env_name="PointMaze Local Layout V2 10",
+        maze_map=_LOCAL_LAYOUT_V2_10,
+        structure_desc_en=_POINTMAZE_V2_DESCS["65-70"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["65-70"][1],
+    ),
+    "local-layoutV2-11": _build_local_variant(
+        variant_name="local-layoutV2-11",
+        env_name="PointMaze Local Layout V2 11",
+        maze_map=_LOCAL_LAYOUT_V2_11,
+        structure_desc_en=_POINTMAZE_V2_DESCS["65-70"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["65-70"][1],
+    ),
+    "local-layoutV2-12": _build_local_variant(
+        variant_name="local-layoutV2-12",
+        env_name="PointMaze Local Layout V2 12",
+        maze_map=_LOCAL_LAYOUT_V2_12,
+        structure_desc_en=_POINTMAZE_V2_DESCS["65-70"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["65-70"][1],
+    ),
+    "test-layoutV2-01": _build_local_variant(
+        variant_name="test-layoutV2-01",
+        env_name="PointMaze Test Layout V2 01",
+        maze_map=_TEST_LAYOUT_V2_01,
+        structure_desc_en=_POINTMAZE_V2_DESCS["55-60"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["55-60"][1],
+    ),
+    "test-layoutV2-02": _build_local_variant(
+        variant_name="test-layoutV2-02",
+        env_name="PointMaze Test Layout V2 02",
+        maze_map=_TEST_LAYOUT_V2_02,
+        structure_desc_en=_POINTMAZE_V2_DESCS["55-60"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["55-60"][1],
+    ),
+    "test-layoutV2-03": _build_local_variant(
+        variant_name="test-layoutV2-03",
+        env_name="PointMaze Test Layout V2 03",
+        maze_map=_TEST_LAYOUT_V2_03,
+        structure_desc_en=_POINTMAZE_V2_DESCS["60-65"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["60-65"][1],
+    ),
+    "test-layoutV2-04": _build_local_variant(
+        variant_name="test-layoutV2-04",
+        env_name="PointMaze Test Layout V2 04",
+        maze_map=_TEST_LAYOUT_V2_04,
+        structure_desc_en=_POINTMAZE_V2_DESCS["60-65"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["60-65"][1],
+    ),
+    "test-layoutV2-05": _build_local_variant(
+        variant_name="test-layoutV2-05",
+        env_name="PointMaze Test Layout V2 05",
+        maze_map=_TEST_LAYOUT_V2_05,
+        structure_desc_en=_POINTMAZE_V2_DESCS["65-70"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["65-70"][1],
+    ),
+    "test-layoutV2-06": _build_local_variant(
+        variant_name="test-layoutV2-06",
+        env_name="PointMaze Test Layout V2 06",
+        maze_map=_TEST_LAYOUT_V2_06,
+        structure_desc_en=_POINTMAZE_V2_DESCS["65-70"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["65-70"][1],
     ),
 }
 
