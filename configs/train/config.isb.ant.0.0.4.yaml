@@ -48,7 +48,7 @@ dataset_load_partitions: 4    # >1 splits train tokenized data into shard caches
 antmaze_data_config:
   filter_success: true        # drop raw episodes whose infos.success never becomes true before sampling/splitting
   truncate: true              # cut each episode after first success or conservative fall event before tokenization
-  truncate_holding: 0         # keep this many extra action samples after the event transition
+  truncate_holding: 50         # keep this many extra action samples after the event transition
 dataloader_config:
   num_workers: 0              # prepare train/val batches in the training process
   pin_memory: false           # match the pre-dataloader_config behavior

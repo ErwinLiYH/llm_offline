@@ -31,6 +31,7 @@ distributed_timeout_seconds: 7200 # allow rank0 time to build missing shared cac
 ## Variant selection
 train_mode: all        # single | all | except
 train_varients: [
+  umaze-diverse, medium-diverse, large-diverse,
   local-layout-01, local-layout-02, local-layout-03,
   local-layout-04, local-layout-05, local-layout-06,
   local-layout-07, local-layout-08, local-layout-09
@@ -42,7 +43,7 @@ prompt_templete_index: ["parallel_full_sensing"]  # prompt file names without .t
 ## Data
 dataset_workers: 4            # tokenization worker processes per rank
 dataset_cache_dir: /scratch/u6mx/yl1118.u6mx/dataset_cache  # cache tokenized dataset to disk; comment out to disable
-dataset_load_partitions: 4    # >1 splits train tokenized data into shard caches; DDP requires >= world_size and divisible by world_size
+dataset_load_partitions: 8    # >1 splits train tokenized data into shard caches; DDP requires >= world_size and divisible by world_size
 antmaze_data_config:
   filter_success: true        # drop raw episodes whose infos.success never becomes true before sampling/splitting
   truncate: true              # cut each episode after first success or conservative fall event before tokenization
@@ -126,11 +127,12 @@ lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_p
 ## Epoch-level and optional step-level environment evaluation
 eval_num_episodes: 20    # rollout episodes per variant per training eval; 0 = disable rollout eval
 eval_seed: 64             # episode reset seeds are eval_seed, eval_seed+1, ... for every eval
-eval_step_interval: 50000    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
-step_eval_skip: 1000         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
+eval_step_interval: 12000    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
+step_eval_skip: 1         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
 eval_mode: all              # optional; defaults to following train_mode
 eval_variants: [
   test-layout-01, test-layout-02, test-layout-03,
+  umaze-diverse, medium-diverse, large-diverse,
   local-layout-01, local-layout-02, local-layout-03,
   local-layout-04, local-layout-05, local-layout-06,
   local-layout-07, local-layout-08, local-layout-09
