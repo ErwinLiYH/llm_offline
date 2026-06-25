@@ -1,3 +1,7 @@
+# Version: isb.ant.0.0.2
+# Version format: <train-env-variant>.<action-mode>.<param-variant>.
+# Changes from isb.ant.0.0.1:
+# - Increase LoRA rank/alpha from 64/64 to 128/128.
 # General settings
 env_family: antmaze
 

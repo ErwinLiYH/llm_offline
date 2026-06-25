@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=llm_offline_isb_ant
-#SBATCH --output=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/train-isb-ant-%j.out
-#SBATCH --error=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/train-isb-ant-%j.err
+#SBATCH --job-name=llm_offline_isb_ant0.0.4
+#SBATCH --output=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/train-isb-ant0.0.4-%j.out
+#SBATCH --error=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/train-isb-ant0.0.4-%j.err
 #SBATCH --chdir=/home/u6mx/yl1118.u6mx/llm_offline
 #SBATCH --partition=workq
 #SBATCH --nodes=1
@@ -16,7 +16,7 @@ set -euo pipefail
 
 PROJECT_ROOT=/home/u6mx/yl1118.u6mx/llm_offline
 ENV_BIN=/home/u6mx/yl1118.u6mx/miniforge3/envs/llm_offline/bin
-CONFIG_PATH=configs/train/config.isb.ant.yaml
+CONFIG_PATH=configs/train/config.isb.ant.0.0.4.yaml
 RESUME_FROM_CHECKPOINT=""
 
 usage() {

@@ -1,3 +1,9 @@
+# Version: isb.ant.0.1.0
+# Version format: <train-env-variant>.<action-mode>.<param-variant>.
+# Changes from isb.ant.0.0.0:
+# - Switch action mode from parallel_gaussian to simple_mtp_bin.
+# - Use bin_full_sensing prompts, 50 reused action bins, and mtp_lcm_weight=0.1.
+# - Enable cosine LR schedule and increase LoRA rank/alpha from 64/64 to 128/128.
 # General settings
 env_family: antmaze
 
