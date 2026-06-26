@@ -318,7 +318,7 @@ PointMaze 训练集合不再固定为“8 个单变种 + 1 个联合模型”，
 checkpoints/
 └── <env_family>/
     └── <model_slug>/              # HuggingFace model ID 的最后一段，如 Qwen3-0.6B
-        └── <selection_tag>/       # 训练选择标签：单变种名、all、或 except-<excluded variants>
+        └── <selection_tag>/       # 训练选择标签：单变种名、all、all-<N>v-<hash>、或 except-<N>x-<hash>
             └── <experiment_id>/   # 自动生成或手动指定的实验 ID
                 ├── ep1/           # epoch 1 结束时保存的中间 checkpoint
                 ├── ep2/
@@ -341,10 +341,10 @@ checkpoints/
 | Qwen3-0.6B 单独训练 open 变种（batch step 10002 中间） | `checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/step10002/` |
 | Qwen3-0.6B 单独训练 open 变种（训练完成） | `checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/final/` |
 | Qwen3-0.6B 联合训练所有变种 | `checkpoints/pointmaze/Qwen3-0.6B/all/<experiment_id>/final/` |
-| Qwen3-0.6B 使用 except 模式排除 `large` 和 `large-dense` | `checkpoints/pointmaze/Qwen3-0.6B/except-large+large-dense/<experiment_id>/final/` |
+| Qwen3-0.6B 使用 except 模式排除 `large` 和 `large-dense` | `checkpoints/pointmaze/Qwen3-0.6B/except-2x-<hash>/<experiment_id>/final/` |
 | Llama-3.2-1B 单独训练 umaze 变种 | `checkpoints/pointmaze/Llama-3.2-1B/umaze/<experiment_id>/final/` |
 
-`model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。`selection_tag` 已经包含训练选择语义，因此路径里不再单独重复 `train_mode`。`experiment_id` 可在配置中指定、由训练启动自动生成，或通过 `train.py --experiment_id <id>` 覆盖；CLI 覆盖发生在 DDP 广播、资源监控和运行配置快照之前。
+`model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。`selection_tag` 已经包含训练选择语义，因此路径里不再单独重复 `train_mode`；配置化的 `all` 子集和 `except` 排除集使用数量加 hash 的短标签，完整可读标签写入 `train_selection_tag_full`。`experiment_id` 可在配置中指定、由训练启动自动生成，或通过 `train.py --experiment_id <id>` 覆盖；CLI 覆盖发生在 DDP 广播、资源监控和运行配置快照之前。
 
 #### 1.1 训练恢复（resume）
 
@@ -490,7 +490,7 @@ dataset_cache/
 | 字段 | 含义 | 示例 |
 |------|------|------|
 | `model_slug` | 基座模型名 | `Qwen3-0.6B` |
-| `selection_tag` | 训练选择标签 | `open`、`all`、`except-large+large-dense` |
+| `selection_tag` | 训练选择标签 | `open`、`all`、`all-12v-a1b2c3d4e5f6`、`except-2x-a1b2c3d4e5f6` |
 | `result_root` | 结果根目录配置项 | `results`、`resultsV2` |
 | `variant` | 当前评估变种名 | `open`、`umaze`、`medium` |
 | `epoch_<n>` / `step<n>` / `standalone_<eval_uuid>` | 区分训练期中间评估与独立评估运行 | `epoch_2`、`step10002`、`standalone_ab12cd34` |

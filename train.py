@@ -4345,8 +4345,11 @@ def main():
                 config["continuous_mean_l1_weight"] = resolve_continuous_mean_l1_weight(config)
         config["resolved_train_variants"] = train_selection.selected_variants
         config["train_selection_tag"] = train_selection.selection_tag
+        config["train_selection_tag_full"] = train_selection.full_selection_tag
         config["resolved_eval_mode"] = eval_selection.mode
         config["resolved_eval_variants"] = eval_selection.selected_variants
+        config["resolved_eval_selection_tag"] = eval_selection.selection_tag
+        config["resolved_eval_selection_tag_full"] = eval_selection.full_selection_tag
         config["world_size"] = dist_context.world_size
         config["global_effective_batch_size"] = (
             int(config["batch_size"])

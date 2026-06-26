@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
-
-from data.registry import get_variants
 
 
 @dataclass(frozen=True)
@@ -11,10 +11,13 @@ class VariantSelection:
     configured_variants: list[str]
     selected_variants: list[str]
     selection_tag: str
+    full_selection_tag: str
 
 
 
 def get_available_variants(env_family: str) -> list[str]:
+    from data.registry import get_variants
+
     return list(get_variants(env_family).keys())
 
 
@@ -56,14 +59,30 @@ def _validate_variants(variants: list[str], available_variants: list[str], field
 
 
 
+def _joined_variant_tag(prefix: str, variants: list[str]) -> str:
+    joined = "+".join(sorted(variants))
+    return f"{prefix}-{joined}"
+
+
+def _hash_variants(mode: str, variants: list[str]) -> str:
+    payload = json.dumps(
+        {"mode": mode, "variants": sorted(variants)},
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _compact_variant_tag(prefix: str, variants: list[str], count_suffix: str) -> str:
+    return f"{prefix}-{len(variants)}{count_suffix}-{_hash_variants(prefix, variants)}"
+
+
 def _except_tag(excluded_variants: list[str]) -> str:
-    joined = "+".join(sorted(excluded_variants))
-    return f"except-{joined}"
+    return _compact_variant_tag("except", excluded_variants, "x")
 
 
 def _all_subset_tag(selected_variants: list[str]) -> str:
-    joined = "+".join(sorted(selected_variants))
-    return f"all-{joined}"
+    return _compact_variant_tag("all", selected_variants, "v")
 
 
 
@@ -86,10 +105,16 @@ def resolve_selection(
             )
         selected_variants = [candidates[0]]
         selection_tag = selected_variants[0]
+        full_selection_tag = selection_tag
         configured_for_record = configured_variants or selected_variants
     elif mode == "all":
         selected_variants = configured_variants or list(available_variants)
         selection_tag = "all" if not configured_variants else _all_subset_tag(selected_variants)
+        full_selection_tag = (
+            "all"
+            if not configured_variants
+            else _joined_variant_tag("all", selected_variants)
+        )
         configured_for_record = configured_variants
     elif mode == "except":
         excluded_variants = configured_variants or list(default_variants or [])
@@ -99,6 +124,7 @@ def resolve_selection(
         if not selected_variants:
             raise ValueError("except mode excluded all available variants")
         selection_tag = _except_tag(excluded_variants)
+        full_selection_tag = _joined_variant_tag("except", excluded_variants)
         configured_for_record = excluded_variants
     else:
         raise ValueError(f"Unknown mode: {mode!r}. Expected 'single', 'all', or 'except'.")
@@ -108,4 +134,5 @@ def resolve_selection(
         configured_variants=configured_for_record,
         selected_variants=selected_variants,
         selection_tag=selection_tag,
+        full_selection_tag=full_selection_tag,
     )

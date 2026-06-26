@@ -1479,3 +1479,11 @@ type: project
 - `dataset_load_partitions > 1` 时额外输出 `peak_train_partition_bytes` / `peak_train_partition_plus_val_bytes`，用于估算分区训练时单轮常驻 tokenized train shard 以及加上完整 val split 后的内存压力，而不是把所有 train shards 当作同时常驻
 - 明确内存估算范围只覆盖 tokenized `dataset._samples` Python 对象，不包含 raw episodes、tokenizer、DataLoader worker 副本、prefetch batches、模型、optimizer、梯度和 activations
 - `sbatch/est_data.isb.slurm` 默认 walltime 调整为 `00:30:00`，适配 estimator 的实际运行时长；需要更长时间时仍可用 `sbatch --time=...` 覆盖
+
+## 2026-06-26
+
+**压缩多 variant 训练路径中的 `selection_tag`：**
+- `utils/variant_selection.py`：配置化 `all` 子集统一生成 `all-<N>v-<hash>`，`except` 统一生成 `except-<N>x-<hash>`，避免 checkpoint / results 路径因拼接大量 variant 名触发 `OSError: [Errno 36] File name too long`
+- 单 variant 和真正全量 `all` 路径保持原样；hash 基于排序后的 variant 列表，保证同一组选择顺序无关、稳定复现
+- 新增 `full_selection_tag`，并在训练、评估和 score 输出配置中记录完整可读 tag，例如 `train_selection_tag_full` / `resolved_eval_selection_tag_full` / `selection_tag_full`
+- 补充 `tests/test_variant_selection.py` 覆盖短 tag 格式、顺序不敏感和完整 tag 记录，并更新路径规则文档

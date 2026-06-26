@@ -1514,6 +1514,8 @@ def main():
             config["training_eval_tag"] = get_training_eval_tag(training_eval_context)
             config["training_results_dir"] = run_results_dir
         config["resolved_eval_variants"] = eval_selection.selected_variants
+        config["resolved_eval_selection_tag"] = eval_selection.selection_tag
+        config["resolved_eval_selection_tag_full"] = eval_selection.full_selection_tag
         config["resolved_eval_variant_assignments"] = assignments
         config["eval_world_size"] = (
             training_eval_context.get("eval_world_size", dist_context.world_size)

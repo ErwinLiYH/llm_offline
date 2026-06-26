@@ -587,6 +587,7 @@ def write_run_summary(
         "env_family": config["env_family"],
         "selected_variants": selection.selected_variants,
         "selection_tag": selection.selection_tag,
+        "selection_tag_full": selection.full_selection_tag,
         "result_count": len(results),
         "results": results,
     }
