@@ -18,7 +18,6 @@ from typing import Any
 
 import numpy as np
 import torch
-import yaml
 from transformers import AutoTokenizer
 
 from data.base_dataset import DatasetBuildRequest
@@ -35,6 +34,7 @@ from model.mtp_bin import (
     resolve_mtp_quadratic_decoding,
 )
 from utils.action_bins import get_action_token_mode
+from utils.config_loader import load_merged_config
 from utils.distributed import DistributedContext
 from utils.prompt_loader import load_template_names
 from utils.variant_selection import get_available_variants, resolve_selection
@@ -107,7 +107,7 @@ class SampleFootprint:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="config.yaml")
+    parser.add_argument("--config", nargs="+", default=["config.yaml"])
     parser.add_argument(
         "--sample-episodes-per-variant",
         type=int,
@@ -925,8 +925,11 @@ def print_text_report(estimate: dict) -> None:
 
 def main() -> None:
     args = parse_args()
-    with open(args.config, "r") as f:
-        raw_config = yaml.safe_load(f) or {}
+    raw_config = load_merged_config(args.config)
+    raw_config["estimate_config_source"] = (
+        args.config[0] if len(args.config) == 1 else list(args.config)
+    )
+    raw_config["config_sources"] = list(args.config)
     config, train_selection, dist_context = _resolve_training_config(raw_config, args.world_size)
     sample_seed = int(args.sample_seed if args.sample_seed is not None else config.get("sampling_seed", 0))
     partition_count = int(config["dataset_load_partitions"])

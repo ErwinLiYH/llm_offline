@@ -28,6 +28,7 @@ from utils.action_bins import (
     get_action_num_bins,
     get_action_token_mode,
 )
+from utils.config_loader import load_merged_config
 from utils.distributed import (
     all_gather_objects,
     barrier,
@@ -51,7 +52,7 @@ from utils.variant_selection import get_available_variants, resolve_selection
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="eval.yaml")
+    parser.add_argument("--config", nargs="+", default=["eval.yaml"])
     parser.add_argument("--parallel_backend", type=str, choices=["single", "ddp"], default=None)
     parser.add_argument("-y", "--yes", action="store_true", help="Automatically confirm strong warnings.")
     return parser.parse_args()
@@ -452,8 +453,7 @@ def evaluate_variant(
 
 def main():
     args = parse_args()
-    with open(args.config, "r") as f:
-        config = yaml.safe_load(f)
+    config = load_merged_config(args.config)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)
     try:
@@ -542,7 +542,10 @@ def main():
             prompt_name = load_template_names(env_family)[0]
             config["resolved_eval_prompt_name"] = prompt_name
         template = load_named_templates(env_family, [prompt_name])[0]
-        config["eval_config_source"] = args.config
+        config["eval_config_source"] = (
+            args.config[0] if len(args.config) == 1 else list(args.config)
+        )
+        config["config_sources"] = list(args.config)
         config["eval_output_mode"] = eval_output_mode
         if eval_output_mode == "standalone":
             config["standalone_eval_id"] = standalone_eval_id

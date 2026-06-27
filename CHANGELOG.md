@@ -1520,3 +1520,12 @@ type: project
 - 更新 `AGENTS.md` 中旧的 `eval_parallel_episodes` / 可选 isolated eval 说明
 - 已通过 `conda run -n llm_offline python -m py_compile evaluate.py score.py train.py utils/eval_parallel.py utils/rollout/*.py`
 - 已通过 `conda run -n llm_offline python -m unittest discover -s tests`
+
+## Multi-file config merge（2026-06-27）
+
+- `train.py`、`evaluate.py`、`score.py` 和 `estimate_dataset.py` 的 `--config` 现在支持一次传入多个 YAML 文件，例如 `--config base.yaml ant.yaml local.yaml`
+- 新增 `utils/config_loader.py`，在进入原有解析和校验逻辑前先按参数顺序合并配置；最终配置是所有文件字段的并集，后面的文件优先级更高
+- 合并规则为 dict 递归合并，list、标量和 `null` 直接以后面的文件覆盖前面的值；输入配置不会被原地修改
+- 运行时保存的配置中新增 `config_sources`，记录参与合并的所有配置文件；原有 `train_config_source` / `eval_config_source` / `score_config_source` / `estimate_config_source` 在单文件时保持字符串，多文件时记录文件列表
+- 新增 `tests/test_config_loader.py`，覆盖嵌套 dict 合并、list 替换、`null` 覆盖和后文件高优先级
+- 更新 `DESIGN.md` 和 `AGENTS.md`，说明多配置文件合并语义和命令用法

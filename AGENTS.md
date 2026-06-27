@@ -20,6 +20,7 @@ Stack:
 
 Training:
 - `micromamba run -n llm_offline python train.py --config config.yaml`
+- Config files can be layered as `--config base.yaml experiment.yaml local.yaml`; later files override earlier files after recursive dict merge, while lists/scalars/null replace the previous value.
 - Override run identity from the CLI, for example Slurm job IDs: `micromamba run -n llm_offline python train.py --config config.yaml --experiment_id <id>`
 - Tokenize/cache only, then exit before optimizer/training setup: `micromamba run -n llm_offline python train.py --config config.yaml --tokenize-only`
 - Estimate one-epoch sample/batch counts, tokenized `.pkl` cache size, and tokenized-sample Python memory footprint without loading the model: `micromamba run -n llm_offline python estimate_dataset.py --config config.yaml --world_size <num_gpus> --sample-episodes-per-variant 4`
@@ -32,20 +33,21 @@ Training:
 Evaluation:
 - `micromamba run -n llm_offline python evaluate.py --config eval.yaml`
 - DDP multi-GPU variant-parallel eval: `micromamba run -n llm_offline torchrun --standalone --nproc_per_node=<num_gpus> evaluate.py --config eval.yaml --parallel_backend ddp`
+- `evaluate.py` accepts the same layered `--config base.yaml override.yaml` form before eval-specific validation.
 
 Official normalized scoring:
 - `micromamba run -n llm_offline python score.py --config score.yaml`
-- `score.py` reads all run settings from `score.yaml`; the only supported CLI override is `--config`.
+- `score.py` reads all run settings from YAML; the only supported CLI override is `--config`, which may name one or more files using the same merge semantics.
 
 Prefer `micromamba run -n llm_offline` for Python commands in this repo.
 
 ## Architecture
 
 Key files:
-- `train.py`: entry point; reads `config.yaml`
-- `evaluate.py`: entry point; reads `eval.yaml`
-- `score.py`: official-style PointMaze normalized score entry point; reads `score.yaml`
-- `estimate_dataset.py`: tokenizer-only dataset size estimator; reads training config and reports selected steps, one-epoch batches, estimated tokenized `.pkl` GB, and estimated tokenized-sample Python memory GB
+- `train.py`: entry point; reads one or more training config YAML files
+- `evaluate.py`: entry point; reads one or more eval config YAML files
+- `score.py`: official-style PointMaze normalized score entry point; reads one or more score config YAML files
+- `estimate_dataset.py`: tokenizer-only dataset size estimator; reads one or more training config YAML files and reports selected steps, one-epoch batches, estimated tokenized `.pkl` GB, and estimated tokenized-sample Python memory GB
 - `data/registry.py`: routes `env_family` to dataset, formatter, variants, and eval env specs
 - `data/base_dataset.py`: abstract dataset interface
 - `data/<env_family>/variants.py`: variant metadata

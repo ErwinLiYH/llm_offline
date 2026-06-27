@@ -20,6 +20,7 @@ import torch
 import yaml
 
 from data.pointmaze.variants import POINTMAZE_VARIANTS, get_pointmaze_variant_type
+from utils.config_loader import load_merged_config
 from utils.pointmaze_score import (
     build_pointmaze_score_env_spec,
     local_reference_path,
@@ -42,13 +43,12 @@ OFFICIAL_POINTMAZE_DIR = (
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="score.yaml")
+    parser.add_argument("--config", nargs="+", default=["score.yaml"])
     return parser.parse_args()
 
 
 def load_config(args) -> dict:
-    with open(args.config, "r", encoding="utf-8") as f:
-        config = yaml.safe_load(f) or {}
+    config = load_merged_config(args.config)
 
     config.setdefault("env_family", "pointmaze")
     config.setdefault("mode", "score")
@@ -76,7 +76,10 @@ def load_config(args) -> dict:
     config.setdefault("rollout_action_timeout_seconds", 300)
     config.setdefault("policy_batch_timeout_ms", 10)
     config = apply_rollout_config_defaults(config)
-    config["score_config_source"] = args.config
+    config["score_config_source"] = (
+        args.config[0] if len(args.config) == 1 else list(args.config)
+    )
+    config["config_sources"] = list(args.config)
     return config
 
 

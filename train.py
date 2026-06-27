@@ -67,6 +67,7 @@ from utils.action_bins import (
     get_action_token_mode,
     uses_continuous_actions,
 )
+from utils.config_loader import load_merged_config
 from utils.distributed import (
     DistributedContext,
     all_gather_objects,
@@ -109,7 +110,7 @@ from utils.wandb_logging import (
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="config.yaml")
+    parser.add_argument("--config", nargs="+", default=["config.yaml"])
     parser.add_argument("--parallel_backend", type=str, choices=["single", "ddp"], default=None)
     parser.add_argument(
         "--experiment_id",
@@ -4091,8 +4092,7 @@ def train_with_selection(
 
 def main():
     args = parse_args()
-    with open(args.config, "r") as f:
-        config = yaml.safe_load(f)
+    config = load_merged_config(args.config)
     if args.experiment_id is not None:
         experiment_id_override = str(args.experiment_id).strip()
         if not experiment_id_override:
@@ -4103,7 +4103,10 @@ def main():
         if not resume_override:
             raise ValueError("--resume_from_checkpoint must not be empty when provided")
         config["resume_from_checkpoint"] = resume_override
-    config["train_config_source"] = args.config
+    config["train_config_source"] = (
+        args.config[0] if len(args.config) == 1 else list(args.config)
+    )
+    config["config_sources"] = list(args.config)
     config["tokenize_only"] = bool(args.tokenize_only)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)

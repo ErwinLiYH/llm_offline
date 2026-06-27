@@ -228,7 +228,16 @@ Action:
 
 ### 训练模式
 
-通过 `config.yaml` 控制，该文件包含所有训练相关配置：
+通过 `config.yaml` 控制，该文件包含所有训练相关配置。所有读取 YAML 配置的入口都支持传入多个 config 文件：
+
+```bash
+python train.py --config configs/base.yaml configs/antmaze.yaml configs/local.yaml
+python evaluate.py --config eval.base.yaml eval.override.yaml
+python score.py --config score.base.yaml score.override.yaml
+python estimate_dataset.py --config configs/base.yaml configs/estimate.yaml
+```
+
+合并发生在入口自己的解析、默认值补齐和字段校验之前。最终配置是这些文件字段的并集，命令行中越靠后的文件优先级越高；dict 字段递归合并，list、标量和 `null` 直接覆盖旧值。这个机制用于把通用训练/rollout 配置放到 base YAML 中，再用小的 override YAML 修改少数实验字段。运行时保存的 config 会记录 `config_sources`；单文件运行时原有 `train_config_source` / `eval_config_source` / `score_config_source` / `estimate_config_source` 仍是字符串，多文件运行时记录文件列表。
 
 ```yaml
 # 环境与任务
@@ -567,7 +576,7 @@ python evaluate.py --config eval.yaml
 torchrun --standalone --nproc_per_node=<num_gpus> evaluate.py --config eval.yaml --parallel_backend ddp
 ```
 
-通过 `eval.yaml` 控制所有评估配置：
+通过 `eval.yaml` 控制所有评估配置；也可以用 `--config eval.base.yaml eval.override.yaml` 先合并多个 YAML，再按同一套规则解析：
 
 ```yaml
 model_path: checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/final
@@ -653,7 +662,7 @@ python inspect_antmaze_layouts.py --variants medium-play large-play local-layout
 python score.py --config score.yaml
 ```
 
-`score.py` 的运行参数统一来自 `score.yaml`；命令行只保留 `--config` 用来选择配置文件，不使用 `--mode`、`--variants`、`--num-episodes` 等覆盖项。强 prompt 警告的自动确认由 `assume_yes: true` 控制。
+`score.py` 的运行参数统一来自 YAML；命令行只保留 `--config` 用来选择一个或多个配置文件，不使用 `--mode`、`--variants`、`--num-episodes` 等覆盖项。多个 score config 的合并规则与训练/eval 相同，后面的文件覆盖前面的值。强 prompt 警告的自动确认由 `assume_yes: true` 控制。
 
 ```yaml
 model_path: checkpoints/pointmaze/Qwen3-0.6B/<selection>/<experiment_id>/ep1
@@ -793,7 +802,7 @@ micromamba run -n llm_offline python estimate_dataset.py \
   --sample-episodes-per-variant 4
 ```
 
-`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。脚本读取训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`prompt_templete_index`、`episode_keep_num`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时还会透传 `antmaze_data_config`，因此过滤、截断和 holding 后的 episode 数/step 数才是统计基础。
+`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。它也支持 `--config base.yaml override.yaml` 多文件合并。脚本读取合并后的训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`prompt_templete_index`、`episode_keep_num`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时还会透传 `antmaze_data_config`，因此过滤、截断和 holding 后的 episode 数/step 数才是统计基础。
 
 体积估算不会写正式 dataset cache。脚本会按每个 selected variant 抽取 `--sample-episodes-per-variant` 条完整 selected episode 做真实 tokenization，把这些样本 pickle 成类似 shard cache 的结构后测量字节数，再按 `sampled_pickle_bytes * target_selected_steps / sampled_steps` 用 step ratio 外推 train、val 和 total `.pkl` 大小，单位为十进制 GB。多 prompt 导致的样本膨胀由抽样 tokenization 自然包含；`max_data_num` 会同时影响样本数和 size target。`--world_size` 只用于数学预估 DDP batch 数和 partition round `target_batches`，不初始化 DDP、不要求真实 rank 或 GPU。
 
