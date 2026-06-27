@@ -17,14 +17,17 @@ sys.modules.setdefault("unsloth", unsloth_stub)
 import evaluate
 from utils.distributed import DistributedContext
 from utils.eval_parallel import (
+    apply_rollout_config_defaults,
     assigned_eval_variants,
     eval_variant_assignments,
-    resolve_eval_parallel_episodes,
+    resolve_rollout_worker_num,
 )
 from utils.eval_rollout import (
     ActionRolloutContext,
     generate_valid_continuous_actions_batch,
 )
+from utils.rollout.artifacts import write_step_log
+from utils.rollout.worker_main import _prepare_eval_prompt_vars
 from utils.video_writer import VideoSaveManager
 
 
@@ -143,7 +146,7 @@ class EvalParallelTest(unittest.TestCase):
         )
         env = object()
 
-        resolved = evaluate._prepare_eval_prompt_vars(
+        resolved = _prepare_eval_prompt_vars(
             formatter,
             {"maze_map": "train"},
             env,
@@ -249,9 +252,12 @@ class EvalParallelTest(unittest.TestCase):
             ),
             {0: ["a", "d"], 1: ["b", "e"], 2: ["c"]},
         )
-        self.assertEqual(resolve_eval_parallel_episodes({}), 1)
+        self.assertEqual(resolve_rollout_worker_num({}), 1)
+        self.assertEqual(resolve_rollout_worker_num({"rollout_worker_num": 3}), 3)
         with self.assertRaises(ValueError):
-            resolve_eval_parallel_episodes({"eval_parallel_episodes": 0})
+            resolve_rollout_worker_num({"rollout_worker_num": 0})
+        with self.assertRaisesRegex(ValueError, "rename it to rollout_worker_num"):
+            apply_rollout_config_defaults({"eval_parallel_episodes": 2})
 
     def test_standalone_eval_output_mode_keeps_standalone_dir(self):
         self.assertEqual(evaluate.resolve_eval_output_mode({}), "standalone")
@@ -370,52 +376,11 @@ class EvalParallelTest(unittest.TestCase):
         self.assertEqual(tokenizer.padding_side, "right")
         self.assertIsNone(tokenizer.pad_token)
 
-    def test_batched_episode_slots_are_reused(self):
-        model = DummyContinuousModel()
-        config = {
-            "env_family": "pointmaze",
-            "num_episodes": 5,
-            "parse_retry_limit": 0,
-            "seed": 10,
-            "history_num": 0,
-            "history_stride": 1,
-            "record_video": False,
-            "record_step_logs": False,
-            "action_token_mode": "parallel_l1",
-            "action_dim": 2,
-            "action_sampling": False,
-            "eval_parallel_episodes": 3,
-        }
-        with (
-            mock.patch.object(
-                evaluate,
-                "_resolve_variant_env_spec",
-                return_value=({"prompt_vars": {}}, "Dummy-v0", {}),
-            ),
-            mock.patch.object(evaluate, "get_formatter", return_value=DummyFormatter()),
-            mock.patch.object(evaluate, "render_policy_prompt", return_value="prompt"),
-            mock.patch.object(evaluate.gym, "make", side_effect=lambda *args, **kwargs: DummyEnv()),
-        ):
-            result = evaluate.evaluate_variant(
-                config,
-                "dummy",
-                model,
-                DummyTokenizer(),
-                torch.device("cpu"),
-                "template",
-            )
-
-        self.assertEqual(result["episode_seeds"], [10, 11, 12, 13, 14])
-        self.assertEqual(result["eval_parallel_episodes_used"], 3)
-        self.assertEqual(result["mean_episode_steps"], 1.4)
-        self.assertEqual(model.batch_sizes[0], 3)
-        self.assertTrue(any(batch_size < 3 for batch_size in model.batch_sizes))
-
     def test_step_logs_are_combined_per_episode(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode_dir = Path(tmpdir) / "episode_0001"
             for step_index in range(2):
-                evaluate.write_step_log(
+                write_step_log(
                     str(episode_dir),
                     step_index,
                     prompt=f"prompt {step_index + 1}",

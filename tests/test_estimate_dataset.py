@@ -62,6 +62,7 @@ class EstimateDatasetTest(unittest.TestCase):
                     sampled_steps=10,
                     sampled_samples=30,
                     sampled_pickle_bytes=1000,
+                    sampled_memory_bytes=2000,
                     sampled_tokens=300,
                 )
             ],

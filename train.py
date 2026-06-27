@@ -81,6 +81,7 @@ from utils.distributed import (
     unwrap_model,
 )
 from utils.distributed_sampler import DistributedWeightedSampler, LocalShardPaddingSampler
+from utils.eval_parallel import apply_rollout_config_defaults
 from utils.experiment_config import save_experiment_config_snapshot
 from utils.file_progress import FileProgress
 from utils.lr_scheduler import (
@@ -1223,7 +1224,15 @@ def _build_training_eval_config(config: dict) -> dict:
         "video_save_max_pending": config.get("video_save_max_pending"),
         "mujoco_gl": config.get("mujoco_gl"),
         "record_step_logs": config.get("record_step_logs", True),
-        "eval_parallel_episodes": config.get("eval_parallel_episodes", 1),
+        "rollout_worker_num": config.get("rollout_worker_num", 1),
+        "rollout_worker_lifetime": config.get("rollout_worker_lifetime", "slot"),
+        "rollout_worker_retries": config.get("rollout_worker_retries", 1),
+        "rollout_worker_start_timeout_seconds": config.get(
+            "rollout_worker_start_timeout_seconds",
+            120,
+        ),
+        "rollout_action_timeout_seconds": config.get("rollout_action_timeout_seconds", 300),
+        "policy_batch_timeout_ms": config.get("policy_batch_timeout_ms", 10),
         "eval_distribute_variants": config.get("eval_distribute_variants", True),
         "action_sampling": config.get("action_sampling", False),
         "action_temperature": config.get("action_temperature", 1.0),
@@ -1426,26 +1435,7 @@ def _read_isolated_eval_results(
 def _isolated_eval_attempt_configs(child_config: dict) -> list[tuple[str, dict]]:
     configured = dict(child_config)
     configured["isolated_eval_attempt_mode"] = "configured"
-    attempts = [("configured", configured)]
-
-    try:
-        requested_parallel_episodes = int(child_config.get("eval_parallel_episodes", 1))
-    except (TypeError, ValueError):
-        requested_parallel_episodes = 1
-
-    if requested_parallel_episodes > 1:
-        serial_fallback = dict(child_config)
-        serial_fallback["eval_parallel_episodes"] = 1
-        serial_fallback["isolated_eval_attempt_mode"] = "serial_fallback"
-        serial_fallback["isolated_eval_fallback_reason"] = (
-            "previous_attempt_failed"
-        )
-        serial_fallback["isolated_eval_original_eval_parallel_episodes"] = (
-            requested_parallel_episodes
-        )
-        attempts.append(("serial_fallback", serial_fallback))
-
-    return attempts
+    return [("configured", configured)]
 
 
 def _run_isolated_eval_subprocess_for_rank(
@@ -1506,7 +1496,7 @@ def _run_isolated_eval_subprocess_for_rank(
         print(
             f"[eval][rank {dist_context.rank}] isolated attempt "
             f"{attempt}/{max_attempts} mode={attempt_mode} variants={local_variants} "
-            f"parallel_episodes={attempt_config.get('eval_parallel_episodes')}"
+            f"rollout_worker_num={attempt_config.get('rollout_worker_num')}"
         )
         with open(stdout_path, "w", encoding="utf-8") as stdout, open(
             stderr_path,
@@ -1541,7 +1531,7 @@ def _run_isolated_eval_subprocess_for_rank(
             print(
                 f"[eval][rank {dist_context.rank}] WARNING: isolated eval "
                 f"attempt {attempt}/{max_attempts} failed for variants={local_variants}; "
-                "retrying with eval_parallel_episodes=1. "
+                "retrying. "
                 f"stdout={stdout_path} stderr={stderr_path} error={last_error}"
             )
 
@@ -1568,7 +1558,8 @@ def _write_isolated_eval_config_snapshot(
     *,
     training_eval_context: dict,
     assignments: dict,
-    parallel_episodes: int,
+    rollout_worker_num: int,
+    rollout_worker_lifetime: str,
     distribute_variants: bool,
 ) -> None:
     snapshot_context = dict(training_eval_context)
@@ -1585,10 +1576,8 @@ def _write_isolated_eval_config_snapshot(
     snapshot["resolved_eval_variants"] = list(variants)
     snapshot["resolved_eval_variant_assignments"] = assignments
     snapshot["eval_world_size"] = training_eval_context.get("eval_world_size")
-    snapshot["eval_parallel_episodes"] = parallel_episodes
-    snapshot["isolated_eval_fallback_on_failure"] = parallel_episodes > 1
-    if parallel_episodes > 1:
-        snapshot["isolated_eval_fallback_eval_parallel_episodes"] = 1
+    snapshot["rollout_worker_num"] = rollout_worker_num
+    snapshot["rollout_worker_lifetime"] = rollout_worker_lifetime
 
     run_results_dir = _isolated_eval_root_dir(
         config,
@@ -1674,7 +1663,8 @@ def _run_eval_isolated(
         assigned_eval_variants,
         eval_variant_assignments,
         resolve_eval_distribute_variants,
-        resolve_eval_parallel_episodes,
+        resolve_rollout_worker_lifetime,
+        resolve_rollout_worker_num,
     )
 
     if dist_context is None:
@@ -1682,7 +1672,8 @@ def _run_eval_isolated(
 
     eval_config = _build_training_eval_config(config)
     distribute_variants = resolve_eval_distribute_variants(eval_config)
-    parallel_episodes = resolve_eval_parallel_episodes(eval_config)
+    rollout_worker_num = resolve_rollout_worker_num(eval_config)
+    rollout_worker_lifetime = resolve_rollout_worker_lifetime(eval_config)
     assignments = eval_variant_assignments(
         variants,
         dist_context,
@@ -1716,9 +1707,8 @@ def _run_eval_isolated(
         print(
             f"[eval] {label} | isolated rollout enabled | "
             f"variant assignments={assignments} | "
-            f"parallel_episodes={parallel_episodes} | "
-            "fallback_on_failure="
-            f"{parallel_episodes > 1}"
+            f"rollout_worker_num={rollout_worker_num} | "
+            f"rollout_worker_lifetime={rollout_worker_lifetime}"
         )
 
     local_results, local_failures = _run_isolated_eval_subprocess_for_rank(
@@ -1742,7 +1732,8 @@ def _run_eval_isolated(
             variants,
             training_eval_context=training_eval_context,
             assignments=assignments,
-            parallel_episodes=parallel_episodes,
+            rollout_worker_num=rollout_worker_num,
+            rollout_worker_lifetime=rollout_worker_lifetime,
             distribute_variants=distribute_variants,
         )
         results_by_variant = {
@@ -1825,169 +1816,26 @@ def _run_eval(
     wandb_batch_step: int | None = None,
     dist_context: DistributedContext | None = None,
 ):
-    if _as_bool(config.get("training_eval_rollout_isolated", False)):
-        return _run_eval_isolated(
-            config,
-            train_selection_tag,
-            variants,
-            eval_type,
-            train_loss,
-            val_loss,
-            checkpoint_dir,
-            val_metrics=val_metrics,
-            epoch=epoch,
-            batch_step=batch_step,
-            epoch_step=epoch_step,
-            optimizer_step=optimizer_step,
-            scheduled_step=scheduled_step,
-            scheduled_epoch_step=scheduled_epoch_step,
-            wandb_logger=wandb_logger,
-            train_env_steps=train_env_steps,
-            wandb_batch_step=wandb_batch_step,
-            dist_context=dist_context,
-        )
-
-    import gymnasium_robotics  # noqa: F401
-    from evaluate import (
-        apply_training_eval_context_to_result,
-        configure_mujoco_gl,
-        evaluate_variant,
-    )
-    from utils.eval_parallel import (
-        assigned_eval_variants,
-        eval_variant_assignments,
-        resolve_eval_distribute_variants,
-        resolve_eval_parallel_episodes,
-    )
-    from utils.prompt_loader import load_named_templates
-
-    if dist_context is None:
-        dist_context = DistributedContext(backend="single", device=device)
-    eval_config = _build_training_eval_config(config)
-    configure_mujoco_gl(eval_config)
-    distribute_variants = resolve_eval_distribute_variants(eval_config)
-    parallel_episodes = resolve_eval_parallel_episodes(eval_config)
-    assignments = eval_variant_assignments(
-        variants,
-        dist_context,
-        distribute_variants=distribute_variants,
-    )
-    local_variants = assigned_eval_variants(
-        variants,
-        dist_context,
-        distribute_variants=distribute_variants,
-    )
-    training_eval_context = _build_training_eval_context(
+    return _run_eval_isolated(
         config,
-        eval_type=eval_type,
-        train_loss=train_loss,
-        val_loss=val_loss,
+        train_selection_tag,
+        variants,
+        eval_type,
+        train_loss,
+        val_loss,
+        checkpoint_dir,
         val_metrics=val_metrics,
-        checkpoint_dir=checkpoint_dir,
         epoch=epoch,
         batch_step=batch_step,
         epoch_step=epoch_step,
         optimizer_step=optimizer_step,
         scheduled_step=scheduled_step,
         scheduled_epoch_step=scheduled_epoch_step,
+        wandb_logger=wandb_logger,
+        train_env_steps=train_env_steps,
+        wandb_batch_step=wandb_batch_step,
+        dist_context=dist_context,
     )
-    prompt_name = config["prompt_templete_index"][0]
-    template = load_named_templates(config["env_family"], [prompt_name])[0]
-    label = f"Step {batch_step}" if eval_type == "step" else f"Epoch {epoch}"
-    if eval_type == "step" and scheduled_step is not None and scheduled_step != batch_step:
-        label = f"{label} (scheduled at batch step {scheduled_step})"
-    if eval_type == "step" and epoch_step is not None:
-        label = f"{label}, epoch step {epoch_step}"
-        if scheduled_epoch_step is not None and scheduled_epoch_step != epoch_step:
-            label = f"{label} (scheduled at epoch step {scheduled_epoch_step})"
-
-    model.eval()
-    unpatch_continuous_action_forward(model)
-    unpatch_mtp_bin_forward(model)
-    FastLanguageModel.for_inference(model)
-    ensure_continuous_action_decoder(model, config)
-    ensure_mtp_bin_decoder(model, config)
-
-    try:
-        if dist_context.is_main_process:
-            print(
-                f"[eval] {label} | variant assignments={assignments} | "
-                f"parallel_episodes={parallel_episodes}"
-            )
-        local_results = []
-        for variant in local_variants:
-            print(
-                f"[eval][rank {dist_context.rank}] "
-                f"{label} | variant: {variant}"
-            )
-            results_dir = get_eval_variant_results_dir(
-                config,
-                train_selection_tag,
-                variant,
-                epoch=epoch if eval_type == "epoch" else None,
-                step=batch_step if eval_type == "step" else None,
-            )
-            os.makedirs(results_dir, exist_ok=True)
-            result_path = os.path.join(results_dir, "result.json")
-
-            result = evaluate_variant(
-                eval_config,
-                variant,
-                model,
-                tokenizer,
-                device,
-                template,
-                variant_results_dir=results_dir,
-            )
-            result["prompt_template_name"] = prompt_name
-            result["result_path"] = result_path
-            apply_training_eval_context_to_result(result, training_eval_context)
-            result["eval_rank"] = dist_context.rank
-            result["eval_world_size"] = dist_context.world_size
-            result["eval_distribute_variants"] = distribute_variants
-
-            print(
-                f"[eval][rank {dist_context.rank}] "
-                f"{variant}: mean_return={result['mean_return']:.4f}, "
-                f"success_rate={result['success_rate']:.2%}, "
-                f"mean_steps={result['mean_episode_steps']:.1f}, "
-                f"train_loss={_format_loss_value(train_loss)}, "
-                f"val_loss={_format_loss_value(val_loss)}"
-                f"{_format_optional_metric('val_mae', (val_metrics or {}).get('mae'))}"
-            )
-
-            with open(result_path, "w") as f:
-                json.dump(result, f, indent=2)
-            print(
-                f"[eval][rank {dist_context.rank}] Saved: {result_path}"
-            )
-            local_results.append(result)
-
-        gathered_results = all_gather_objects(local_results, dist_context)
-        if dist_context.is_main_process:
-            results_by_variant = {
-                result["variant"]: result
-                for rank_results in gathered_results
-                for result in rank_results
-            }
-            _log_training_eval_wandb_metrics(
-                variants=variants,
-                results_by_variant=results_by_variant,
-                failures_by_variant={},
-                wandb_logger=wandb_logger,
-                train_env_steps=train_env_steps,
-                wandb_batch_step=wandb_batch_step,
-                batch_step=batch_step,
-                optimizer_step=optimizer_step,
-                epoch=epoch,
-            )
-    finally:
-        model.train()
-        unpatch_continuous_action_forward(model)
-        unpatch_mtp_bin_forward(model)
-        FastLanguageModel.for_training(model)
-        ensure_continuous_action_decoder(model, config)
-        ensure_mtp_bin_decoder(model, config)
 
 
 def _compute_batch_loss(model, batch, device, loss_context: dict):
@@ -4294,12 +4142,19 @@ def main():
             )
 
         normalize_prompt_config(config)
+        rollout_defaults = apply_rollout_config_defaults(config)
+        for key in (
+            "rollout_worker_num",
+            "rollout_worker_lifetime",
+            "rollout_worker_retries",
+            "rollout_worker_start_timeout_seconds",
+            "rollout_action_timeout_seconds",
+            "policy_batch_timeout_ms",
+        ):
+            config[key] = rollout_defaults[key]
         dataloader_config = resolve_dataloader_config(config)
         config["dataset_load_partitions"] = resolve_dataset_load_partitions(config, dist_context)
         resolve_step_eval_skip(config)
-        config["training_eval_rollout_isolated"] = _as_bool(
-            config.get("training_eval_rollout_isolated", False)
-        )
         available_variants = get_available_variants(config["env_family"])
         train_selection = resolve_train_selection(config, available_variants)
         eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)

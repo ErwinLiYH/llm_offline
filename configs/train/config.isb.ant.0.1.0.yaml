@@ -102,9 +102,13 @@ eval_step_interval: 50000
 step_eval_skip: 1000
 eval_mode: single
 eval_variants: [large-play]
-eval_parallel_episodes: 5
+rollout_worker_num: 5   # per eval rank; isolated env worker processes
+rollout_worker_lifetime: slot  # slot = one long-lived worker per slot; episode = fresh worker per episode
+rollout_worker_retries: 1
+rollout_worker_start_timeout_seconds: 120
+rollout_action_timeout_seconds: 300
+policy_batch_timeout_ms: 10
 eval_distribute_variants: true
-training_eval_rollout_isolated: true
 eval_env_kwargs:
   continuing_task: false
   reset_target: false

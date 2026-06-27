@@ -10,7 +10,12 @@ history_stride: 2        # sample every n past executed transitions when buildin
 eval_mode: single       # single | all | except
 variants: local-layout-07       # single: exactly one; all: selected variants or omit for all; except: excluded variants
 num_episodes: 20
-eval_parallel_episodes: 4   # continuous modes only; other action modes fall back to serial rollout
+rollout_worker_num: 1   # per eval rank; isolated env worker processes
+rollout_worker_lifetime: slot  # slot = one long-lived worker per slot; episode = fresh worker per episode
+rollout_worker_retries: 1
+rollout_worker_start_timeout_seconds: 120
+rollout_action_timeout_seconds: 300
+policy_batch_timeout_ms: 10
 eval_distribute_variants: true  # DDP only; assign variants across ranks
 seed: 1                  # episode reset seeds are seed, seed+1, ... for every standalone eval
 parse_retry_limit: 3

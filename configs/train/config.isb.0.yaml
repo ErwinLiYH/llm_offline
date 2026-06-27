@@ -118,7 +118,12 @@ eval_step_interval: 7000    # global train batch interval for step eval/checkpoi
 step_eval_skip: 1         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
 eval_mode: except           # optional; defaults to following train_mode
 eval_variants: [open-dense, umaze-dense, medium-dense, large-dense]  # single: one variant; all: selected variants or omit for all; except: excluded variants
-eval_parallel_episodes: 8   # continuous modes only; batch this many active episodes per rank
+rollout_worker_num: 8   # per eval rank; isolated env worker processes
+rollout_worker_lifetime: slot  # slot = one long-lived worker per slot; episode = fresh worker per episode
+rollout_worker_retries: 1
+rollout_worker_start_timeout_seconds: 120
+rollout_action_timeout_seconds: 300
+policy_batch_timeout_ms: 10
 eval_distribute_variants: true  # DDP only; assign different eval variants to different ranks
 eval_env_kwargs:
   continuing_task: false

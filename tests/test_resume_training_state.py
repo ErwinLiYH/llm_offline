@@ -147,7 +147,7 @@ def _isolated_eval_base_config(tmpdir: str) -> dict:
         "eval_seed": 3,
         "prompt_templete_index": ["0"],
         "eval_distribute_variants": True,
-        "training_eval_rollout_isolated": True,
+        "rollout_worker_num": 1,
     }
 
 
@@ -264,20 +264,17 @@ class IsolatedTrainingEvalTest(unittest.TestCase):
                 {"mae": 0.25},
             )
 
-    def test_failure_falls_back_to_serial_parallel_episodes(self):
+    def test_subprocess_failure_does_not_retry_with_serial_worker_count(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = _isolated_eval_base_config(tmpdir)
-            config["eval_parallel_episodes"] = 5
+            config["rollout_worker_num"] = 5
             selection_tag = "umaze"
             seen_child_configs = []
 
             def fake_run(command, **kwargs):
                 child_config = _isolated_eval_config_from_command(command)
                 seen_child_configs.append(child_config)
-                if len(seen_child_configs) == 1:
-                    return subprocess.CompletedProcess(command, 1)
-                _write_fake_isolated_eval_results(config, selection_tag, child_config)
-                return subprocess.CompletedProcess(command, 0)
+                return subprocess.CompletedProcess(command, 1)
 
             wandb = DummyWandbLogger()
             with mock.patch("train.subprocess.run", side_effect=fake_run):
@@ -296,27 +293,19 @@ class IsolatedTrainingEvalTest(unittest.TestCase):
                     dist_context=DistributedContext(backend="single"),
                 )
 
-            self.assertEqual(len(seen_child_configs), 2)
-            self.assertEqual(seen_child_configs[0]["eval_parallel_episodes"], 5)
+            self.assertEqual(len(seen_child_configs), 1)
+            self.assertEqual(seen_child_configs[0]["rollout_worker_num"], 5)
             self.assertEqual(
                 seen_child_configs[0]["isolated_eval_attempt_mode"],
                 "configured",
             )
-            self.assertEqual(seen_child_configs[1]["eval_parallel_episodes"], 1)
-            self.assertEqual(
-                seen_child_configs[1]["isolated_eval_attempt_mode"],
-                "serial_fallback",
-            )
-            self.assertEqual(
-                seen_child_configs[1]["isolated_eval_original_eval_parallel_episodes"],
-                5,
-            )
-            self.assertEqual(wandb.logs[0]["eval/umaze/success_rate"], 0.75)
+            self.assertEqual(wandb.logs[0]["eval/umaze/rollout_failed"], 1.0)
+            self.assertEqual(wandb.logs[0]["eval/umaze/isolated_attempts"], 1.0)
 
     def test_all_failures_warn_and_log_failure_flag(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = _isolated_eval_base_config(tmpdir)
-            config["eval_parallel_episodes"] = 5
+            config["rollout_worker_num"] = 5
             wandb = DummyWandbLogger()
 
             with mock.patch(
@@ -340,13 +329,13 @@ class IsolatedTrainingEvalTest(unittest.TestCase):
 
             self.assertEqual(len(wandb.logs), 1)
             self.assertEqual(wandb.logs[0]["eval/umaze/rollout_failed"], 1.0)
-            self.assertEqual(wandb.logs[0]["eval/umaze/isolated_attempts"], 2.0)
+            self.assertEqual(wandb.logs[0]["eval/umaze/isolated_attempts"], 1.0)
             self.assertNotIn("eval/umaze/success_rate", wandb.logs[0])
 
-    def test_failure_with_serial_parallel_episodes_does_not_retry(self):
+    def test_subprocess_failure_does_not_stop_training_eval(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = _isolated_eval_base_config(tmpdir)
-            config["eval_parallel_episodes"] = 1
+            config["rollout_worker_num"] = 1
             wandb = DummyWandbLogger()
 
             with mock.patch(

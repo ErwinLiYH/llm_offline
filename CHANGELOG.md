@@ -1487,3 +1487,36 @@ type: project
 - 单 variant 和真正全量 `all` 路径保持原样；hash 基于排序后的 variant 列表，保证同一组选择顺序无关、稳定复现
 - 新增 `full_selection_tag`，并在训练、评估和 score 输出配置中记录完整可读 tag，例如 `train_selection_tag_full` / `resolved_eval_selection_tag_full` / `selection_tag_full`
 - 补充 `tests/test_variant_selection.py` 覆盖短 tag 格式、顺序不敏感和完整 tag 记录，并更新路径规则文档
+
+## Evaluate/Score process-isolated rollout（2026-06-27）
+
+**Rollout 架构重构：**
+- 新增 `utils/rollout/` 包，集中管理 eval/score rollout 协议、worker 子进程、supervisor 调度、父进程 policy inference、视频/step-log artifact 写入和结果聚合
+- `evaluate.py` 和 `score.py` 改为薄入口：继续负责 config、variant selection、checkpoint/model 加载、结果目录和 DDP rank 分配；每个 variant 的 episode rollout 交给 `utils.rollout.evaluate_runner` / `utils.rollout.score_runner`
+- 每个并行 rollout slot 都是独立 worker 子进程，worker 进程内只持有一个 env；父进程只持有模型并响应 `ActionRequest`
+- continuous 模式的多 worker action request 会在父进程按 `policy_batch_timeout_ms` 做短暂聚合，支持批量 forward；text/bin/MTP 路径也走同一 action request/response 协议
+
+**配置迁移：**
+- 废弃 `eval_parallel_episodes`；配置中出现该字段会直接报错并提示改为 `rollout_worker_num`
+- 新增 rollout 配置：`rollout_worker_num`、`rollout_worker_lifetime`、`rollout_worker_retries`、`rollout_worker_start_timeout_seconds`、`rollout_action_timeout_seconds`、`policy_batch_timeout_ms`
+- `rollout_worker_num` 是 per eval rank / per score rank 的 worker 数；DDP eval 中实际最大 worker 数约为 `world_size * rollout_worker_num`，未分配到 variant 的 rank 不启动 worker
+- `rollout_worker_lifetime: slot` 表示每个 slot 一个长驻 worker 顺序跑多个 episode；`episode` 表示每个 episode 单独启动 worker，隔离更强但更慢
+- 示例配置 `config*.yaml`、`eval*.yaml`、`score.yaml` 和 `configs/train/config.isb*.yaml` 已加入新 rollout 配置，并在 `rollout_worker_num` 注释里标明 per rank 语义
+
+**训练期 eval 行为：**
+- 训练主进程不再直接执行 env rollout；training-time rollout 总是先保存 checkpoint，再由对应训练 rank 启动单进程 `evaluate.py` 子进程
+- `training_eval_rollout_isolated` 变为兼容/废弃字段，不再作为开关；训练期 eval 始终使用 isolated subprocess
+- 子进程清理 DDP 环境变量，并在 DDP 训练中把 `CUDA_VISIBLE_DEVICES` 收窄到父 rank 对应 GPU
+- 子进程失败不会终止训练；父进程记录 warning，W&B 写 `eval/<variant>/rollout_failed=1.0`，训练继续
+- 保留 `isolated_eval/rank_<rank>/attempt_<n>.yaml|stdout|stderr` 目录结构，便于排查子进程失败
+
+**结果和日志：**
+- `result.json` / score `summary.json` 保持原主要字段，并新增 `rollout_isolation: "process"`、`rollout_worker_num`、`rollout_worker_lifetime`、`rollout_workers_used`、`worker_failures`、`completed_episodes` 和 `failed_episodes`
+- worker 子进程默认不直接打印 episode 进度；命令行只显示父进程的 variant 级启动、summary 和 result path，训练期 child stdout/stderr 写入 isolated eval attempt 文件
+- step 级细节继续由 `record_step_logs` 写到每个 episode artifact 目录；视频编码在 worker 子进程内完成，路径返回给父进程写入 result JSON
+
+**文档与验证：**
+- 新增 `docs/rollout_process_isolation.md`，说明 rank/worker 关系、训练期隔离、eval 与 score 差异、日志位置、结果字段和迁移方式
+- 更新 `AGENTS.md` 中旧的 `eval_parallel_episodes` / 可选 isolated eval 说明
+- 已通过 `conda run -n llm_offline python -m py_compile evaluate.py score.py train.py utils/eval_parallel.py utils/rollout/*.py`
+- 已通过 `conda run -n llm_offline python -m unittest discover -s tests`

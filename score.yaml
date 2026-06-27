@@ -8,6 +8,12 @@ eval_mode: all        # single | all | except
 variants:
   - local-layout-07
 num_episodes: 100
+rollout_worker_num: 1   # per score/eval rank; isolated env worker processes
+rollout_worker_lifetime: slot
+rollout_worker_retries: 1
+rollout_worker_start_timeout_seconds: 120
+rollout_action_timeout_seconds: 300
+policy_batch_timeout_ms: 10
 seed: 123
 parse_retry_limit: 3
 assume_yes: true         # true = continue through strong prompt warnings without interactive confirmation

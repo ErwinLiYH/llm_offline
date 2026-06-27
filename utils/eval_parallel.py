@@ -14,14 +14,70 @@ def _as_bool(value) -> bool:
     return bool(value)
 
 
-def resolve_eval_parallel_episodes(config: dict) -> int:
-    parallel_episodes = int(config.get("eval_parallel_episodes", 1))
-    if parallel_episodes < 1:
+def resolve_rollout_worker_num(config: dict) -> int:
+    if "eval_parallel_episodes" in config:
         raise ValueError(
-            "eval_parallel_episodes must be >= 1, "
-            f"got {parallel_episodes}"
+            "eval_parallel_episodes is deprecated and no longer supported; "
+            "rename it to rollout_worker_num."
         )
-    return parallel_episodes
+    worker_num = int(config.get("rollout_worker_num", 1))
+    if worker_num < 1:
+        raise ValueError(f"rollout_worker_num must be >= 1, got {worker_num}")
+    return worker_num
+
+
+def resolve_rollout_worker_lifetime(config: dict) -> str:
+    lifetime = str(config.get("rollout_worker_lifetime", "slot")).strip().lower()
+    if lifetime not in {"slot", "episode"}:
+        raise ValueError(
+            "rollout_worker_lifetime must be 'slot' or 'episode', "
+            f"got {lifetime!r}"
+        )
+    return lifetime
+
+
+def resolve_rollout_worker_retries(config: dict) -> int:
+    retries = int(config.get("rollout_worker_retries", 1))
+    if retries < 0:
+        raise ValueError(f"rollout_worker_retries must be >= 0, got {retries}")
+    return retries
+
+
+def resolve_rollout_worker_start_timeout_seconds(config: dict) -> float:
+    timeout = float(config.get("rollout_worker_start_timeout_seconds", 120))
+    if timeout <= 0:
+        raise ValueError(
+            "rollout_worker_start_timeout_seconds must be > 0, "
+            f"got {timeout}"
+        )
+    return timeout
+
+
+def resolve_rollout_action_timeout_seconds(config: dict) -> float:
+    timeout = float(config.get("rollout_action_timeout_seconds", 300))
+    if timeout <= 0:
+        raise ValueError(f"rollout_action_timeout_seconds must be > 0, got {timeout}")
+    return timeout
+
+
+def resolve_policy_batch_timeout_ms(config: dict) -> int:
+    timeout_ms = int(config.get("policy_batch_timeout_ms", 10))
+    if timeout_ms < 0:
+        raise ValueError(f"policy_batch_timeout_ms must be >= 0, got {timeout_ms}")
+    return timeout_ms
+
+
+def apply_rollout_config_defaults(config: dict) -> dict:
+    resolved = dict(config)
+    resolved["rollout_worker_num"] = resolve_rollout_worker_num(resolved)
+    resolved["rollout_worker_lifetime"] = resolve_rollout_worker_lifetime(resolved)
+    resolved["rollout_worker_retries"] = resolve_rollout_worker_retries(resolved)
+    resolved["rollout_worker_start_timeout_seconds"] = (
+        resolve_rollout_worker_start_timeout_seconds(resolved)
+    )
+    resolved["rollout_action_timeout_seconds"] = resolve_rollout_action_timeout_seconds(resolved)
+    resolved["policy_batch_timeout_ms"] = resolve_policy_batch_timeout_ms(resolved)
+    return resolved
 
 
 def resolve_eval_distribute_variants(config: dict) -> bool:

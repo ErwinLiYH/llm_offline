@@ -7,7 +7,12 @@ env_family: antmaze
 eval_mode: single
 variants: [large-play]
 num_episodes: 20
-eval_parallel_episodes: 1
+rollout_worker_num: 1   # per eval rank; isolated env worker processes
+rollout_worker_lifetime: slot
+rollout_worker_retries: 1
+rollout_worker_start_timeout_seconds: 120
+rollout_action_timeout_seconds: 300
+policy_batch_timeout_ms: 10
 eval_distribute_variants: false
 seed: 1
 
