@@ -16,7 +16,10 @@ set -euo pipefail
 
 PROJECT_ROOT=/home/u6mx/yl1118.u6mx/llm_offline
 ENV_BIN=/home/u6mx/yl1118.u6mx/miniforge3/envs/llm_offline/bin
-CONFIG_PATH=configs/train/config.isb.ant.0.0.1.yaml
+CONFIG_PATHS=(
+    configs/train/config.isb.ant.0.0.0.yaml
+    configs/train/config.isb.ant.0.0.1.yaml
+)
 RESUME_FROM_CHECKPOINT=""
 
 usage() {
@@ -61,6 +64,7 @@ export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 
 echo "Job ${SLURM_JOB_ID} started at $(date --iso-8601=seconds)"
 echo "Node: $(hostname)"
+echo "Configs: ${CONFIG_PATHS[*]}"
 if [[ -n "${RESUME_FROM_CHECKPOINT}" ]]; then
     echo "Resume checkpoint: ${RESUME_FROM_CHECKPOINT}"
 else
@@ -69,7 +73,7 @@ fi
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
 TRAIN_ARGS=(
-    --config "${CONFIG_PATH}"
+    --config "${CONFIG_PATHS[@]}"
     --experiment_id "${SLURM_JOB_ID}"
     --parallel_backend ddp
 )

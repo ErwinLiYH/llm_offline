@@ -18,7 +18,7 @@ PROJECT_ROOT=/home/u6mx/yl1118.u6mx/llm_offline
 ENV_BIN=/home/u6mx/yl1118.u6mx/miniforge3/envs/llm_offline/bin
 NPROC_PER_NODE=4
 
-CONFIG_PATH=""
+CONFIG_PATHS=()
 RESUME_FROM_CHECKPOINT=""
 EXPERIMENT_ID="${SLURM_JOB_ID:-}"
 EXTRA_TRAIN_ARGS=()
@@ -27,11 +27,12 @@ usage() {
     cat <<EOF
 Usage:
   sbatch $0 --config <config.yaml> [options]
+  sbatch $0 --config <base.yaml> <override.yaml> [options]
   sbatch $0 --config <config.yaml> --resume <checkpoint_dir>
   sbatch $0 --config <config.yaml> -- --tokenize-only
 
 Options:
-  --config <path>                     Training config passed to train.py.
+  --config <path> [path ...]          Training config(s) passed to train.py.
   --resume, --resume_from_checkpoint  Resume from a checkpoint directory containing trainer_state.pt.
   --experiment_id <id>                Override experiment id. Defaults to the Slurm job id.
   -h, --help                          Show this help.
@@ -47,13 +48,17 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --config)
-            if [[ $# -lt 2 ]]; then
-                echo "ERROR: --config requires a path" >&2
+            shift
+            if [[ $# -lt 1 || "$1" == --* ]]; then
+                echo "ERROR: --config requires at least one path" >&2
                 usage >&2
                 exit 2
             fi
-            CONFIG_PATH="$2"
-            shift 2
+            CONFIG_PATHS=()
+            while [[ $# -gt 0 && "$1" != --* ]]; do
+                CONFIG_PATHS+=("$1")
+                shift
+            done
             ;;
         --resume|--resume_from_checkpoint)
             if [[ $# -lt 2 ]]; then
@@ -90,15 +95,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "${CONFIG_PATH}" ]]; then
+if [[ ${#CONFIG_PATHS[@]} -eq 0 ]]; then
     echo "ERROR: --config is required" >&2
     usage >&2
     exit 2
 fi
-if [[ ! -f "${CONFIG_PATH}" ]]; then
-    echo "ERROR: config file not found: ${CONFIG_PATH}" >&2
-    exit 2
-fi
+for CONFIG_PATH in "${CONFIG_PATHS[@]}"; do
+    if [[ ! -f "${CONFIG_PATH}" ]]; then
+        echo "ERROR: config file not found: ${CONFIG_PATH}" >&2
+        exit 2
+    fi
+done
 if [[ -z "${EXPERIMENT_ID}" ]]; then
     echo "ERROR: EXPERIMENT_ID is empty and SLURM_JOB_ID is unavailable" >&2
     exit 2
@@ -114,7 +121,7 @@ cd "${PROJECT_ROOT}"
 
 echo "Job ${SLURM_JOB_ID:-manual} started at $(date --iso-8601=seconds)"
 echo "Node: $(hostname)"
-echo "Config: ${CONFIG_PATH}"
+echo "Configs: ${CONFIG_PATHS[*]}"
 echo "Experiment id: ${EXPERIMENT_ID}"
 if [[ -n "${RESUME_FROM_CHECKPOINT}" ]]; then
     echo "Resume checkpoint: ${RESUME_FROM_CHECKPOINT}"
@@ -124,7 +131,7 @@ fi
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
 TRAIN_ARGS=(
-    --config "${CONFIG_PATH}"
+    --config "${CONFIG_PATHS[@]}"
     --experiment_id "${EXPERIMENT_ID}"
     --parallel_backend ddp
 )

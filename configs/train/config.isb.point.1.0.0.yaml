@@ -1,0 +1,40 @@
+# Override relative to config.isb.point.0.0.0.yaml.
+# Merge with: --config configs/train/config.isb.point.0.0.0.yaml configs/train/config.isb.point.1.0.0.yaml
+train_varients:
+- open
+- umaze
+- medium
+- large
+- local-layout-01
+- local-layout-02
+- local-layout-03
+- local-layout-04
+- local-layout-05
+- local-layout-06
+- local-layout-08
+- local-layout-09
+- local-layout-10
+- local-layout-11
+- local-layout-12
+- local-layout-13
+eval_step_interval: 9000
+eval_variants:
+- test-layout-01
+- test-layout-02
+- test-layout-03
+- open
+- umaze
+- medium
+- large
+- local-layout-01
+- local-layout-02
+- local-layout-03
+- local-layout-04
+- local-layout-05
+- local-layout-06
+- local-layout-08
+- local-layout-09
+- local-layout-10
+- local-layout-11
+- local-layout-12
+- local-layout-13

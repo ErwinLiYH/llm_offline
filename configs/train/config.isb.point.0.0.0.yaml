@@ -25,8 +25,13 @@ distributed_timeout_seconds: 7200 # allow rank0 time to build missing shared cac
 # Train-related settings
 
 ## Variant selection
-train_mode: except        # single | all | except
-train_varients: [open-dense, umaze-dense, medium-dense, large-dense, local-layout-07]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
+train_mode: all        # single | all | except
+train_varients: [
+  open, umaze, medium, large,
+  local-layout-01, local-layout-02, local-layout-03,
+  local-layout-04, local-layout-05, local-layout-06,
+  local-layout-08, local-layout-09
+]  # single: exactly one; all: selected variants or omit for all; except: excluded variants
 
 ## Prompt templates
 prompt_templete_index: ["parallel_full_sensing"]  # prompt file names without .txt used for each training split
@@ -116,9 +121,15 @@ eval_num_episodes: 20    # rollout episodes per variant per training eval; 0 = d
 eval_seed: 64             # episode reset seeds are eval_seed, eval_seed+1, ... for every eval
 eval_step_interval: 7000    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
 step_eval_skip: 1         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
-eval_mode: except           # optional; defaults to following train_mode
-eval_variants: [open-dense, umaze-dense, medium-dense, large-dense]  # single: one variant; all: selected variants or omit for all; except: excluded variants
-rollout_worker_num: 8   # per eval rank; isolated env worker processes
+eval_mode: all           # optional; defaults to following train_mode
+eval_variants: [
+  local-layout-07,
+  open, umaze, medium, large,
+  local-layout-01, local-layout-02, local-layout-03,
+  local-layout-04, local-layout-05, local-layout-06,
+  local-layout-08, local-layout-09
+]  # single: one variant; all: selected variants or omit for all; except: excluded variants
+rollout_worker_num: 2   # per eval rank; isolated env worker processes
 rollout_worker_lifetime: slot  # slot = one long-lived worker per slot; episode = fresh worker per episode
 rollout_worker_retries: 1
 rollout_worker_start_timeout_seconds: 120

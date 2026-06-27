@@ -127,7 +127,7 @@ eval_step_interval: 50000    # global train batch interval for step eval/checkpo
 step_eval_skip: 1000         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
 eval_mode: single           # optional; defaults to following train_mode
 eval_variants: [large-play]  # single: one variant; all: selected variants or omit for all; except: excluded variants
-rollout_worker_num: 5   # per eval rank; isolated env worker processes
+rollout_worker_num: 2   # per eval rank; isolated env worker processes
 rollout_worker_lifetime: slot  # slot = one long-lived worker per slot; episode = fresh worker per episode
 rollout_worker_retries: 1
 rollout_worker_start_timeout_seconds: 120

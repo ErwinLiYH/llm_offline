@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=llm_offline_isb1.1
-#SBATCH --output=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/train-isb1.1-%j.out
-#SBATCH --error=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/train-isb1.1-%j.err
+#SBATCH --job-name=llm_offline_isb_point0.0.0
+#SBATCH --output=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/train-isb-point0.0.0-%j.out
+#SBATCH --error=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/train-isb-point0.0.0-%j.err
 #SBATCH --chdir=/home/u6mx/yl1118.u6mx/llm_offline
 #SBATCH --partition=workq
 #SBATCH --nodes=1
@@ -16,7 +16,7 @@ set -euo pipefail
 
 PROJECT_ROOT=/home/u6mx/yl1118.u6mx/llm_offline
 ENV_BIN=/home/u6mx/yl1118.u6mx/miniforge3/envs/llm_offline/bin
-CONFIG_PATH=configs/train/config.isb.1.1.yaml
+CONFIG_PATHS=(configs/train/config.isb.point.0.0.0.yaml)
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
@@ -41,7 +41,7 @@ srun --ntasks=1 "${ENV_BIN}/torchrun" \
     --standalone \
     --nproc_per_node=4 \
     train.py \
-    --config "${CONFIG_PATH}" \
+    --config "${CONFIG_PATHS[@]}" \
     --experiment_id "${SLURM_JOB_ID}" \
     --parallel_backend ddp
 

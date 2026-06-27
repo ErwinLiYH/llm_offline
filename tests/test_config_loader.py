@@ -73,6 +73,40 @@ class ConfigLoaderTests(unittest.TestCase):
             {"num_workers": 6, "pin_memory": True},
         )
 
+    def test_later_config_can_delete_base_keys(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_path = os.path.join(tmpdir, "base.yaml")
+            override_path = os.path.join(tmpdir, "override.yaml")
+            with open(base_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(
+                    {
+                        "action_token_mode": "parallel_gaussian",
+                        "gaussian_log_std_init": -1.0,
+                        "dataloader_config": {
+                            "num_workers": 0,
+                            "pin_memory": False,
+                        },
+                    },
+                    f,
+                )
+            with open(override_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(
+                    {
+                        "config_delete_keys": [
+                            "gaussian_log_std_init",
+                            "dataloader_config.pin_memory",
+                        ],
+                        "action_token_mode": "simple_mtp_bin",
+                    },
+                    f,
+                )
+
+            merged = load_merged_config([base_path, override_path])
+
+        self.assertEqual(merged["action_token_mode"], "simple_mtp_bin")
+        self.assertNotIn("gaussian_log_std_init", merged)
+        self.assertEqual(merged["dataloader_config"], {"num_workers": 0})
+
 
 if __name__ == "__main__":
     unittest.main()

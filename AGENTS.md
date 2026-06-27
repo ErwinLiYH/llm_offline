@@ -20,7 +20,7 @@ Stack:
 
 Training:
 - `micromamba run -n llm_offline python train.py --config config.yaml`
-- Config files can be layered as `--config base.yaml experiment.yaml local.yaml`; later files override earlier files after recursive dict merge, while lists/scalars/null replace the previous value.
+- Config files can be layered as `--config base.yaml experiment.yaml local.yaml`; later files override earlier files after recursive dict merge, while lists/scalars/null replace the previous value. Override files may set `config_delete_keys: ["key", "nested.key"]` to remove keys inherited from earlier files before merging.
 - Override run identity from the CLI, for example Slurm job IDs: `micromamba run -n llm_offline python train.py --config config.yaml --experiment_id <id>`
 - Tokenize/cache only, then exit before optimizer/training setup: `micromamba run -n llm_offline python train.py --config config.yaml --tokenize-only`
 - Estimate one-epoch sample/batch counts, tokenized `.pkl` cache size, and tokenized-sample Python memory footprint without loading the model: `micromamba run -n llm_offline python estimate_dataset.py --config config.yaml --world_size <num_gpus> --sample-episodes-per-variant 4`

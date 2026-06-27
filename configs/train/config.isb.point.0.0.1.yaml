@@ -1,0 +1,4 @@
+# Override relative to config.isb.point.0.0.0.yaml.
+# Merge with: --config configs/train/config.isb.point.0.0.0.yaml configs/train/config.isb.point.0.0.1.yaml
+prompt_templete_index:
+- parallel_loca_sensing

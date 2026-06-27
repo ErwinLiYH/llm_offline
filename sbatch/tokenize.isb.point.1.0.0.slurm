@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=llm_offline_tok_isb0.1
-#SBATCH --output=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/tokenize-isb0.1-%j.out
-#SBATCH --error=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/tokenize-isb0.1-%j.err
+#SBATCH --job-name=llm_offline_tok_point1.0.0
+#SBATCH --output=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/tokenize-isb-point1.0.0-%j.out
+#SBATCH --error=/home/u6mx/yl1118.u6mx/llm_offline/sbatch/tokenize-isb-point1.0.0-%j.err
 #SBATCH --chdir=/home/u6mx/yl1118.u6mx/llm_offline
 #SBATCH --partition=workq
 #SBATCH --nodes=1
@@ -16,7 +16,10 @@ set -euo pipefail
 
 PROJECT_ROOT=/home/u6mx/yl1118.u6mx/llm_offline
 ENV_BIN=/home/u6mx/yl1118.u6mx/miniforge3/envs/llm_offline/bin
-CONFIG_PATH=configs/train/config.isb.0.1.yaml
+CONFIG_PATHS=(
+    configs/train/config.isb.point.0.0.0.yaml
+    configs/train/config.isb.point.1.0.0.yaml
+)
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
@@ -36,7 +39,7 @@ echo "Node: $(hostname)"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
 srun --ntasks=1 "${ENV_BIN}/python" train.py \
-    --config "${CONFIG_PATH}" \
+    --config "${CONFIG_PATHS[@]}" \
     --parallel_backend single \
     --experiment_id "${SLURM_JOB_ID}" \
     --tokenize-only

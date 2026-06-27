@@ -237,7 +237,7 @@ python score.py --config score.base.yaml score.override.yaml
 python estimate_dataset.py --config configs/base.yaml configs/estimate.yaml
 ```
 
-合并发生在入口自己的解析、默认值补齐和字段校验之前。最终配置是这些文件字段的并集，命令行中越靠后的文件优先级越高；dict 字段递归合并，list、标量和 `null` 直接覆盖旧值。这个机制用于把通用训练/rollout 配置放到 base YAML 中，再用小的 override YAML 修改少数实验字段。运行时保存的 config 会记录 `config_sources`；单文件运行时原有 `train_config_source` / `eval_config_source` / `score_config_source` / `estimate_config_source` 仍是字符串，多文件运行时记录文件列表。
+合并发生在入口自己的解析、默认值补齐和字段校验之前。默认情况下，最终配置是这些文件字段的并集，命令行中越靠后的文件优先级越高；dict 字段递归合并，list、标量和 `null` 直接覆盖旧值。override 文件也可以设置 `config_delete_keys: ["key", "nested.key"]`，在合并该文件前显式删除已经来自前序文件的字段，用于 action mode 这类互斥配置。这个机制用于把通用训练/rollout 配置放到 base YAML 中，再用小的 override YAML 修改少数实验字段。运行时保存的 config 会记录 `config_sources`；单文件运行时原有 `train_config_source` / `eval_config_source` / `score_config_source` / `estimate_config_source` 仍是字符串，多文件运行时记录文件列表。
 
 ```yaml
 # 环境与任务

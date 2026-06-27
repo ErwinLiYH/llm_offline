@@ -1529,3 +1529,12 @@ type: project
 - 运行时保存的配置中新增 `config_sources`，记录参与合并的所有配置文件；原有 `train_config_source` / `eval_config_source` / `score_config_source` / `estimate_config_source` 在单文件时保持字符串，多文件时记录文件列表
 - 新增 `tests/test_config_loader.py`，覆盖嵌套 dict 合并、list 替换、`null` 覆盖和后文件高优先级
 - 更新 `DESIGN.md` 和 `AGENTS.md`，说明多配置文件合并语义和命令用法
+
+## configs/train AntMaze split configs（2026-06-27）
+
+- 备份原 `configs/train` 到 `configs/train.backup`，并重建新的 `configs/train`
+- 已迁移 `config.isb.ant.*.yaml`：`config.isb.ant.0.0.0.yaml` 保持为完整基准配置，其余 `config.isb.ant.0.0.1.yaml`、`0.0.2`、`0.0.3`、`0.0.4`、`0.1.0` 和 `1.0.0` 只保留相对 `0.0.0` 的 override 字段
+- 新增 `config_delete_keys` 合并辅助字段，用于 override 显式删除基准配置中的字段；当前用于 `simple_mtp_bin` override 删除不属于该 action mode 的 continuous/gaussian 字段
+- `sbatch/train.isb.ant.*.slurm` 和 `sbatch/train.isb.4GPU.slurm` 已同步改为向 `train.py --config` 传递一个或多个配置文件，避免 override 配置被单独加载
+- 已逐项验证 `0.0.0` 单文件加载、其余 AntMaze 配置按 `0.0.0 + override` 合并后，与备份旧完整 YAML 的字典内容完全一致
+- 已从 `configs/train.backup` 删除验证通过的 `config.isb.ant.*.yaml`，备份目录暂时只保留尚未迁移的 PointMaze 配置
