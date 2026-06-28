@@ -272,7 +272,7 @@ class EvalParallelTest(unittest.TestCase):
                 "training_eval_context": {
                     "eval_type": "epoch",
                     "epoch": 3,
-                    "batch_step": None,
+                    "batch_step": 99,
                     "epoch_step": None,
                     "optimizer_step": 7,
                     "scheduled_step": None,
@@ -280,7 +280,7 @@ class EvalParallelTest(unittest.TestCase):
                     "train_loss": 1.2,
                     "val_loss": 2.3,
                     "val_metrics": {"mae": 0.4},
-                    "checkpoint_path": "/ckpt/ep3",
+                    "checkpoint_path": "/ckpt/ep3(step99)",
                     "experiment_id": "exp",
                 }
             }
@@ -298,7 +298,7 @@ class EvalParallelTest(unittest.TestCase):
 
         self.assertEqual(
             evaluate.get_training_results_dir("/tmp/results", epoch_context),
-            "/tmp/results/epoch_3",
+            "/tmp/results/ep3(step99)",
         )
         self.assertEqual(
             evaluate.get_training_results_dir("/tmp/results", step_context),

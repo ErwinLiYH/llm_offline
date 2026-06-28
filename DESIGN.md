@@ -329,9 +329,9 @@ checkpoints/
     └── <model_slug>/              # HuggingFace model ID 的最后一段，如 Qwen3-0.6B
         └── <selection_tag>/       # 训练选择标签：单变种名、all、all-<N>v-<hash>、或 except-<N>x-<hash>
             └── <experiment_id>/   # 自动生成或手动指定的实验 ID
-                ├── ep1/           # epoch 1 结束时保存的中间 checkpoint
-                ├── ep2/
-                ├── ep3/
+                ├── ep1(step35400)/ # epoch 1 结束时保存的中间 checkpoint，括号内是全局 train batch step
+                ├── ep2(step70800)/
+                ├── ep3(step106200)/
                 ├── step10002/     # 可选：训练 batch step 触发的中间 checkpoint
                 └── final/         # 训练全部结束后保存（与最后一个 epN 内容相同）
                     ├── adapter_config.json
@@ -346,7 +346,7 @@ checkpoints/
 
 | 训练场景 | 路径 |
 |----------|------|
-| Qwen3-0.6B 单独训练 open 变种（epoch 2 中间） | `checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/ep2/` |
+| Qwen3-0.6B 单独训练 open 变种（epoch 2 中间） | `checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/ep2(step20000)/` |
 | Qwen3-0.6B 单独训练 open 变种（batch step 10002 中间） | `checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/step10002/` |
 | Qwen3-0.6B 单独训练 open 变种（训练完成） | `checkpoints/pointmaze/Qwen3-0.6B/open/<experiment_id>/final/` |
 | Qwen3-0.6B 联合训练所有变种 | `checkpoints/pointmaze/Qwen3-0.6B/all/<experiment_id>/final/` |
@@ -378,7 +378,7 @@ micromamba run -n llm_offline python train.py \
 
 resume 语义中，`num_epochs` 表示“额外训练多少个完整 epoch”，而不是总 epoch 数：
 
-- 从 `ep3` resume 且 `num_epochs: 2`：训练 epoch `4, 5`
+- 从 `ep3(step<N>)` resume 且 `num_epochs: 2`：训练 epoch `4, 5`
 - 从 epoch 3 中间的 `step<N>` resume 且 `num_epochs: 2`：先补完 epoch `3`，再训练 `4, 5`
 - 从 epoch 中间的 `step<N>` resume 且 `num_epochs: 0`：只补完当前 epoch
 
@@ -459,7 +459,7 @@ dataset_cache/
 └── <model_slug>/
     └── train=<env_family>-<selection_tag>/
         └── exp=<experiment_id>/
-            ├── epoch_<n>/
+            ├── ep<n>(step<m>)/
             │   ├── eval_config.yaml              # isolated training eval 时保存
             │   ├── isolated_eval/                # isolated training eval 时保存
             │   │   └── rank_<rank>/
@@ -502,16 +502,16 @@ dataset_cache/
 | `selection_tag` | 训练选择标签 | `open`、`all`、`all-12v-a1b2c3d4e5f6`、`except-2x-a1b2c3d4e5f6` |
 | `result_root` | 结果根目录配置项 | `results`、`resultsV2` |
 | `variant` | 当前评估变种名 | `open`、`umaze`、`medium` |
-| `epoch_<n>` / `step<n>` / `standalone_<eval_uuid>` | 区分训练期中间评估与独立评估运行 | `epoch_2`、`step10002`、`standalone_ab12cd34` |
+| `ep<n>(step<m>)` / `step<n>` / `standalone_<eval_uuid>` | 区分训练期 epoch 评估、step 评估与独立评估运行 | `ep2(step20000)`、`step10002`、`standalone_ab12cd34` |
 | `isolated_eval/rank_<rank>/attempt_<n>.*` | 隔离训练期 rollout 子进程的临时配置与 stdout/stderr | `isolated_eval/rank_0/attempt_1.stderr` |
 
 **示例路径：**
 
 | 场景 | 路径 |
 |------|------|
-| 训练 open 变种 epoch 2 中间评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/epoch_2/eval=pointmaze-open/result.json` |
+| 训练 open 变种 epoch 2 中间评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/ep2(step20000)/eval=pointmaze-open/result.json` |
 | 训练 open 变种 batch step 10002 中间评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/step10002/eval=pointmaze-open/result.json` |
-| except 模式排除 `large` 和 `large-dense` 后训练，并在 epoch 1 评估 medium | `results/Qwen3-0.6B/train=pointmaze-except-large+large-dense/exp=<experiment_id>/epoch_1/eval=pointmaze-medium/result.json` |
+| except 模式排除 `large` 和 `large-dense` 后训练，并在 epoch 1 评估 medium | `results/Qwen3-0.6B/train=pointmaze-except-large+large-dense/exp=<experiment_id>/ep1(step10000)/eval=pointmaze-medium/result.json` |
 | standalone 评估 open | `results/Qwen3-0.6B/train=pointmaze-open/exp=<experiment_id>/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 | 评估未微调的原始基座模型 | `results/Qwen3-0.6B/train=pretrained/standalone_<eval_uuid>/eval=pointmaze-open/result.json` |
 | AntMaze eval 全局视角录像 | `results/Qwen3-0.6B/train=antmaze-large-play/exp=<experiment_id>/standalone_<eval_uuid>/eval=antmaze-large-play/episode_0/rollout_global.mp4` |
@@ -519,13 +519,13 @@ dataset_cache/
 | score 录像 episode 0 | `score_results/score_<score_id>/score=pointmaze-open/episode_0/rollout.gif` |
 | local reference 分数生成 | `score_results/reference_<score_id>/score=pointmaze-local-layout-07/result.json`，并写入 `local_references/pointmaze/local-layout-07.json` |
 
-`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `epoch_<n>` 或 `step<n>` 区分不同轮次；`step<n>` 使用实际完成梯度更新后的全局 train batch step 作为唯一目录名，但 step eval 的触发计数在每个 epoch 开始时重置，所以每个 epoch 的第一次触发都在 epoch-local batch `eval_step_interval`。如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存 checkpoint；是否计算 val loss 和运行环境 rollout 再由 `step_eval_skip` 与 epoch-near 规则决定。`step_eval_skip` 默认为 1；大于 1 时每个 epoch 内的 step eval 触发计数从 1 开始，只有可被该值整除的触发执行完整 validation+rollout，其余只保存 `step<N>` checkpoint。如果实际 step eval 位置落在 epoch eval 前后 `0.25 * eval_step_interval` 的 train batch 窗口内，则该 step 也只保存 checkpoint，不跑 val loss/rollout，epoch eval 仍照常执行。分区训练也保持这个 epoch-local 触发与梯度累积时机：触发点在 train shard 中间时立即执行 step eval，不等待 shard 边界。training-time eval 每次调用都使用同一组 episode reset seeds：第 `i` 个 episode 使用 `eval_seed + i`，默认即 `1..eval_num_episodes`，保证不同 step/epoch eval 间的环境初始条件可比。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`；standalone eval 同样使用 `seed + i` 作为 episode reset seeds。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 AntMaze 在 `record_video: true` 时默认额外保存全局俯视角 `rollout_global.<gif|mp4>`，原有 `rollout.<gif|mp4>` 继续表示 MuJoCo 默认跟随视角。`result.json` 保留 `video_path` / `video_paths` 指向跟随视角，并为 AntMaze 全局视角增加 `global_video_path` / `global_video_paths` / `all_video_paths`。`steps.txt` 汇总该 episode 的所有 step，并用分割线和 `Step <n>` 标题分段记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin`、`gaussian_bin`、`mtp_bin` 和 `simple_mtp_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的概率与对应 token id。
+`evaluate.py` 和 `train.py` 使用同一套基础路径语义，均以单个 `variant` 作为 `eval=<...>` 目录粒度。训练期评估通过 `ep<n>(step<m>)` 或 `step<n>` 区分不同轮次；epoch 目录里的 `step<m>` 是 epoch 结束时实际完成的全局 train batch step。`step<n>` 使用实际完成梯度更新后的全局 train batch step 作为唯一目录名，但 step eval 的触发计数在每个 epoch 开始时重置，所以每个 epoch 的第一次触发都在 epoch-local batch `eval_step_interval`。如果配置的触发点落在梯度累积窗口内，会延后到该窗口的 `optimizer.step()` 完成后保存 checkpoint；是否计算 val loss 和运行环境 rollout 再由 `step_eval_skip` 与 epoch-near 规则决定。`step_eval_skip` 默认为 1；大于 1 时每个 epoch 内的 step eval 触发计数从 1 开始，只有可被该值整除的触发执行完整 validation+rollout，其余只保存 `step<N>` checkpoint。如果实际 step eval 位置落在 epoch eval 前后 `0.25 * eval_step_interval` 的 train batch 窗口内，则该 step 也只保存 checkpoint，不跑 val loss/rollout，epoch eval 仍照常执行。分区训练也保持这个 epoch-local 触发与梯度累积时机：触发点在 train shard 中间时立即执行 step eval，不等待 shard 边界。training-time eval 每次调用都使用同一组 episode reset seeds：第 `i` 个 episode 使用 `eval_seed + i`，默认即 `1..eval_num_episodes`，保证不同 step/epoch eval 间的环境初始条件可比。`eval_step_interval: 0` 且交互式运行时，`train.py` 会在 dataloader 构建完成后打印 batch 数并允许临时输入 interval；非交互运行保持关闭。standalone `evaluate.py` 通过 `standalone_<eval_uuid>` 区分不同次独立运行，并把合并后的实际 eval 配置保存到该目录下的 `eval_config.yaml`；standalone eval 同样使用 `seed + i` 作为 episode reset seeds。每个 `episode_<n>` 目录同时保存 rollout 视频和逐步文本日志，其中 AntMaze 在 `record_video: true` 时默认额外保存全局俯视角 `rollout_global.<gif|mp4>`，原有 `rollout.<gif|mp4>` 继续表示 MuJoCo 默认跟随视角。`result.json` 保留 `video_path` / `video_paths` 指向跟随视角，并为 AntMaze 全局视角增加 `global_video_path` / `global_video_paths` / `all_video_paths`。`steps.txt` 汇总该 episode 的所有 step，并用分割线和 `Step <n>` 标题分段记录渲染后的 prompt、模型原始输出、最终执行动作、parse 状态和尝试次数；bin 模式日志统一把动作显示为 `<act_XX>`，即使 `new_token: false` 时模型内部实际生成的是复用 token ID；`bin`、`gaussian_bin`、`mtp_bin` 和 `simple_mtp_bin` 且 `record_step_logs=true` 时还会记录每个动作维度上所有 bin token 的概率与对应 token id。
 
 eval 和 score rollout 统一走 `utils/rollout/` 的进程隔离框架。每个 eval rank 加载模型并运行 policy inference；rank 内的 supervisor 按 `rollout_worker_num` 启动 isolated env worker 子进程，每个 worker 进程一次只拥有一个环境。worker 负责 env reset/step/render、prompt/history 构建、step log 和视频写入，并通过 queue 向父进程发送 `ActionRequest`；父进程把 action inference 结果作为 `ActionResponse` 返回。`rollout_worker_num` 是 per rank 语义，DDP eval 中最大 env worker 数约为 `world_size * rollout_worker_num`，未分配到 variant 的 rank 不启动 worker。`rollout_worker_lifetime: slot` 表示每个 slot 一个长驻 worker 顺序执行多个 episode；`episode` 表示每个 episode 启动新 worker。旧字段 `eval_parallel_episodes` 已废弃，配置中出现会直接报错并要求改成 `rollout_worker_num`。worker 子进程默认不直接打印逐 episode 进度，命令行只显示父进程的启动、variant summary 和 result path；详细执行信息保存在 `steps.txt`、视频 artifact 和 `result.json` 的 `worker_failures` / `episode_results` 中。
 
 训练期 rollout 始终隔离在训练主进程之外。训练进程会在保存当前 eval checkpoint 后，为每个 rank 分配到的 variants 启动一个单进程 `evaluate.py` 子进程；子进程配置固定使用 `parallel_backend: single`、`model_path: <just-saved checkpoint>`、`eval_output_mode: training` 和 `training_eval_context`，并关闭 W&B 初始化。DDP 训练中，父进程会移除子进程环境里的 `RANK` / `WORLD_SIZE` / `LOCAL_RANK` 等分布式变量，并把 `CUDA_VISIBLE_DEVICES` 限制到当前父 rank 的 `local_rank` 对应 GPU；子进程内部通常只看到逻辑 `cuda:0`。`eval_distribute_variants` 的语义保持不变：开启时 variants 轮转分配到各 rank，关闭时 rank0 负责完整 variants 列表。`training_eval_rollout_isolated` 仅保留为兼容/废弃字段，不再作为行为开关。
 
-训练期 eval 子进程失败策略固定为 warning 并继续训练。每次尝试都会把临时 config、stdout 和 stderr 写入对应 `epoch_<n>` 或 `step<n>` 目录下的 `isolated_eval/rank_<rank>/attempt_<n>.*`。子进程成功后父进程读取该 rank 负责 variants 的 `result.json`；如果子进程失败或结果缺失，rank0 记录 warning，并在 W&B 写 `eval/<variant>/rollout_failed=1`，不会写假的 success rate。当前可靠支持目标仍是 single-node DDP；multi-node 路径仅属 best-effort，要求 checkpoint/result/cache 都位于所有节点可见的共享文件系统。
+训练期 eval 子进程失败策略固定为 warning 并继续训练。每次尝试都会把临时 config、stdout 和 stderr 写入对应 `ep<n>(step<m>)` 或 `step<n>` 目录下的 `isolated_eval/rank_<rank>/attempt_<n>.*`。子进程成功后父进程读取该 rank 负责 variants 的 `result.json`；如果子进程失败或结果缺失，rank0 记录 warning，并在 W&B 写 `eval/<variant>/rollout_failed=1`，不会写假的 success rate。当前可靠支持目标仍是 single-node DDP；multi-node 路径仅属 best-effort，要求 checkpoint/result/cache 都位于所有节点可见的共享文件系统。
 
 `score.py` 使用独立路径语义，不嵌入训练期/standalone eval 的 `eval=<...>` 目录。每次运行写入 `<result_root>/<mode>_<score_id>/`，其中每个变种写 `score=<env_family>-<variant>/result.json`，run 根目录写 `summary.json` 和实际使用的 `score_config.yaml`。score 模式复用同一套 process-isolated rollout worker 和父进程 policy path，但保持 PointMaze-only、官方/本地 reference score、normalized score 和 run-level summary 语义。当 `record_video: true` 时，score rollout 视频保存在对应 `score=<...>/episode_<n>/rollout.<gif|mp4>` 下，并在 variant `result.json` 中记录 `video_path` / `video_paths` / `episode_artifact_dirs`。
 
@@ -602,7 +602,7 @@ env_kwargs:
 
 `model_path` 可填 checkpoint 路径或 HuggingFace model ID（如 `Qwen/Qwen3-0.6B`），后者用于评估未微调的基座模型。checkpoint 评估默认使用 checkpoint `config.yaml` 中记录的第一个训练 prompt；`eval.yaml` 可用单个 `prompt_templete_index` 覆盖，覆盖值若不在训练 prompt 列表中需要强确认。
 
-普通独立评估不需要设置 `eval_output_mode`，默认值为 `standalone`，输出仍写入 `standalone_<eval_uuid>`。`eval_output_mode: training` 是训练进程隔离 rollout 使用的内部模式，必须同时提供完整 `training_eval_context`；该模式直接写入 checkpoint 对应 run 的 `epoch_<n>` 或 `step<n>` 目录，并把训练上下文字段补进每个 `result.json`。
+普通独立评估不需要设置 `eval_output_mode`，默认值为 `standalone`，输出仍写入 `standalone_<eval_uuid>`。`eval_output_mode: training` 是训练进程隔离 rollout 使用的内部模式，必须同时提供完整 `training_eval_context`；该模式直接写入 checkpoint 对应 run 的 `ep<n>(step<m>)` 或 `step<n>` 目录，并把训练上下文字段补进每个 `result.json`。
 
 多 worker rollout 中，不等长 episode 可能乱序完成；最终 `result.json` 会按 episode index 聚合。worker stdout 不作为进度日志使用，避免多进程输出互相交错；调用端保留启动信息、结果路径以及每个 variant 完成后的成功率汇总。需要逐 step 调试时使用 `record_step_logs: true` 查看每个 episode artifact 目录中的 `steps.txt`。
 
@@ -665,7 +665,7 @@ python score.py --config score.yaml
 `score.py` 的运行参数统一来自 YAML；命令行只保留 `--config` 用来选择一个或多个配置文件，不使用 `--mode`、`--variants`、`--num-episodes` 等覆盖项。多个 score config 的合并规则与训练/eval 相同，后面的文件覆盖前面的值。强 prompt 警告的自动确认由 `assume_yes: true` 控制。
 
 ```yaml
-model_path: checkpoints/pointmaze/Qwen3-0.6B/<selection>/<experiment_id>/ep1
+model_path: checkpoints/pointmaze/Qwen3-0.6B/<selection>/<experiment_id>/ep1(step10000)
 result_root: score_results
 env_family: pointmaze
 mode: score              # score | reference

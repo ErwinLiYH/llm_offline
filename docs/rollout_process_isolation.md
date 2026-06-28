@@ -108,9 +108,9 @@ training process group.
 Per-attempt child files are saved next to the training eval result:
 
 ```text
-.../epoch_<n>/isolated_eval/rank_<rank>/attempt_<n>.yaml
-.../epoch_<n>/isolated_eval/rank_<rank>/attempt_<n>.stdout
-.../epoch_<n>/isolated_eval/rank_<rank>/attempt_<n>.stderr
+.../ep<n>(step<m>)/isolated_eval/rank_<rank>/attempt_<n>.yaml
+.../ep<n>(step<m>)/isolated_eval/rank_<rank>/attempt_<n>.stdout
+.../ep<n>(step<m>)/isolated_eval/rank_<rank>/attempt_<n>.stderr
 ```
 
 The same layout is used under `step<N>/` for step eval.

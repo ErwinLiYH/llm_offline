@@ -47,6 +47,7 @@ from utils.eval_parallel import (
 )
 from utils.prompt_loader import load_named_templates, load_template_names
 from utils.rollout.evaluate_runner import run_evaluate_variant
+from utils.training_tags import format_training_eval_tag
 from utils.variant_selection import get_available_variants, resolve_selection
 
 
@@ -381,9 +382,11 @@ def resolve_training_eval_context(config: dict) -> dict:
 
 
 def get_training_eval_tag(training_eval_context: dict) -> str:
-    if training_eval_context["eval_type"] == "step":
-        return f"step{training_eval_context['batch_step']}"
-    return f"epoch_{training_eval_context['epoch']}"
+    return format_training_eval_tag(
+        training_eval_context["eval_type"],
+        epoch=training_eval_context.get("epoch"),
+        batch_step=training_eval_context.get("batch_step"),
+    )
 
 
 def get_training_results_dir(base_results_dir: str, training_eval_context: dict) -> str:

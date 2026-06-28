@@ -96,6 +96,7 @@ from utils.lr_scheduler import (
 )
 from utils.prompt_loader import load_template_names
 from utils.resource_monitor import ResourceMonitor, resource_monitor_path
+from utils.training_tags import format_epoch_tag, format_step_tag
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 from utils.wandb_logging import (
     WandbLogger,
@@ -415,12 +416,10 @@ def get_checkpoint_dir(
     slug = get_model_slug(config["model_name"])
     root = config.get("checkpoint_root", "checkpoints")
     experiment_id = config["experiment_id"]
-    if epoch is not None and step is not None:
-        raise ValueError("checkpoint path can be keyed by epoch or step, not both")
-    if step is not None:
-        tag = f"step{step}"
-    elif epoch is not None:
-        tag = f"ep{epoch}"
+    if epoch is not None:
+        tag = format_epoch_tag(epoch, step)
+    elif step is not None:
+        tag = format_step_tag(step)
     else:
         tag = "final"
     return os.path.join(root, config["env_family"], slug, selection_tag, experiment_id, tag)
@@ -437,12 +436,23 @@ def get_train_results_base_dir(config: dict, train_selection_tag: str) -> str:
     return os.path.join(result_root, slug, train_tag, exp_tag)
 
 
-def get_eval_epoch_results_dir(config: dict, train_selection_tag: str, epoch: int) -> str:
-    return os.path.join(get_train_results_base_dir(config, train_selection_tag), f"epoch_{epoch}")
+def get_eval_epoch_results_dir(
+    config: dict,
+    train_selection_tag: str,
+    epoch: int,
+    step: int | None = None,
+) -> str:
+    return os.path.join(
+        get_train_results_base_dir(config, train_selection_tag),
+        format_epoch_tag(epoch, step),
+    )
 
 
 def get_eval_step_results_dir(config: dict, train_selection_tag: str, step: int) -> str:
-    return os.path.join(get_train_results_base_dir(config, train_selection_tag), f"step{step}")
+    return os.path.join(
+        get_train_results_base_dir(config, train_selection_tag),
+        format_step_tag(step),
+    )
 
 
 def get_eval_results_dir(
@@ -451,12 +461,10 @@ def get_eval_results_dir(
     epoch: int | None = None,
     step: int | None = None,
 ) -> str:
-    if epoch is not None and step is not None:
-        raise ValueError("eval results path can be keyed by epoch or step, not both")
+    if epoch is not None:
+        return get_eval_epoch_results_dir(config, train_selection_tag, epoch, step=step)
     if step is not None:
         return get_eval_step_results_dir(config, train_selection_tag, step)
-    if epoch is not None:
-        return get_eval_epoch_results_dir(config, train_selection_tag, epoch)
     raise ValueError("eval results path requires epoch or step")
 
 
@@ -1315,7 +1323,7 @@ def _isolated_eval_root_dir(
 ) -> str:
     if eval_type == "step":
         return get_eval_results_dir(config, train_selection_tag, step=batch_step)
-    return get_eval_results_dir(config, train_selection_tag, epoch=epoch)
+    return get_eval_results_dir(config, train_selection_tag, epoch=epoch, step=batch_step)
 
 
 def _isolated_eval_rank_dir(
@@ -1420,7 +1428,7 @@ def _read_isolated_eval_results(
             train_selection_tag,
             variant,
             epoch=epoch if eval_type == "epoch" else None,
-            step=batch_step if eval_type == "step" else None,
+            step=batch_step,
         )
         result_path = os.path.join(result_dir, "result.json")
         if not os.path.exists(result_path):
@@ -3246,7 +3254,12 @@ def _run_training_partitioned(
                     }
                 )
 
-        epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
+        epoch_ckpt_dir = get_checkpoint_dir(
+            config,
+            selection_tag,
+            epoch=epoch,
+            step=global_batch_step,
+        )
         scheduler_meta["optimizer_step"] = optimizer_step
         epoch_loop_state = _loop_state(
             epoch=epoch,
@@ -3290,6 +3303,7 @@ def _run_training_partitioned(
                 val_metrics=val_metrics,
                 checkpoint_dir=epoch_ckpt_dir,
                 epoch=epoch,
+                batch_step=global_batch_step,
                 optimizer_step=optimizer_step,
                 wandb_logger=wandb_logger,
                 train_env_steps=current_env_steps,
@@ -3799,7 +3813,12 @@ def _run_training(
                     }
                 )
 
-        epoch_ckpt_dir = get_checkpoint_dir(config, selection_tag, epoch=epoch)
+        epoch_ckpt_dir = get_checkpoint_dir(
+            config,
+            selection_tag,
+            epoch=epoch,
+            step=global_batch_step,
+        )
         scheduler_meta["optimizer_step"] = optimizer_step
         epoch_loop_state = _loop_state(
             epoch=epoch,
@@ -3840,6 +3859,7 @@ def _run_training(
                 val_metrics=val_metrics,
                 checkpoint_dir=epoch_ckpt_dir,
                 epoch=epoch,
+                batch_step=global_batch_step,
                 optimizer_step=optimizer_step,
                 wandb_logger=wandb_logger,
                 train_env_steps=current_env_steps,
