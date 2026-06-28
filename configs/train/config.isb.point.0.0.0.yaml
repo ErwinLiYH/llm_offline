@@ -16,6 +16,10 @@ wandb_entity: null         # optional W&B entity/team; null uses the SDK default
 wandb_mode: null           # optional: online | offline | disabled; null uses the SDK default
 wandb_log_interval: 10     # log train loss every n global train batches
 
+## System resource monitor
+resource_monitor_enabled: true        # true = write latest RAM/GPU status to sys_info/<experiment_id>.txt
+resource_monitor_interval_seconds: 5.0 # sample interval when resource_monitor_enabled=true
+
 ## Parallel training
 parallel_backend: ddp          # single | ddp; use torchrun with --parallel_backend ddp for multi-GPU
 ddp_find_unused_parameters: false # keep false for LoRA/Unsloth unless DDP reports unused parameters
@@ -153,6 +157,6 @@ record_all: true         # true = record every eval episode; overrides video_epi
 video_episode_index: 0   # int or list of ints; which eval episodes to record when record_all=false
 video_fps: 30
 video_format: mp4        # gif works out of the box; mp4 requires ffmpeg backend support
-video_save_workers: 8    # 0 = synchronous; >0 = concurrent background encoding threads
-video_save_max_pending: 12  # running + queued tasks per rank; next submit blocks at this limit
+video_save_workers: 5    # 0 = synchronous; >0 = concurrent background encoding threads
+video_save_max_pending: 10  # running + queued tasks per rank; next submit blocks at this limit
 mujoco_gl: egl           # headless MuJoCo recording backend on this machine
