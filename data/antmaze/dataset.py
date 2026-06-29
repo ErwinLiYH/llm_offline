@@ -355,6 +355,10 @@ class AntMazeDataset(PointMazeDataset):
     CACHE_FORMAT = "antmaze_hash_signature_v4"
 
     @classmethod
+    def _normalize_family_data_config(cls, family_data_config: dict | None):
+        return _normalize_antmaze_data_config(family_data_config)
+
+    @classmethod
     def _normalize_request(cls, request):
         config = super()._normalize_request(request)
         return replace(

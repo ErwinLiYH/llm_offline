@@ -1538,3 +1538,11 @@ type: project
 - `sbatch/train.isb.ant.*.slurm` 和 `sbatch/train.isb.4GPU.slurm` 已同步改为向 `train.py --config` 传递一个或多个配置文件，避免 override 配置被单独加载
 - 已逐项验证 `0.0.0` 单文件加载、其余 AntMaze 配置按 `0.0.0 + override` 合并后，与备份旧完整 YAML 的字典内容完全一致
 - 已从 `configs/train.backup` 删除验证通过的 `config.isb.ant.*.yaml`，备份目录暂时只保留尚未迁移的 PointMaze 配置
+
+## PointMaze training data preprocessing（2026-06-29）
+
+- 新增 `pointmaze_data_config`，支持 `truncate` 和 `truncate_holding`，语义与 AntMaze 对应字段一致：raw episodes 加载后、`episode_keep_num` 抽样和 train/val split 前，按第一次 `infos.success` transition 截断，并额外保留 `truncate_holding` 个 action 样本
+- `config.yaml` 当前启用 `pointmaze_data_config.truncate: true`，并设置 `truncate_holding: 20`，用于保留到达目标后的短 hold 片段；未配置 `pointmaze_data_config` 时仍保持旧行为
+- `train.py` 和 `estimate_dataset.py` 在 `env_family: pointmaze` 时透传 `pointmaze_data_config`，因此训练、partition shard planning、episode balancing 和 dataset size estimator 都基于预处理后的 episode 数和 step 数
+- PointMaze tokenized cache signature 纳入显式配置的 normalized `pointmaze_data_config`，PointMaze cache format bump 到 `pointmaze_hash_signature_v4`，避免复用旧截断语义下的 cache
+- PointMaze local HDF5 fallback loader 现在读取 `infos`、`rewards`、`terminations` 和 `truncations`，供 success 截断和对齐切片使用；新增/更新单元测试覆盖配置校验、cache signature、HDF5 fallback、训练 request 透传和 estimator 透传

@@ -237,8 +237,11 @@ def resolve_dataset_load_partitions(config: dict, dist_context: DistributedConte
 
 
 def _family_data_config(config: dict) -> dict | None:
-    if config.get("env_family") == "antmaze":
+    env_family = config.get("env_family")
+    if env_family == "antmaze":
         return config.get("antmaze_data_config")
+    if env_family == "pointmaze":
+        return config.get("pointmaze_data_config")
     return None
 
 

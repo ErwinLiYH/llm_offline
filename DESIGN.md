@@ -200,6 +200,8 @@ Action:
 - `format_obs(obs, meta)` 负责生成 `obs_text` 与动态 `location_sensing_en/zh`、`wall_sensing_en/zh`
 - `format_history(history_entries, meta)` 负责生成可选历史块 `history_block_en/zh`
 - 当历史块存在时，历史条目按时间从早到晚排列：第一条是最早采样到的历史 step，最后一条是当前 step 之前最近的采样历史 step
+- `pointmaze_data_config` 是 PointMaze 专属训练数据预处理配置，默认 `truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` 抽样和 train/val split 之前；multi-variant episode balancing、partition shard planning 和 `estimate_dataset.py` 都基于预处理后的 episode 数和长度。
+- `pointmaze_data_config.truncate: true` 会在第一次 success 后截断 episode；`truncate_holding: N` 表示 success transition 后额外保留 `N` 个 action 样本。`infos.success` 长度为 `T+1` 时用 `success[1:]` 对齐 action transition，长度为 `T` 时直接使用。PointMaze 没有 AntMaze 的 `filter_success` 或保守翻车事件检测。
 
 #### AntMaze 当前实现
 
@@ -802,7 +804,7 @@ micromamba run -n llm_offline python estimate_dataset.py \
   --sample-episodes-per-variant 4
 ```
 
-`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。它也支持 `--config base.yaml override.yaml` 多文件合并。脚本读取合并后的训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`prompt_templete_index`、`episode_keep_num`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时还会透传 `antmaze_data_config`，因此过滤、截断和 holding 后的 episode 数/step 数才是统计基础。
+`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。它也支持 `--config base.yaml override.yaml` 多文件合并。脚本读取合并后的训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`prompt_templete_index`、`episode_keep_num`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时会透传 `antmaze_data_config`，`env_family: pointmaze` 时会透传 `pointmaze_data_config`，因此数据预处理后的 episode 数/step 数才是统计基础。
 
 体积估算不会写正式 dataset cache。脚本会按每个 selected variant 抽取 `--sample-episodes-per-variant` 条完整 selected episode 做真实 tokenization，把这些样本 pickle 成类似 shard cache 的结构后测量字节数，再按 `sampled_pickle_bytes * target_selected_steps / sampled_steps` 用 step ratio 外推 train、val 和 total `.pkl` 大小，单位为十进制 GB。多 prompt 导致的样本膨胀由抽样 tokenization 自然包含；`max_data_num` 会同时影响样本数和 size target。`--world_size` 只用于数学预估 DDP batch 数和 partition round `target_batches`，不初始化 DDP、不要求真实 rank 或 GPU。
 

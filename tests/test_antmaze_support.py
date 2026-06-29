@@ -22,7 +22,12 @@ from data.antmaze.dataset import (
 )
 from data.antmaze.variants import ANTMAZE_VARIANTS
 from data.base_dataset import DatasetBuildRequest
-from data.pointmaze.dataset import PointMazeDataset
+from data.pointmaze.dataset import (
+    PointMazeDataset,
+    _apply_pointmaze_data_config,
+    _load_local_hdf5_episodes,
+    _normalize_pointmaze_data_config,
+)
 from data.registry import get_action_dim, resolve_variant_env_spec
 from utils.maze_sensing import _neighbor_status
 from utils.prompt_loader import load_template_map, render_template
@@ -74,6 +79,30 @@ def _fake_antmaze_preprocess_episode(
             "desired_goal": np.ones((action_len + 1, 2), dtype=np.float32),
         },
         actions=np.zeros((action_len, 8), dtype=np.float32),
+        rewards=np.zeros(action_len, dtype=np.float32),
+        terminations=np.zeros(action_len, dtype=bool),
+        truncations=np.zeros(action_len, dtype=bool),
+        infos={"success": success},
+    )
+
+
+def _fake_pointmaze_preprocess_episode(
+    *,
+    action_len: int = 6,
+    success_state_indices: list[int] | None = None,
+):
+    success_state_indices = success_state_indices or []
+    success = np.zeros(action_len + 1, dtype=bool)
+    for state_idx in success_state_indices:
+        success[state_idx] = True
+
+    return SimpleNamespace(
+        observations={
+            "observation": np.zeros((action_len + 1, 4), dtype=np.float32),
+            "achieved_goal": np.zeros((action_len + 1, 2), dtype=np.float32),
+            "desired_goal": np.ones((action_len + 1, 2), dtype=np.float32),
+        },
+        actions=np.zeros((action_len, 2), dtype=np.float32),
         rewards=np.zeros(action_len, dtype=np.float32),
         terminations=np.zeros(action_len, dtype=bool),
         truncations=np.zeros(action_len, dtype=bool),
@@ -270,6 +299,72 @@ class AntMazeSupportTest(unittest.TestCase):
 
         self.assertNotIn("family_data_config", payload)
 
+    def test_pointmaze_data_config_truncates_after_first_success_with_holding(self):
+        episode = _fake_pointmaze_preprocess_episode(
+            action_len=6,
+            success_state_indices=[3],
+        )
+
+        processed = _apply_pointmaze_data_config(
+            [episode],
+            {"truncate": True, "truncate_holding": 2},
+            variant="open",
+        )
+        truncated = processed[0]
+
+        self.assertEqual(len(truncated.actions), 5)
+        self.assertEqual(truncated.observations["observation"].shape[0], 6)
+        self.assertEqual(truncated.infos["success"].shape[0], 6)
+        self.assertTrue(bool(truncated.truncations[-1]))
+
+    def test_pointmaze_data_config_validation_rejects_unknown_keys(self):
+        with self.assertRaisesRegex(ValueError, "Unknown pointmaze_data_config keys"):
+            _normalize_pointmaze_data_config({"filter_success": True})
+
+    def test_pointmaze_data_config_changes_cache_signature_when_explicit(self):
+        with tempfile.TemporaryDirectory() as tokenizer_dir:
+            tokenizer = _make_test_tokenizer(tokenizer_dir)
+            base_request = DatasetBuildRequest(
+                variant="open",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=2,
+            )
+            truncate_request = DatasetBuildRequest(
+                variant="open",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=2,
+                family_data_config={
+                    "truncate": True,
+                    "truncate_holding": 1,
+                },
+            )
+
+            base_config = PointMazeDataset._normalize_request(base_request)
+            truncate_config = PointMazeDataset._normalize_request(truncate_request)
+            base_payload = PointMazeDataset._cache_signature_payload(base_config)
+            truncate_payload = PointMazeDataset._cache_signature_payload(truncate_config)
+
+        self.assertNotIn("family_data_config", base_payload)
+        self.assertEqual(
+            truncate_payload["family_data_config"],
+            {"truncate": True, "truncate_holding": 1},
+        )
+        self.assertEqual(PointMazeDataset.CACHE_FORMAT, "pointmaze_hash_signature_v4")
+        self.assertNotEqual(
+            PointMazeDataset._hash_json_payload(base_payload),
+            PointMazeDataset._hash_json_payload(truncate_payload),
+        )
+
     def test_local_antmaze_hdf5_fallback_reads_infos_and_terminal_fields(self):
         with tempfile.TemporaryDirectory() as root_dir:
             data_path = Path(root_dir)
@@ -288,6 +383,30 @@ class AntMazeSupportTest(unittest.TestCase):
                 infos_group.create_dataset("success", data=np.asarray([False, False, True]))
 
             episodes = _load_local_antmaze_hdf5_episodes(data_path)
+
+        self.assertEqual(len(episodes), 1)
+        self.assertEqual(episodes[0].rewards.shape, (2,))
+        self.assertTrue(bool(episodes[0].terminations[-1]))
+        self.assertTrue(bool(episodes[0].infos["success"][-1]))
+
+    def test_local_pointmaze_hdf5_fallback_reads_infos_and_terminal_fields(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            data_path = Path(root_dir)
+            h5_path = data_path / "main_data.hdf5"
+            with h5py.File(h5_path, "w") as f:
+                group = f.create_group("episode_0")
+                obs_group = group.create_group("observations")
+                obs_group.create_dataset("observation", data=np.zeros((3, 4), dtype=np.float32))
+                obs_group.create_dataset("achieved_goal", data=np.zeros((3, 2), dtype=np.float32))
+                obs_group.create_dataset("desired_goal", data=np.ones((3, 2), dtype=np.float32))
+                group.create_dataset("actions", data=np.zeros((2, 2), dtype=np.float32))
+                group.create_dataset("rewards", data=np.asarray([0.0, 1.0], dtype=np.float32))
+                group.create_dataset("terminations", data=np.asarray([False, True]))
+                group.create_dataset("truncations", data=np.asarray([False, False]))
+                infos_group = group.create_group("infos")
+                infos_group.create_dataset("success", data=np.asarray([False, False, True]))
+
+            episodes = _load_local_hdf5_episodes(data_path)
 
         self.assertEqual(len(episodes), 1)
         self.assertEqual(episodes[0].rewards.shape, (2,))

@@ -9,6 +9,7 @@ import math
 import signal
 import time
 import gc
+from collections.abc import Mapping
 from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -47,6 +48,10 @@ DEFAULT_TRAIN_DATA_RATIO = 0.9
 DEFAULT_EPISODE_KEEP_NUM = None
 DEFAULT_SAMPLING_SEED = 0
 HUMAN_READABLE_CACHE_EPISODE_LIMIT = 3
+DEFAULT_POINTMAZE_DATA_CONFIG = {
+    "truncate": False,
+    "truncate_holding": 0,
+}
 
 _POINTMAZE_WORKER_TOKENIZER = None
 _POINTMAZE_WORKER_CONFIGS: dict[str, dict] | None = None
@@ -562,8 +567,210 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
     return results
 
 
+def _normalize_pointmaze_data_config(config) -> dict | None:
+    if config is None:
+        return None
+    if isinstance(config, Mapping):
+        raw_config = dict(config)
+    else:
+        raise ValueError(
+            "pointmaze_data_config must be a mapping with keys "
+            "truncate and truncate_holding."
+        )
+
+    unknown_keys = sorted(set(raw_config) - set(DEFAULT_POINTMAZE_DATA_CONFIG))
+    if unknown_keys:
+        raise ValueError(f"Unknown pointmaze_data_config keys: {unknown_keys}")
+
+    normalized = dict(DEFAULT_POINTMAZE_DATA_CONFIG)
+    normalized.update(raw_config)
+
+    if not isinstance(normalized["truncate"], bool):
+        raise ValueError(
+            f"pointmaze_data_config.truncate must be a bool, got {normalized['truncate']!r}"
+        )
+
+    truncate_holding = normalized["truncate_holding"]
+    if isinstance(truncate_holding, bool) or not isinstance(truncate_holding, int):
+        raise ValueError(
+            "pointmaze_data_config.truncate_holding must be an integer >= 0, "
+            f"got {truncate_holding!r}"
+        )
+    if truncate_holding < 0:
+        raise ValueError(
+            "pointmaze_data_config.truncate_holding must be >= 0, "
+            f"got {truncate_holding}"
+        )
+    normalized["truncate_holding"] = int(truncate_holding)
+    return normalized
+
+
+def _pointmaze_effective_data_config(config) -> dict:
+    return _normalize_pointmaze_data_config(config) or dict(DEFAULT_POINTMAZE_DATA_CONFIG)
+
+
+def _read_hdf5_tree(node):
+    if isinstance(node, h5py.Dataset):
+        return node[()]
+    return {name: _read_hdf5_tree(node[name]) for name in node.keys()}
+
+
+def _get_episode_field(episode, name: str, default=None):
+    if isinstance(episode, Mapping):
+        return episode.get(name, default)
+    return getattr(episode, name, default)
+
+
+def _get_mapping_value(value, key: str, default=None):
+    if isinstance(value, Mapping):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _success_values_from_infos(infos):
+    if infos is None:
+        return None
+    success = _get_mapping_value(infos, "success")
+    if success is not None:
+        return success
+    if isinstance(infos, (list, tuple)):
+        values = []
+        found = False
+        for item in infos:
+            item_success = _get_mapping_value(item, "success")
+            if item_success is not None:
+                found = True
+            values.append(bool(item_success) if item_success is not None else False)
+        if found:
+            return values
+    return None
+
+
+def _transition_mask_from_values(values, action_len: int) -> np.ndarray:
+    mask = np.zeros(action_len, dtype=bool)
+    if values is None or action_len < 1:
+        return mask
+    array = np.asarray(values)
+    if array.ndim == 0:
+        return np.full(action_len, bool(array), dtype=bool)
+    flat = array.reshape(-1)
+    if flat.shape[0] >= action_len + 1:
+        aligned = flat[1 : action_len + 1]
+    elif flat.shape[0] >= action_len:
+        aligned = flat[:action_len]
+    else:
+        aligned = flat
+    mask[: aligned.shape[0]] = aligned.astype(bool)
+    return mask
+
+
+def _success_transition_mask(episode, action_len: int) -> np.ndarray:
+    values = _success_values_from_infos(_get_episode_field(episode, "infos"))
+    return _transition_mask_from_values(values, action_len)
+
+
+def _slice_aligned_value(value, old_action_len: int, new_action_len: int):
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return {
+            key: _slice_aligned_value(item, old_action_len, new_action_len)
+            for key, item in value.items()
+        }
+    if isinstance(value, np.ndarray):
+        if value.ndim == 0:
+            return value.copy()
+        if value.shape[0] == old_action_len + 1:
+            return value[: new_action_len + 1].copy()
+        if value.shape[0] == old_action_len:
+            return value[:new_action_len].copy()
+        return value.copy()
+    if isinstance(value, list):
+        if len(value) == old_action_len + 1:
+            return list(value[: new_action_len + 1])
+        if len(value) == old_action_len:
+            return list(value[:new_action_len])
+        return list(value)
+    if isinstance(value, tuple):
+        if len(value) == old_action_len + 1:
+            return tuple(value[: new_action_len + 1])
+        if len(value) == old_action_len:
+            return tuple(value[:new_action_len])
+        return tuple(value)
+    return value
+
+
+def _set_last_truncation_true(truncations):
+    if truncations is None:
+        return None
+    if isinstance(truncations, np.ndarray):
+        result = truncations.copy()
+        if result.ndim > 0 and result.shape[0] > 0:
+            result[-1] = True
+        return result
+    if isinstance(truncations, list):
+        result = list(truncations)
+        if result:
+            result[-1] = True
+        return result
+    if isinstance(truncations, tuple):
+        result = list(truncations)
+        if result:
+            result[-1] = True
+        return tuple(result)
+    return truncations
+
+
+def _slice_episode(episode, action_end: int, *, mark_truncated: bool):
+    actions = _get_episode_field(episode, "actions")
+    old_action_len = len(actions)
+    kwargs = {
+        "observations": _slice_aligned_value(
+            _get_episode_field(episode, "observations"),
+            old_action_len,
+            action_end,
+        ),
+        "actions": np.asarray(actions)[:action_end].copy(),
+    }
+    for field in ("rewards", "terminations", "truncations", "infos"):
+        value = _get_episode_field(episode, field)
+        if value is None:
+            continue
+        kwargs[field] = _slice_aligned_value(value, old_action_len, action_end)
+    if mark_truncated and "truncations" in kwargs:
+        kwargs["truncations"] = _set_last_truncation_true(kwargs["truncations"])
+    return SimpleNamespace(**kwargs)
+
+
+def _truncate_pointmaze_episode(episode, config: dict):
+    actions = _get_episode_field(episode, "actions")
+    action_len = len(actions)
+    if action_len < 1:
+        return episode
+    event_indices = np.flatnonzero(_success_transition_mask(episode, action_len))
+    if event_indices.size == 0:
+        return episode
+    action_end = min(
+        action_len,
+        int(event_indices[0]) + 1 + int(config["truncate_holding"]),
+    )
+    if action_end >= action_len:
+        return episode
+    return _slice_episode(episode, action_end, mark_truncated=True)
+
+
+def _apply_pointmaze_data_config(episodes: list, config: dict | None, *, variant: str) -> list:
+    del variant
+    data_config = _pointmaze_effective_data_config(config)
+    processed = list(episodes)
+    if data_config["truncate"]:
+        processed = [_truncate_pointmaze_episode(episode, data_config) for episode in processed]
+    return processed
+
+
 def _load_variant_episodes(variant: str, family_data_config: dict | None = None):
     meta = POINTMAZE_VARIANTS[variant]
+    data_config = _pointmaze_effective_data_config(family_data_config)
     if get_pointmaze_variant_type(meta) == "local":
         dataset_root = resolve_local_dataset_path(meta["dataset_path"])
         data_path = dataset_root / "data"
@@ -578,11 +785,12 @@ def _load_variant_episodes(variant: str, family_data_config: dict | None = None)
             if "No data found in data path" not in str(exc):
                 raise
             episodes = _load_local_hdf5_episodes(data_path)
-            step_counts = [len(episode.actions) for episode in episodes]
-            return meta, episodes, step_counts
+        else:
+            episodes = list(dataset.iterate_episodes())
     else:
         dataset = minari.load_dataset(meta["dataset_id"], download=True)
-    episodes = list(dataset.iterate_episodes())
+        episodes = list(dataset.iterate_episodes())
+    episodes = _apply_pointmaze_data_config(episodes, data_config, variant=variant)
     step_counts = [len(episode.actions) for episode in episodes]
     return meta, episodes, step_counts
 
@@ -602,17 +810,14 @@ def _load_local_hdf5_episodes(data_path):
         )
         for name in episode_names:
             group = f[name]
-            obs_group = group["observations"]
-            observations = {
-                obs_name: obs_group[obs_name][()]
-                for obs_name in obs_group.keys()
+            kwargs = {
+                "observations": _read_hdf5_tree(group["observations"]),
+                "actions": group["actions"][()],
             }
-            episodes.append(
-                SimpleNamespace(
-                    observations=observations,
-                    actions=group["actions"][()],
-                )
-            )
+            for field in ("rewards", "terminations", "truncations", "infos"):
+                if field in group:
+                    kwargs[field] = _read_hdf5_tree(group[field])
+            episodes.append(SimpleNamespace(**kwargs))
     if not episodes:
         raise ValueError(f"No episodes found in local PointMaze data file {h5_path}")
     return episodes
@@ -1022,7 +1227,7 @@ class PointMazeDataset(BaseOfflineDataset):
     ENV_FAMILY = "pointmaze"
     VARIANTS = POINTMAZE_VARIANTS
     ACTION_DIM = 2
-    CACHE_FORMAT = "pointmaze_hash_signature_v3"
+    CACHE_FORMAT = "pointmaze_hash_signature_v4"
 
     def __init__(self, variant: str, split: str, samples: list[dict]):
         super().__init__()
@@ -1180,7 +1385,11 @@ class PointMazeDataset(BaseOfflineDataset):
 
     @classmethod
     def _load_variant_episodes(cls, variant: str, family_data_config: dict | None = None):
-        return _load_variant_episodes(variant)
+        return _load_variant_episodes(variant, family_data_config=family_data_config)
+
+    @classmethod
+    def _normalize_family_data_config(cls, family_data_config: dict | None):
+        return _normalize_pointmaze_data_config(family_data_config)
 
     @classmethod
     def _get_variant_type(cls, meta: dict) -> str:
@@ -1399,7 +1608,7 @@ class PointMazeDataset(BaseOfflineDataset):
             balance_variant_episode_count=request.balance_variant_episode_count,
             balanced_train_episode_count=request.balanced_train_episode_count,
             sampling_seed=request.sampling_seed,
-            family_data_config=request.family_data_config,
+            family_data_config=cls._normalize_family_data_config(request.family_data_config),
             history_num=request.history_num,
             history_stride=request.history_stride,
             action_token_mode=action_token_mode,

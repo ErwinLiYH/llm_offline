@@ -258,6 +258,23 @@ class ValidationCacheConfigTest(unittest.TestCase):
         self.assertEqual(request.dataset_partition_count, 1)
         self.assertIsNone(request.dataset_partition_index)
 
+    def test_pointmaze_data_config_is_passed_to_dataset_request(self):
+        config = {
+            "env_family": "pointmaze",
+            "model_name": "unit-tokenizer",
+            "max_length": 128,
+            "dataset_workers": 1,
+            "action_dim": 2,
+            "pointmaze_data_config": {
+                "truncate": True,
+                "truncate_holding": 3,
+            },
+        }
+
+        request = build_dataset_request(config, object(), "open", "train")
+
+        self.assertEqual(request.family_data_config, config["pointmaze_data_config"])
+
 
 if __name__ == "__main__":
     unittest.main()

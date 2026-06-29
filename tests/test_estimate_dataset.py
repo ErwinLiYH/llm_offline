@@ -11,6 +11,7 @@ unsloth_stub.FastLanguageModel = object()
 sys.modules.setdefault("unsloth", unsloth_stub)
 
 from data.antmaze.dataset import AntMazeDataset
+from data.pointmaze.dataset import PointMazeDataset
 from estimate_dataset import (
     SampleFootprint,
     VariantData,
@@ -125,6 +126,39 @@ class EstimateDatasetTest(unittest.TestCase):
             data = load_variant_data(config, ["umaze"])
 
         self.assertEqual(captured_configs, [config["antmaze_data_config"]])
+        self.assertEqual(data[0].total_steps, 6)
+        self.assertEqual(data[0].train_steps + data[0].val_steps, 6)
+
+    def test_pointmaze_data_config_is_passed_to_loader(self):
+        episodes = [
+            SimpleNamespace(actions=np.zeros((4, 2), dtype=np.float32)),
+            SimpleNamespace(actions=np.zeros((2, 2), dtype=np.float32)),
+        ]
+        captured_configs = []
+
+        def fake_loader(cls, variant, family_data_config=None):
+            captured_configs.append(family_data_config)
+            return {}, episodes, [len(episode.actions) for episode in episodes]
+
+        config = {
+            "env_family": "pointmaze",
+            "prompt_templete_index": ["parallel_full_sensing"],
+            "train_data_ratio": 0.5,
+            "sampling_seed": 123,
+            "pointmaze_data_config": {
+                "truncate": True,
+                "truncate_holding": 2,
+            },
+        }
+
+        with mock.patch.object(
+            PointMazeDataset,
+            "_load_variant_episodes",
+            new=classmethod(fake_loader),
+        ):
+            data = load_variant_data(config, ["open"])
+
+        self.assertEqual(captured_configs, [config["pointmaze_data_config"]])
         self.assertEqual(data[0].total_steps, 6)
         self.assertEqual(data[0].train_steps + data[0].val_steps, 6)
 

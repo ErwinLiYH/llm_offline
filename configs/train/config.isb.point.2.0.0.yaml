@@ -47,6 +47,11 @@ eval_variants:
 dataset_load_partitions: 8
 episode_keep_num: 800
 
+pointmaze_data_config:
+  truncate: true              # true = cut each episode after first success before tokenization
+  truncate_holding: 20        # extra action samples kept after the success transition; must be an integer >= 0
+
+min_lr_ratio: 0.1
 lr_scheduler_type: cosine
 lr_decay_ref_epochs: 4.0
 warmup_ratio: 0.05

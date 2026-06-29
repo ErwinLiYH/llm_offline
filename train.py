@@ -482,6 +482,15 @@ def get_eval_variant_results_dir(
 
 
 
+def _family_data_config(config: dict) -> dict | None:
+    env_family = config.get("env_family")
+    if env_family == "antmaze":
+        return config.get("antmaze_data_config")
+    if env_family == "pointmaze":
+        return config.get("pointmaze_data_config")
+    return None
+
+
 def build_dataset_request(
     config: dict,
     tokenizer,
@@ -513,11 +522,7 @@ def build_dataset_request(
         balance_variant_episode_count=config.get("balance_variant_episode_count", False),
         balanced_train_episode_count=config.get("balanced_train_episode_count"),
         sampling_seed=config.get("sampling_seed", 0),
-        family_data_config=(
-            config.get("antmaze_data_config")
-            if config.get("env_family") == "antmaze"
-            else None
-        ),
+        family_data_config=_family_data_config(config),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
         action_token_mode=config.get("action_token_mode", "text"),
@@ -550,11 +555,7 @@ def _resolve_balanced_train_episode_count(
         return None
 
     keep_num = config.get("episode_keep_num")
-    family_data_config = (
-        config.get("antmaze_data_config")
-        if config.get("env_family") == "antmaze"
-        else None
-    )
+    family_data_config = _family_data_config(config)
     variant_stats = [
         dataset_cls.collect_variant_episode_stats(
             variant,
