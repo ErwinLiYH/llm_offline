@@ -1546,3 +1546,15 @@ type: project
 - `train.py` 和 `estimate_dataset.py` 在 `env_family: pointmaze` 时透传 `pointmaze_data_config`，因此训练、partition shard planning、episode balancing 和 dataset size estimator 都基于预处理后的 episode 数和 step 数
 - PointMaze tokenized cache signature 纳入显式配置的 normalized `pointmaze_data_config`，PointMaze cache format bump 到 `pointmaze_hash_signature_v4`，避免复用旧截断语义下的 cache
 - PointMaze local HDF5 fallback loader 现在读取 `infos`、`rewards`、`terminations` 和 `truncations`，供 success 截断和对齐切片使用；新增/更新单元测试覆盖配置校验、cache signature、HDF5 fallback、训练 request 透传和 estimator 透传
+
+## AntMaze compact local/test layouts（2026-06-29）
+
+- `data/antmaze/variants.py` 中的 `local-layout-01..09` 和 `test-layout-01..04` 全部替换为 compact AntMaze 地图，当前尺寸均不超过 `10x13`
+- 新地图按两档静态难度组织：约 `45` 分的轻 bottleneck/open-corridor 布局，以及约 `50` 分的中等转弯/瓶颈布局；对应 `structure_desc_en` 文案改为 compact generated / held-out compact generated
+- 每张 local/test 地图旁补充当前静态难度、eval reset 和 eval goal 注释，便于后续调图时直接核对
+- 重新设置 local/test eval reset/goal，降低“直线看起来近但必须大绕路”的任务比例；当前 reset-goal 绕路比最高的 local/test 图为 `local-layout-08=2.50`、`local-layout-07=2.20`、`test-layout-03=1.80`
+- `local-layout-09` 采用用户调整后的开口并将 reset 设为 `(6, 11)`，当前 `score=42.85`、最短路 `15`、绕路比 `1.00`
+- `test-layout-02` 在地图降低难度后将 reset/goal 调整为 `(7, 1) -> (1, 11)`，避免 eval 任务过短；当前 `score=42.06`
+- `test-layout-04` 将 goal 从原先过绕的 `(7, 7)` 移到 `(5, 7)`，绕路比从 `3.67` 降到 `1.50`，当前 `score=50.72`
+- Slurm job `5422886` 已为 `local-layout-01..09` 完成 AntMaze data generation：所有 array task 均 `COMPLETED` 且 `ExitCode=0:0`，每个 layout 生成 `2000` episodes，成功率范围 `0.8885..0.9225`，均高于 `MIN_SUCCESS_RATE=0.8`
+- 已通过 `python inspect_antmaze_layouts.py --variants ...` 检查当前 local/test 指标，并通过 `python -m py_compile data/antmaze/variants.py`
