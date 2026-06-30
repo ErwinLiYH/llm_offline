@@ -1,0 +1,58 @@
+# Standalone eval config for configs/train/config.isb.ant.1.0.0.yaml.
+model_path: /scratch/u6mx/yl1118.u6mx/checkpoints/antmaze/Qwen3-0.6B/all-12v-e25a155c32ac/5428490/ep5(step122110)
+load_in_4bit: false
+parallel_backend: single
+result_root: /scratch/u6mx/yl1118.u6mx/resultsV2
+env_family: antmaze
+
+eval_mode: all
+variants:
+- test-layout-01
+- test-layout-02
+- test-layout-03
+- umaze-diverse
+- medium-diverse
+- large-diverse
+- local-layout-01
+- local-layout-02
+- local-layout-03
+- local-layout-04
+- local-layout-05
+- local-layout-06
+- local-layout-07
+- local-layout-08
+- local-layout-09
+num_episodes: 20
+seed: 64
+
+history_num: 0
+history_stride: 1
+prompt_templete_index: ["parallel_full_sensing"]
+
+rollout_worker_num: 5
+rollout_worker_lifetime: slot
+rollout_worker_retries: 2
+rollout_worker_start_timeout_seconds: 120
+rollout_action_timeout_seconds: 300
+policy_batch_timeout_ms: 10
+eval_distribute_variants: false
+
+parse_retry_limit: 3
+record_step_logs: true
+action_sampling: false
+action_temperature: 0.7
+action_top_p: 0.9
+action_top_k: 0
+
+record_video: true
+record_all: true
+video_episode_index: 0
+video_fps: 30
+video_format: mp4
+video_save_workers: 5
+video_save_max_pending: 10
+mujoco_gl: egl
+
+env_kwargs:
+  continuing_task: false
+  reset_target: false
