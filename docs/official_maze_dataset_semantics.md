@@ -133,6 +133,7 @@ Current local AntMaze modes:
 | `--mode diverse --diverse-cell-mode all-free` | all free cells | No | fixed horizon |
 | `--mode diverse --diverse-cell-mode representative-c` | deterministic representative free cells | Yes | fixed horizon |
 | `--mode play` | all free cells | No | fixed horizon |
+| `--mode diverse --hard-sample` | difficulty-weighted explicit start/goal pairs from the diverse candidate set | follows `--diverse-cell-mode` | fixed horizon; save successes only |
 
 The default is:
 
@@ -150,6 +151,29 @@ unless `--diverse-cell-mode representative-c` is explicitly selected.
 The representative `c` mode is not an official hand-picked cell list. It is a
 deterministic heuristic over the local maze graph, intended only as a narrower
 sampling option when all-free reset/goal sampling is too broad.
+
+Hard-sample mode is also repository-specific. It precomputes all reachable
+ordered start/goal cell pairs from the diverse candidate set, scores each pair
+with `difficulty`, sorts pairs from low to high difficulty, and then applies a
+rank-linear sampling weight:
+
+```text
+difficulty = 0.5 * (path_len / max_path_len) + 0.5 * away_frac
+rank_score = rank / max(pair_count - 1, 1)
+sample_weight = 1.0 + hard_sample_alpha * rank_score
+```
+
+where `away_frac` is the fraction of shortest-path steps that move farther away
+from the goal in Manhattan distance. `hard_sample_alpha=0` is uniform,
+`alpha=1` makes the highest-ranked pair twice as likely as the lowest-ranked
+pair, and smaller values such as `0.5` give a gentler bias. The generator then
+samples pairs by `sample_weight`, resets the environment with fixed
+`reset_cell` and `goal_cell`, and saves only successful episodes. Each pair is
+tried at most `1 + hard_retry` times. This is not part of official public
+AntMaze dataset generation.
+
+`--hard-sample-top-n N` can restrict sampling to only the top N hardest pairs
+after difficulty sorting. `N=0` keeps all reachable pairs.
 
 ## Success-Rate Filtering
 
@@ -169,6 +193,13 @@ keeps exactly `--target-episodes` saved episodes unless generation fails.
 This success-rate filtering is a repository-specific behavior and is not part
 of the official public AntMaze dataset generation.
 
+Hard-sample mode bypasses the replacement-style success-rate filtering above:
+failed attempts are never saved, successful episodes are appended, and
+generation continues until the saved dataset reaches `--target-episodes`.
+`--max-episode-attempts` is intentionally ignored in hard-sample mode. In
+practice the saved success rate should be `1.0`, so hard-sample Slurm jobs use
+`--min-success-rate 1.0`.
+
 Each local AntMaze dataset writes `generation_summary.json`, including:
 
 - `mode`
@@ -177,6 +208,18 @@ Each local AntMaze dataset writes `generation_summary.json`, including:
 - `success_rate` / `saved_success_rate`
 - `true_success_rate`
 - attempted, discarded, and replacement episode counts
+
+Hard-sample summaries additionally include:
+
+- `hard_sample`, `hard_retry`, `hard_sample_alpha`
+- `hard_sample_top_n`, `hard_pair_space_total`, `hard_pair_space_used`
+- pair-space `difficulty`, `path_len`, and `away_steps` min/max/mean
+- pair sampling probability min/max and max-over-min ratio
+- saved-episode `difficulty`, `path_len`, and `away_steps` min/max/mean
+- `hard_pairs_sampled`, `hard_pairs_succeeded`, `hard_pairs_exhausted`
+- `hard_failed_attempts`
+- `episode_difficulty` records with each saved episode's start/goal cells and
+  pair difficulty metrics
 
 ## Practical Training Implications
 
@@ -192,3 +235,6 @@ For BC training:
 - Enabling `--min-success-rate` makes the saved local AntMaze dataset less
   like the raw official public distribution, but can be useful when a custom
   map/controller combination produces too many failures.
+- Enabling `--hard-sample` changes the saved distribution more strongly: it
+  over-samples longer or more indirect reachable start/goal pairs and removes
+  failed episodes from the saved dataset.

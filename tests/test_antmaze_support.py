@@ -413,6 +413,213 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertTrue(bool(episodes[0].terminations[-1]))
         self.assertTrue(bool(episodes[0].infos["success"][-1]))
 
+    def test_antmaze_hard_sample_pair_metrics_and_weights(self):
+        from local_antmaze_gen import _build_hard_sample_pair_space
+
+        maze_map = [
+            [1, 1, 1, 1, 1],
+            [1, 0, 1, 0, 1],
+            [1, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1],
+        ]
+        candidate_cells = [(1, 1), (1, 3), (2, 2)]
+
+        uniform_pairs, uniform_total = _build_hard_sample_pair_space(
+            maze_map,
+            candidate_cells,
+            hard_sample_alpha=0.0,
+        )
+        weighted_pairs, weighted_total = _build_hard_sample_pair_space(
+            maze_map,
+            candidate_cells,
+            hard_sample_alpha=2.0,
+        )
+        top_pairs, top_total = _build_hard_sample_pair_space(
+            maze_map,
+            candidate_cells,
+            hard_sample_alpha=2.0,
+            hard_sample_top_n=2,
+        )
+
+        hard_pair = next(
+            pair
+            for pair in weighted_pairs
+            if pair["start_cell"] == (1, 1) and pair["goal_cell"] == (1, 3)
+        )
+        easy_pair = next(
+            pair
+            for pair in weighted_pairs
+            if pair["start_cell"] == (1, 1) and pair["goal_cell"] == (2, 2)
+        )
+
+        self.assertEqual(hard_pair["path_len"], 4)
+        self.assertEqual(hard_pair["away_steps"], 1)
+        self.assertAlmostEqual(hard_pair["away_frac"], 0.25)
+        self.assertAlmostEqual(hard_pair["difficulty"], 0.625)
+        self.assertEqual(easy_pair["path_len"], 2)
+        self.assertEqual(easy_pair["away_steps"], 0)
+        self.assertAlmostEqual(easy_pair["difficulty"], 0.25)
+        self.assertEqual(uniform_total, len(uniform_pairs))
+        self.assertEqual(weighted_total, len(weighted_pairs))
+        self.assertEqual(top_total, len(weighted_pairs))
+        self.assertEqual(len(top_pairs), 2)
+        self.assertTrue(
+            all(
+                pair["difficulty"] >= weighted_pairs[-2]["difficulty"]
+                for pair in top_pairs
+            )
+        )
+        self.assertTrue(
+            all(pair["sample_weight"] == 1.0 for pair in uniform_pairs)
+        )
+        self.assertGreater(hard_pair["sample_weight"], easy_pair["sample_weight"])
+        self.assertAlmostEqual(
+            max(pair["sample_weight"] for pair in weighted_pairs)
+            / min(pair["sample_weight"] for pair in weighted_pairs),
+            3.0,
+        )
+
+    def test_antmaze_hard_sample_cli_validation(self):
+        import local_antmaze_gen
+
+        base_args = {
+            "variants": ["local-layout-01"],
+            "num_workers": 1,
+            "target_episodes": 1,
+            "overwrite": False,
+            "seed": 0,
+            "max_episode_steps": None,
+            "policy_file": Path("unused.zip"),
+            "maze_solver": "QIteration",
+            "action_noise": 0.0,
+            "mode": "diverse",
+            "diverse_cell_mode": "all-free",
+            "min_success_rate": 0.0,
+            "max_episode_attempts": None,
+            "hard_sample": True,
+            "hard_retry": 5,
+            "hard_sample_alpha": 2.0,
+            "hard_sample_top_n": 0,
+        }
+
+        invalid_cases = [
+            (
+                {"mode": "play"},
+                "--hard-sample only supports --mode diverse",
+            ),
+            (
+                {"hard_retry": -1},
+                "--hard-retry must be >= 0",
+            ),
+            (
+                {"hard_sample_alpha": -0.1},
+                "--hard-sample-alpha must be >= 0",
+            ),
+            (
+                {"hard_sample_top_n": -1},
+                "--hard-sample-top-n must be >= 0",
+            ),
+        ]
+        for overrides, error in invalid_cases:
+            with self.subTest(overrides=overrides):
+                args = SimpleNamespace(**{**base_args, **overrides})
+                with mock.patch("local_antmaze_gen.parse_args", return_value=args):
+                    with self.assertRaisesRegex(ValueError, error):
+                        local_antmaze_gen.main()
+
+    def test_antmaze_hard_sample_generation_summary_records_difficulty(self):
+        import json
+        import local_antmaze_gen
+
+        maze_map = [
+            [1, 1, 1, 1, 1],
+            [1, 0, 1, 0, 1],
+            [1, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1],
+        ]
+        pair_space, pair_space_total = local_antmaze_gen._build_hard_sample_pair_space(
+            maze_map,
+            [(1, 1), (1, 3), (2, 2)],
+            hard_sample_alpha=2.0,
+        )
+        first_pair = pair_space[0]
+        second_pair = pair_space[-1]
+        shard_results = [
+            {
+                "attempted_episodes": 3,
+                "attempted_successful_episodes": 2,
+                "discarded_post_target_failed_episodes": 0,
+                "replaced_failed_episodes": 0,
+                "replacement_success_episodes": 0,
+                "collected_steps": 30,
+                "hard_pairs_sampled": 2,
+                "hard_pairs_succeeded": 2,
+                "hard_pairs_exhausted": 0,
+                "hard_failed_attempts": 1,
+                "episode_difficulty": [
+                    local_antmaze_gen._difficulty_record_for_episode(
+                        first_pair,
+                        episode_index=0,
+                        attempts_for_pair=2,
+                    ),
+                    local_antmaze_gen._difficulty_record_for_episode(
+                        second_pair,
+                        episode_index=1,
+                        attempts_for_pair=1,
+                    ),
+                ],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as root_dir, mock.patch(
+            "local_antmaze_gen._dataset_success_stats",
+            return_value=(3, 3),
+        ):
+            local_antmaze_gen._write_generation_summary(
+                dataset_root=Path(root_dir),
+                variant="local-layout-01",
+                target_episodes=3,
+                min_success_rate=0.0,
+                max_episode_attempts=None,
+                seed=0,
+                action_noise=0.2,
+                mode="diverse",
+                diverse_cell_mode="all-free",
+                collection_combined_cells=[],
+                hard_sample=True,
+                hard_retry=1,
+                hard_sample_alpha=2.0,
+                hard_sample_top_n=0,
+                hard_pair_space=pair_space,
+                hard_pair_space_total=pair_space_total,
+                shard_results=shard_results,
+            )
+            summary = json.loads(
+                (Path(root_dir) / "generation_summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertTrue(summary["hard_sample"])
+        self.assertEqual(summary["hard_retry"], 1)
+        self.assertEqual(summary["hard_sample_top_n"], 0)
+        self.assertEqual(summary["hard_pair_space_total"], pair_space_total)
+        self.assertEqual(summary["hard_pair_space_used"], len(pair_space))
+        self.assertEqual(summary["hard_pairs_sampled"], 2)
+        self.assertEqual(summary["hard_failed_attempts"], 1)
+        self.assertIn("pair_difficulty_mean", summary)
+        self.assertAlmostEqual(
+            summary["pair_sample_probability_max_over_min"],
+            3.0,
+        )
+        self.assertIn("saved_path_len_mean", summary)
+        self.assertEqual(len(summary["episode_difficulty"]), 2)
+        self.assertEqual(summary["episode_difficulty"][0]["episode_index"], 1)
+        self.assertEqual(
+            summary["episode_difficulty"][0]["attempts_for_pair"],
+            2,
+        )
+
     def test_corner_risk_distinguishes_new_corners_from_continuous_walls(self):
         row = 3
         col = 3

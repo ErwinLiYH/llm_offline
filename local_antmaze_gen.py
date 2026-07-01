@@ -21,7 +21,6 @@ import numpy as np
 from minari import DataCollector, MinariDataset, StepDataCallback
 from minari.data_collector.episode_buffer import EpisodeBuffer
 from minari.storage.local import get_dataset_path
-from stable_baselines3 import SAC
 
 from data.antmaze.variants import (
     ANTMAZE_VARIANTS,
@@ -165,6 +164,42 @@ def parse_args():
             "Maximum episode attempts per variant when --min-success-rate needs "
             "extra sampling. Defaults to target_episodes without a success-rate "
             "constraint, or target_episodes * 5 with one."
+        ),
+    )
+    parser.add_argument(
+        "--hard-sample",
+        action="store_true",
+        help=(
+            "In --mode diverse, sample explicit start/goal cell pairs with a "
+            "difficulty-biased distribution and save only successful episodes."
+        ),
+    )
+    parser.add_argument(
+        "--hard-retry",
+        type=int,
+        default=5,
+        help=(
+            "Maximum failed retries for each hard-sampled pair. A pair is tried "
+            "at most 1 + hard_retry times."
+        ),
+    )
+    parser.add_argument(
+        "--hard-sample-alpha",
+        type=float,
+        default=1.0,
+        help=(
+            "Rank-linear difficulty bias for --hard-sample. 0 gives uniform "
+            "pair sampling; alpha=1 makes the hardest pair twice as likely as "
+            "the easiest pair."
+        ),
+    )
+    parser.add_argument(
+        "--hard-sample-top-n",
+        type=int,
+        default=0,
+        help=(
+            "Only sample from the top N hardest reachable start/goal pairs after "
+            "difficulty sorting. 0 keeps all pairs."
         ),
     )
     return parser.parse_args()
@@ -371,6 +406,196 @@ def _bfs_distances(
     return distances
 
 
+def _shortest_path(
+    start: tuple[int, int],
+    goal: tuple[int, int],
+    free_cell_set: set[tuple[int, int]],
+) -> list[tuple[int, int]] | None:
+    parent: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+    queue = [start]
+    for cell in queue:
+        if cell == goal:
+            break
+        for neighbor in _cell_neighbors(cell, free_cell_set):
+            if neighbor not in parent:
+                parent[neighbor] = cell
+                queue.append(neighbor)
+    if goal not in parent:
+        return None
+
+    path = []
+    cell: tuple[int, int] | None = goal
+    while cell is not None:
+        path.append(cell)
+        cell = parent[cell]
+    path.reverse()
+    return path
+
+
+def _path_away_steps(
+    path: list[tuple[int, int]],
+    goal: tuple[int, int],
+) -> int:
+    if len(path) < 2:
+        return 0
+
+    def manhattan(cell: tuple[int, int]) -> int:
+        return abs(cell[0] - goal[0]) + abs(cell[1] - goal[1])
+
+    return sum(
+        1
+        for current, next_cell in zip(path, path[1:])
+        if manhattan(next_cell) > manhattan(current)
+    )
+
+
+def _build_hard_sample_pair_space(
+    maze_map: list[list[object]],
+    candidate_cells: list[tuple[int, int]],
+    hard_sample_alpha: float,
+    hard_sample_top_n: int = 0,
+) -> tuple[list[dict], int]:
+    clean_map = _clean_collection_map(maze_map)
+    free_cell_set = set(_free_cells(clean_map))
+    candidates = sorted(
+        {
+            (int(cell[0]), int(cell[1]))
+            for cell in candidate_cells
+        }
+    )
+    if len(candidates) < 2:
+        raise ValueError("--hard-sample requires at least two candidate free cells")
+
+    invalid_cells = [cell for cell in candidates if cell not in free_cell_set]
+    if invalid_cells:
+        raise ValueError(f"Hard-sample candidate cells are not free: {invalid_cells}")
+
+    records = []
+    max_path_len = 0
+    for start_cell in candidates:
+        for goal_cell in candidates:
+            if start_cell == goal_cell:
+                continue
+            path = _shortest_path(start_cell, goal_cell, free_cell_set)
+            if path is None:
+                continue
+            path_len = len(path) - 1
+            away_steps = _path_away_steps(path, goal_cell)
+            records.append(
+                {
+                    "start_cell": start_cell,
+                    "goal_cell": goal_cell,
+                    "path_len": int(path_len),
+                    "away_steps": int(away_steps),
+                    "away_frac": float(away_steps / max(path_len, 1)),
+                }
+            )
+            max_path_len = max(max_path_len, path_len)
+
+    if not records:
+        raise ValueError("--hard-sample found no reachable ordered start/goal pairs")
+    if max_path_len <= 0:
+        raise ValueError("--hard-sample pair paths must have positive length")
+
+    for record in records:
+        path_score = float(record["path_len"] / max_path_len)
+        difficulty = 0.5 * path_score + 0.5 * float(record["away_frac"])
+        record["path_score"] = path_score
+        record["difficulty"] = float(difficulty)
+
+    records = sorted(
+        records,
+        key=lambda record: (
+            float(record["difficulty"]),
+            int(record["path_len"]),
+            int(record["away_steps"]),
+            record["start_cell"],
+            record["goal_cell"],
+        ),
+    )
+    total_reachable_pairs = len(records)
+    if hard_sample_top_n > 0:
+        records = records[-int(hard_sample_top_n):]
+
+    rank_denominator = max(len(records) - 1, 1)
+    for rank, record in enumerate(records):
+        rank_score = float(rank / rank_denominator)
+        record["rank_score"] = rank_score
+        record["sample_weight"] = float(1.0 + float(hard_sample_alpha) * rank_score)
+    return records, total_reachable_pairs
+
+
+def _hard_pair_probabilities(pair_space: list[dict]) -> np.ndarray:
+    weights = np.asarray(
+        [float(pair["sample_weight"]) for pair in pair_space],
+        dtype=np.float64,
+    )
+    total = float(weights.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return np.full(len(pair_space), 1.0 / len(pair_space), dtype=np.float64)
+    return weights / total
+
+
+def _hard_pair_probability_summary(pair_space: list[dict]) -> dict:
+    if not pair_space:
+        return {
+            "pair_sample_probability_min": None,
+            "pair_sample_probability_max": None,
+            "pair_sample_probability_max_over_min": None,
+        }
+    probabilities = _hard_pair_probabilities(pair_space)
+    min_probability = float(probabilities.min())
+    max_probability = float(probabilities.max())
+    return {
+        "pair_sample_probability_min": min_probability,
+        "pair_sample_probability_max": max_probability,
+        "pair_sample_probability_max_over_min": (
+            float(max_probability / min_probability)
+            if min_probability > 0.0
+            else None
+        ),
+    }
+
+
+def _stat_triplet(records: list[dict], key: str, prefix: str) -> dict:
+    values = [float(record[key]) for record in records if key in record]
+    if not values:
+        return {
+            f"{prefix}_min": None,
+            f"{prefix}_max": None,
+            f"{prefix}_mean": None,
+        }
+    return {
+        f"{prefix}_min": min(values),
+        f"{prefix}_max": max(values),
+        f"{prefix}_mean": float(sum(values) / len(values)),
+    }
+
+
+def _difficulty_record_for_episode(
+    pair_record: dict,
+    *,
+    episode_index: int,
+    attempts_for_pair: int,
+) -> dict:
+    return {
+        "episode_index": int(episode_index),
+        "start_cell": [
+            int(pair_record["start_cell"][0]),
+            int(pair_record["start_cell"][1]),
+        ],
+        "goal_cell": [
+            int(pair_record["goal_cell"][0]),
+            int(pair_record["goal_cell"][1]),
+        ],
+        "path_len": int(pair_record["path_len"]),
+        "away_steps": int(pair_record["away_steps"]),
+        "away_frac": float(pair_record["away_frac"]),
+        "difficulty": float(pair_record["difficulty"]),
+        "attempts_for_pair": int(attempts_for_pair),
+    }
+
+
 def _farthest_cell(
     distances: dict[tuple[int, int], int],
 ) -> tuple[int, int]:
@@ -487,6 +712,15 @@ def _clip_action(action: np.ndarray) -> np.ndarray:
     return np.clip(action, -1.0, 1.0).astype(np.float32)
 
 
+def _load_sac_policy(policy_file: str):
+    from stable_baselines3 import SAC
+
+    return SAC.load(
+        policy_file,
+        custom_objects={"lr_schedule": lambda _: 0.0},
+    )
+
+
 def _collect_shard(
     *,
     variant: str,
@@ -503,7 +737,11 @@ def _collect_shard(
     diverse_cell_mode: str,
     collection_combined_cells: list[tuple[int, int]],
     min_success_rate: float,
-    max_episode_attempts: int,
+    max_episode_attempts: int | None,
+    hard_sample: bool,
+    hard_retry: int,
+    hard_sample_alpha: float,
+    hard_pair_space: list[dict],
 ) -> dict:
     # Keep shard IDs namespace-free so Minari does not recursively scan the
     # shared dataset root while parallel workers create/delete temporary dirs.
@@ -515,10 +753,7 @@ def _collect_shard(
         record_infos=True,
     )
     np.random.seed(seed)
-    model = SAC.load(
-        policy_file,
-        custom_objects={"lr_schedule": lambda _: 0.0},
-    )
+    model = _load_sac_policy(policy_file)
 
     def action_callback(obs: dict, waypoint_xy: np.ndarray) -> np.ndarray:
         return model.predict(_wrap_maze_obs(obs, waypoint_xy))[0]
@@ -528,8 +763,6 @@ def _collect_shard(
         model_callback=action_callback,
         maze_solver=maze_solver,
     )
-    obs, _ = collector.reset(seed=seed)
-    reset_seed = seed
     steps = 0
     attempted_episodes = 0
     attempted_successful_episodes = 0
@@ -540,82 +773,175 @@ def _collect_shard(
     replacement_success_episodes = 0
     episode_success = False
     replacement_rng = np.random.default_rng(seed + 17_171)
+    hard_rng = np.random.default_rng(seed + 31_337)
+    hard_probabilities = (
+        _hard_pair_probabilities(hard_pair_space)
+        if hard_sample
+        else np.asarray([], dtype=np.float64)
+    )
+    hard_pairs_sampled = 0
+    hard_pairs_succeeded = 0
+    hard_pairs_exhausted = 0
+    hard_failed_attempts = 0
+    episode_difficulty: list[dict] = []
 
-    while not _success_requirement_met(
-        episodes=len(selected_episodes),
-        successful_episodes=sum(selected_successes),
-        target_episodes=target_episodes,
-        min_success_rate=min_success_rate,
-    ):
-        if attempted_episodes >= max_episode_attempts:
-            saved_successful_episodes = sum(selected_successes)
-            saved_success_rate = _success_rate(
-                saved_successful_episodes,
-                len(selected_episodes),
+    if hard_sample:
+        reset_seed = seed
+        while len(selected_episodes) < target_episodes:
+            pair_index = int(
+                hard_rng.choice(len(hard_pair_space), p=hard_probabilities)
             )
-            attempted_success_rate = _success_rate(
-                attempted_successful_episodes,
-                attempted_episodes,
-            )
-            raise RuntimeError(
-                f"{variant} worker={worker_index} failed to reach "
-                f"min_success_rate={min_success_rate:.4f} after "
-                f"{attempted_episodes} attempted episodes "
-                f"(saved_success_rate={saved_success_rate:.4f}, "
-                f"true_success_rate={attempted_success_rate:.4f}). "
-                "Increase --max-episode-attempts, lower --min-success-rate, or "
-                "inspect the layout/controller."
-            )
+            pair_record = hard_pair_space[pair_index]
+            hard_pairs_sampled += 1
+            pair_succeeded = False
 
-        action = waypoint_controller.compute_action(obs)
-        if action_noise > 0:
-            action = action + np.random.randn(*action.shape) * float(action_noise)
-        action = _clip_action(action)
-
-        obs, _, terminated, truncated, info = collector.step(action)
-        steps += 1
-        step_success = bool(info.get("success", False))
-        episode_success = episode_success or step_success
-
-        if terminated or truncated:
-            completed_success = bool(episode_success)
-            storage_episode_index = collector._episode_id - 1
-            attempted_episodes += 1
-            if completed_success:
-                attempted_successful_episodes += 1
-
-            if len(selected_episodes) < target_episodes:
-                selected_episodes.append(
-                    _read_collected_episode(collector, storage_episode_index)
+            for pair_attempt in range(1 + hard_retry):
+                attempt_seed = reset_seed
+                reset_seed += 1
+                waypoint_controller.waypoint_targets = None
+                waypoint_controller.global_target_xy = np.full(2, np.inf)
+                obs, _ = collector.reset(
+                    seed=attempt_seed,
+                    options={
+                        "reset_cell": np.asarray(
+                            pair_record["start_cell"],
+                            dtype=np.int64,
+                        ),
+                        "goal_cell": np.asarray(
+                            pair_record["goal_cell"],
+                            dtype=np.int64,
+                        ),
+                    },
                 )
-                selected_successes.append(completed_success)
-            elif completed_success:
-                failed_indices = [
-                    idx for idx, success in enumerate(selected_successes) if not success
-                ]
-                if not failed_indices:
+                episode_success = False
+
+                while True:
+                    action = waypoint_controller.compute_action(obs)
+                    if action_noise > 0:
+                        action = action + np.random.randn(*action.shape) * float(
+                            action_noise
+                        )
+                    action = _clip_action(action)
+
+                    obs, _, terminated, truncated, info = collector.step(action)
+                    steps += 1
+                    episode_success = episode_success or bool(
+                        info.get("success", False)
+                    )
+
+                    if not (terminated or truncated):
+                        continue
+
+                    completed_success = bool(episode_success)
+                    storage_episode_index = collector._episode_id - 1
+                    attempted_episodes += 1
+                    if completed_success:
+                        attempted_successful_episodes += 1
+                        selected_episodes.append(
+                            _read_collected_episode(
+                                collector,
+                                storage_episode_index,
+                            )
+                        )
+                        selected_successes.append(True)
+                        episode_difficulty.append(
+                            _difficulty_record_for_episode(
+                                pair_record,
+                                episode_index=len(selected_episodes) - 1,
+                                attempts_for_pair=pair_attempt + 1,
+                            )
+                        )
+                        hard_pairs_succeeded += 1
+                        pair_succeeded = True
+                    else:
+                        hard_failed_attempts += 1
                     break
-                replace_idx = int(replacement_rng.choice(failed_indices))
-                selected_episodes[replace_idx] = _read_collected_episode(
-                    collector,
-                    storage_episode_index,
-                )
-                selected_successes[replace_idx] = True
-                replaced_failed_episodes += 1
-                replacement_success_episodes += 1
-            else:
-                discarded_post_target_failed_episodes += 1
 
-            reset_seed += 1
-            episode_success = False
-            if _success_requirement_met(
-                episodes=len(selected_episodes),
-                successful_episodes=sum(selected_successes),
-                target_episodes=target_episodes,
-                min_success_rate=min_success_rate,
-            ):
-                break
-            obs, _ = collector.reset(seed=reset_seed)
+                if pair_succeeded:
+                    break
+
+            if not pair_succeeded:
+                hard_pairs_exhausted += 1
+    else:
+        obs, _ = collector.reset(seed=seed)
+        reset_seed = seed
+        while not _success_requirement_met(
+            episodes=len(selected_episodes),
+            successful_episodes=sum(selected_successes),
+            target_episodes=target_episodes,
+            min_success_rate=min_success_rate,
+        ):
+            if attempted_episodes >= max_episode_attempts:
+                saved_successful_episodes = sum(selected_successes)
+                saved_success_rate = _success_rate(
+                    saved_successful_episodes,
+                    len(selected_episodes),
+                )
+                attempted_success_rate = _success_rate(
+                    attempted_successful_episodes,
+                    attempted_episodes,
+                )
+                raise RuntimeError(
+                    f"{variant} worker={worker_index} failed to reach "
+                    f"min_success_rate={min_success_rate:.4f} after "
+                    f"{attempted_episodes} attempted episodes "
+                    f"(saved_success_rate={saved_success_rate:.4f}, "
+                    f"true_success_rate={attempted_success_rate:.4f}). "
+                    "Increase --max-episode-attempts, lower --min-success-rate, or "
+                    "inspect the layout/controller."
+                )
+
+            action = waypoint_controller.compute_action(obs)
+            if action_noise > 0:
+                action = action + np.random.randn(*action.shape) * float(action_noise)
+            action = _clip_action(action)
+
+            obs, _, terminated, truncated, info = collector.step(action)
+            steps += 1
+            step_success = bool(info.get("success", False))
+            episode_success = episode_success or step_success
+
+            if terminated or truncated:
+                completed_success = bool(episode_success)
+                storage_episode_index = collector._episode_id - 1
+                attempted_episodes += 1
+                if completed_success:
+                    attempted_successful_episodes += 1
+
+                if len(selected_episodes) < target_episodes:
+                    selected_episodes.append(
+                        _read_collected_episode(collector, storage_episode_index)
+                    )
+                    selected_successes.append(completed_success)
+                elif completed_success:
+                    failed_indices = [
+                        idx
+                        for idx, success in enumerate(selected_successes)
+                        if not success
+                    ]
+                    if not failed_indices:
+                        break
+                    replace_idx = int(replacement_rng.choice(failed_indices))
+                    selected_episodes[replace_idx] = _read_collected_episode(
+                        collector,
+                        storage_episode_index,
+                    )
+                    selected_successes[replace_idx] = True
+                    replaced_failed_episodes += 1
+                    replacement_success_episodes += 1
+                else:
+                    discarded_post_target_failed_episodes += 1
+
+                reset_seed += 1
+                episode_success = False
+                if _success_requirement_met(
+                    episodes=len(selected_episodes),
+                    successful_episodes=sum(selected_successes),
+                    target_episodes=target_episodes,
+                    min_success_rate=min_success_rate,
+                ):
+                    break
+                obs, _ = collector.reset(seed=reset_seed)
 
     saved_episodes = len(selected_episodes)
     saved_successful_episodes = sum(selected_successes)
@@ -660,6 +986,12 @@ def _collect_shard(
             f"collection_combined_cells={collection_combined_cells}, "
             f"min_success_rate={min_success_rate}, "
             f"max_episode_attempts={max_episode_attempts}, "
+            f"hard_sample={hard_sample}, hard_retry={hard_retry}, "
+            f"hard_sample_alpha={hard_sample_alpha}, "
+            f"hard_pairs_sampled={hard_pairs_sampled}, "
+            f"hard_pairs_succeeded={hard_pairs_succeeded}, "
+            f"hard_pairs_exhausted={hard_pairs_exhausted}, "
+            f"hard_failed_attempts={hard_failed_attempts}, "
             f"action_noise={action_noise}."
         ),
         requirements=_official_requirements(),
@@ -680,6 +1012,10 @@ def _collect_shard(
         f"collected_steps={steps}, seed={seed}, "
         f"mode={mode}, diverse_cell_mode={diverse_cell_mode}, "
         f"min_success_rate={min_success_rate}, max_episode_attempts={max_episode_attempts}, "
+        f"hard_sample={hard_sample}, hard_pairs_sampled={hard_pairs_sampled}, "
+        f"hard_pairs_succeeded={hard_pairs_succeeded}, "
+        f"hard_pairs_exhausted={hard_pairs_exhausted}, "
+        f"hard_failed_attempts={hard_failed_attempts}, "
         f"action_noise={action_noise}."
     )
     return {
@@ -696,6 +1032,11 @@ def _collect_shard(
         "replaced_failed_episodes": replaced_failed_episodes,
         "replacement_success_episodes": replacement_success_episodes,
         "collected_steps": steps,
+        "hard_pairs_sampled": hard_pairs_sampled,
+        "hard_pairs_succeeded": hard_pairs_succeeded,
+        "hard_pairs_exhausted": hard_pairs_exhausted,
+        "hard_failed_attempts": hard_failed_attempts,
+        "episode_difficulty": episode_difficulty,
     }
 
 
@@ -732,12 +1073,18 @@ def _write_generation_summary(
     variant: str,
     target_episodes: int,
     min_success_rate: float,
-    max_episode_attempts: int,
+    max_episode_attempts: int | None,
     seed: int,
     action_noise: float,
     mode: str,
     diverse_cell_mode: str,
     collection_combined_cells: list[tuple[int, int]],
+    hard_sample: bool,
+    hard_retry: int,
+    hard_sample_alpha: float,
+    hard_sample_top_n: int,
+    hard_pair_space: list[dict],
+    hard_pair_space_total: int,
     shard_results: list[dict],
 ) -> tuple[int, int, float]:
     final_episodes, final_successful_episodes = _dataset_success_stats(dataset_root)
@@ -759,6 +1106,32 @@ def _write_generation_summary(
         int(result["replacement_success_episodes"]) for result in shard_results
     )
     collected_steps = sum(int(result["collected_steps"]) for result in shard_results)
+    hard_pairs_sampled = sum(
+        int(result.get("hard_pairs_sampled", 0)) for result in shard_results
+    )
+    hard_pairs_succeeded = sum(
+        int(result.get("hard_pairs_succeeded", 0)) for result in shard_results
+    )
+    hard_pairs_exhausted = sum(
+        int(result.get("hard_pairs_exhausted", 0)) for result in shard_results
+    )
+    hard_failed_attempts = sum(
+        int(result.get("hard_failed_attempts", 0)) for result in shard_results
+    )
+    shard_episode_difficulty = [
+        record
+        for result in shard_results
+        for record in result.get("episode_difficulty", [])
+    ]
+    generated_episode_offset = max(0, final_episodes - len(shard_episode_difficulty))
+    episode_difficulty = []
+    for idx, record in enumerate(shard_episode_difficulty):
+        episode_difficulty.append(
+            {
+                **record,
+                "episode_index": int(generated_episode_offset + idx),
+            }
+        )
     true_success_rate = _success_rate(
         attempted_successful_episodes,
         attempted_episodes,
@@ -789,7 +1162,25 @@ def _write_generation_summary(
         "collection_combined_cells": [
             [int(row), int(col)] for row, col in collection_combined_cells
         ],
+        "hard_sample": bool(hard_sample),
+        "hard_retry": int(hard_retry),
+        "hard_sample_alpha": float(hard_sample_alpha),
+        "hard_sample_top_n": int(hard_sample_top_n),
+        "hard_pair_space_total": int(hard_pair_space_total),
+        "hard_pair_space_used": int(len(hard_pair_space)),
+        "hard_pairs_sampled": hard_pairs_sampled,
+        "hard_pairs_succeeded": hard_pairs_succeeded,
+        "hard_pairs_exhausted": hard_pairs_exhausted,
+        "hard_failed_attempts": hard_failed_attempts,
+        "episode_difficulty": episode_difficulty,
     }
+    summary.update(_stat_triplet(hard_pair_space, "difficulty", "pair_difficulty"))
+    summary.update(_stat_triplet(hard_pair_space, "path_len", "pair_path_len"))
+    summary.update(_stat_triplet(hard_pair_space, "away_steps", "pair_away_steps"))
+    summary.update(_hard_pair_probability_summary(hard_pair_space))
+    summary.update(_stat_triplet(episode_difficulty, "difficulty", "saved_difficulty"))
+    summary.update(_stat_triplet(episode_difficulty, "path_len", "saved_path_len"))
+    summary.update(_stat_triplet(episode_difficulty, "away_steps", "saved_away_steps"))
     (dataset_root / "generation_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -812,12 +1203,24 @@ def generate_variant(
     diverse_cell_mode: str,
     min_success_rate: float,
     max_episode_attempts: int | None,
+    hard_sample: bool,
+    hard_retry: int,
+    hard_sample_alpha: float,
+    hard_sample_top_n: int,
 ):
     if variant not in ANTMAZE_VARIANTS:
         raise ValueError(f"Unknown AntMaze variant: {variant!r}")
     meta = ANTMAZE_VARIANTS[variant]
     if get_antmaze_variant_type(meta) != "local":
         raise ValueError(f"Variant {variant!r} is not local and cannot be generated")
+    if hard_sample and mode != "diverse":
+        raise ValueError("--hard-sample only supports --mode diverse")
+    if hard_retry < 0:
+        raise ValueError("--hard-retry must be >= 0")
+    if hard_sample_alpha < 0:
+        raise ValueError("--hard-sample-alpha must be >= 0")
+    if hard_sample_top_n < 0:
+        raise ValueError("--hard-sample-top-n must be >= 0")
 
     dataset_root = resolve_local_dataset_path(meta["dataset_path"])
     if overwrite and dataset_root.exists():
@@ -853,19 +1256,23 @@ def generate_variant(
         )
 
     deficit = target_episodes - existing_episodes
-    attempt_budget = _resolve_attempt_budget(
-        target_episodes=deficit,
-        min_success_rate=min_success_rate,
-        max_episode_attempts=max_episode_attempts,
-    )
     worker_count = max(1, min(num_workers, deficit))
     shard_targets = [deficit // worker_count] * worker_count
     for idx in range(deficit % worker_count):
         shard_targets[idx] += 1
-    shard_attempt_limits = list(shard_targets)
-    extra_attempts = attempt_budget - deficit
-    for idx in range(extra_attempts):
-        shard_attempt_limits[idx % worker_count] += 1
+    if hard_sample:
+        attempt_budget = None
+        shard_attempt_limits = [None] * worker_count
+    else:
+        attempt_budget = _resolve_attempt_budget(
+            target_episodes=deficit,
+            min_success_rate=min_success_rate,
+            max_episode_attempts=max_episode_attempts,
+        )
+        shard_attempt_limits = list(shard_targets)
+        extra_attempts = attempt_budget - deficit
+        for idx in range(extra_attempts):
+            shard_attempt_limits[idx % worker_count] += 1
 
     policy_file = policy_file.expanduser()
     if not policy_file.exists():
@@ -878,6 +1285,21 @@ def generate_variant(
         diverse_cell_mode,
     )
     eval_env_paras = dict(meta["env_paras"])
+    hard_pair_space: list[dict] = []
+    hard_pair_space_total = 0
+    if hard_sample:
+        clean_collection_map = _clean_collection_map(collection_env_paras["maze_map"])
+        hard_candidate_cells = (
+            collection_combined_cells
+            if diverse_cell_mode == "representative-c"
+            else _free_cells(clean_collection_map)
+        )
+        hard_pair_space, hard_pair_space_total = _build_hard_sample_pair_space(
+            clean_collection_map,
+            hard_candidate_cells,
+            hard_sample_alpha,
+            hard_sample_top_n,
+        )
 
     mode_detail = (
         f"combined_cells={collection_combined_cells}"
@@ -889,7 +1311,12 @@ def generate_variant(
         f"target_episodes={target_episodes}, deficit={deficit}, workers={worker_count}, "
         f"min_success_rate={min_success_rate}, max_episode_attempts={attempt_budget}, "
         f"policy_file={policy_file}, maze_solver={maze_solver}, action_noise={action_noise}, "
-        f"mode={mode}, diverse_cell_mode={diverse_cell_mode}, {mode_detail}"
+        f"mode={mode}, diverse_cell_mode={diverse_cell_mode}, "
+        f"hard_sample={hard_sample}, hard_retry={hard_retry}, "
+        f"hard_sample_alpha={hard_sample_alpha}, "
+        f"hard_sample_top_n={hard_sample_top_n}, "
+        f"hard_pairs={len(hard_pair_space)}/{hard_pair_space_total}, "
+        f"{mode_detail}"
     )
 
     shard_specs = []
@@ -916,6 +1343,10 @@ def generate_variant(
                 "collection_combined_cells": collection_combined_cells,
                 "min_success_rate": min_success_rate,
                 "max_episode_attempts": shard_attempt_limits[worker_index],
+                "hard_sample": hard_sample,
+                "hard_retry": hard_retry,
+                "hard_sample_alpha": hard_sample_alpha,
+                "hard_pair_space": hard_pair_space,
             }
         )
 
@@ -967,6 +1398,12 @@ def generate_variant(
             mode=mode,
             diverse_cell_mode=diverse_cell_mode,
             collection_combined_cells=collection_combined_cells,
+            hard_sample=hard_sample,
+            hard_retry=hard_retry,
+            hard_sample_alpha=hard_sample_alpha,
+            hard_sample_top_n=hard_sample_top_n,
+            hard_pair_space=hard_pair_space,
+            hard_pair_space_total=hard_pair_space_total,
             shard_results=shard_results,
         )
     )
@@ -1009,8 +1446,20 @@ def main():
         raise ValueError("--max-episode-steps must be >= 1")
     if not 0.0 <= args.min_success_rate <= 1.0:
         raise ValueError("--min-success-rate must be in [0, 1]")
-    if args.max_episode_attempts is not None and args.max_episode_attempts < 1:
+    if (
+        not args.hard_sample
+        and args.max_episode_attempts is not None
+        and args.max_episode_attempts < 1
+    ):
         raise ValueError("--max-episode-attempts must be >= 1")
+    if args.hard_sample and args.mode != "diverse":
+        raise ValueError("--hard-sample only supports --mode diverse")
+    if args.hard_retry < 0:
+        raise ValueError("--hard-retry must be >= 0")
+    if args.hard_sample_alpha < 0:
+        raise ValueError("--hard-sample-alpha must be >= 0")
+    if args.hard_sample_top_n < 0:
+        raise ValueError("--hard-sample-top-n must be >= 0")
 
     for variant in args.variants:
         generate_variant(
@@ -1027,6 +1476,10 @@ def main():
             diverse_cell_mode=args.diverse_cell_mode,
             min_success_rate=args.min_success_rate,
             max_episode_attempts=args.max_episode_attempts,
+            hard_sample=args.hard_sample,
+            hard_retry=args.hard_retry,
+            hard_sample_alpha=args.hard_sample_alpha,
+            hard_sample_top_n=args.hard_sample_top_n,
         )
 
 

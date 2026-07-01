@@ -239,6 +239,24 @@ python local_antmaze_gen.py \
   --overwrite
 ```
 
+Harder reset/goal sampling is available for local AntMaze diverse data:
+
+```bash
+python local_antmaze_gen.py \
+  --variants local-layout-01 \
+  --target-episodes 1000 \
+  --num-workers 4 \
+  --mode diverse \
+  --diverse-cell-mode all-free \
+  --hard-sample \
+  --hard-retry 5 \
+  --hard-sample-alpha 1.0 \
+  --hard-sample-top-n 0 \
+  --min-success-rate 1.0 \
+  --seed 42 \
+  --overwrite
+```
+
 The generator loads Farama's official AntMaze `WaypointController` from the
 vendored `third_party/minari-dataset-generation-scripts` submodule and uses the
 default `GoalReachAnt_model.zip` SAC goal-reaching policy. It writes final data
@@ -257,6 +275,37 @@ free cell eligible as a reset/goal candidate. Both modes keep official AntMaze
 fixed-horizon episode semantics: reaching the goal records `info["success"]`
 but does not truncate the episode.
 
+With `--hard-sample`, the generator precomputes all reachable ordered start/goal
+cell pairs from the current diverse candidate set. For `all-free`, this means
+all free cells; for `representative-c`, this means the deterministic
+representative cells. Each pair receives:
+
+- `path_len`: shortest-path length in grid steps
+- `away_steps`: shortest-path steps that increase Manhattan distance from the
+  goal
+- `away_frac = away_steps / path_len`
+- `difficulty = 0.5 * (path_len / max_path_len) + 0.5 * away_frac`
+
+Pairs are then sorted by `difficulty` from low to high and assigned a rank score:
+
+```text
+rank_score = rank / max(pair_count - 1, 1)
+sample_weight = 1.0 + hard_sample_alpha * rank_score
+```
+
+`--hard-sample-top-n 0` keeps every reachable pair. A positive value keeps only
+the top N hardest pairs after difficulty sorting and ignores the rest before
+rank scores and sampling weights are assigned.
+
+`--hard-sample-alpha 0` is uniform over reachable pairs. `alpha=1` makes the
+highest-ranked pair twice as likely as the lowest-ranked pair; `alpha=0.5`
+makes it 1.5 times as likely. Larger values bias sampling more strongly toward
+longer and more indirect pairs. For each sampled pair, the environment is reset
+with fixed `reset_cell` and `goal_cell`. The generator tries the pair at most
+`1 + hard_retry` times with different seeds, saves the episode only if it
+succeeds, and otherwise discards the failed attempts. It then continues sampling
+pairs until exactly `--target-episodes` successful episodes have been saved.
+
 `--min-success-rate` defaults to `0`, which preserves the original behavior of
 stopping once `--target-episodes` has been collected. When set above `0`, each
 worker first records all episodes until the target count is reached. If the
@@ -266,13 +315,42 @@ post-target episode replaces one randomly selected failed episode from the
 saved set. The final saved dataset therefore keeps exactly `--target-episodes`
 episodes unless generation fails. The attempt cap defaults to
 `target_episodes * 5` and can be overridden with `--max-episode-attempts`.
+Hard-sample mode is different: it only saves successful episodes and ignores
+`--max-episode-attempts`, so the practical success-rate setting is
+`--min-success-rate 1.0`.
 
 Each generated dataset writes `generation_summary.json` next to the Minari data
 directory with the saved dataset success rate (`success_rate` /
 `saved_success_rate`) and the empirical success rate over all attempted
-episodes before failed-episode filtering (`true_success_rate`). Use
-`--overwrite` when enforcing `--min-success-rate` on a dataset path that already
-contains episodes.
+episodes before failed-episode filtering (`true_success_rate`). In hard-sample
+mode, the summary also records pair-space difficulty stats, saved-episode
+difficulty stats, the hard top-N setting, reachable/used pair counts, pair
+sampling probability min/max/ratio, hard pair attempt/success/exhaustion
+counts, and one `episode_difficulty` entry per saved episode. Use `--overwrite`
+when enforcing `--min-success-rate` or regenerating hard-sample data on a
+dataset path that already contains episodes.
+
+On Slurm, the repository provides:
+
+```bash
+sbatch sbatch/dataGen.ant.slurm
+sbatch sbatch/dataGen.ant.hard.slurm
+```
+
+`sbatch/dataGen.ant.hard.slurm` covers `local-layout-01..09` as an array job and
+defaults to `TARGET_EPISODES=2000`, `MIN_SUCCESS_RATE=1.0`, `HARD_RETRY=5`, and
+`HARD_SAMPLE_ALPHA=1.0`. It also accepts `HARD_SAMPLE_TOP_N`, defaulting to `0`
+to use all reachable pairs.
+
+The pre-hard-sample initial AntMaze local datasets are backed up under:
+
+```text
+local_dataset_backups/antmaze_pre_hard_sample_initial_2026-07-01
+```
+
+That backup contains `antmaze-local-layout-01-v0` through
+`antmaze-local-layout-09-v0` plus a short `README.txt`. The backup root is
+ignored by git.
 
 Training consumes only the generated Minari/HDF5 data. It does not regenerate
 trajectories automatically.

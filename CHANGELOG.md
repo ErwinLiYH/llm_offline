@@ -1558,3 +1558,14 @@ type: project
 - `test-layout-04` 将 goal 从原先过绕的 `(7, 7)` 移到 `(5, 7)`，绕路比从 `3.67` 降到 `1.50`，当前 `score=50.72`
 - Slurm job `5422886` 已为 `local-layout-01..09` 完成 AntMaze data generation：所有 array task 均 `COMPLETED` 且 `ExitCode=0:0`，每个 layout 生成 `2000` episodes，成功率范围 `0.8885..0.9225`，均高于 `MIN_SUCCESS_RATE=0.8`
 - 已通过 `python inspect_antmaze_layouts.py --variants ...` 检查当前 local/test 指标，并通过 `python -m py_compile data/antmaze/variants.py`
+
+## AntMaze hard-sample local data generation（2026-07-01）
+
+- `local_antmaze_gen.py` 新增 `--hard-sample` / `--hard-retry` / `--hard-sample-alpha` / `--hard-sample-top-n`，仅用于 `--mode diverse`
+- hard-sample 按当前 `--diverse-cell-mode` 的候选 cell 预计算 reachable start/goal pairs，按 difficulty 升序排序，可选只保留最难的 top N，再使用 `1 + alpha * rank_score` 的 rank-linear 权重采样；每个 pair 最多尝试 `1 + hard_retry` 次，只保存成功 episode，且不受 `--max-episode-attempts` 限制
+- `generation_summary.json` 新增 hard-sample 配置、pair/saved 难度统计、采样计数和逐 episode difficulty 记录
+- 新增 `sbatch/dataGen.ant.hard.slurm`，用于 `local-layout-01..09` 的 hard-sample AntMaze data generation，默认 `TARGET_EPISODES=2000`、`MIN_SUCCESS_RATE=1.0`、`HARD_RETRY=5`、`HARD_SAMPLE_ALPHA=1.0`、`HARD_SAMPLE_TOP_N=0`
+- 新增测试覆盖 hard pair metrics/weights、CLI validation 和 summary hard-sample 字段
+
+**验证：**
+- 已通过 py_compile、hard-sample focused unittest、`tests.test_antmaze_support`、`bash -n sbatch/dataGen.ant.hard.slurm` 和 `git diff --check`
