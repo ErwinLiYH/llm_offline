@@ -59,7 +59,7 @@ For PointMaze today that includes at least:
 - `structure_desc_en`
 - `structure_desc_zh`
 
-Coordinate-to-cell sensing should keep raw PointMaze floor/map-center semantics when the raw cell is free, and snap to the nearest free cell center when the raw cell is a wall. For a free movement neighbor, directional corner-risk sensing should report `wall` only when the position is within the side threshold, the current side cell is free, and the forward diagonal cell is a wall. Continuous corridor walls must not make forward movement report `wall`.
+Coordinate-to-cell sensing should keep raw PointMaze floor/map-center semantics when the raw cell is free, and snap to the nearest free cell center when the raw cell is a wall. Direct-neighbor walls should report `wall`. For a free movement neighbor, directional corner-risk sensing should report `risk` only when the position is within the side threshold, the current side cell is free, and the forward diagonal cell is a wall. Continuous corridor walls must not make forward movement report `wall`.
 
 3. Do not add a new prompt file for the variant unless the user explicitly wants a prompt-system change.
 The current design is that variants provide metadata and all variants in the family reuse `prompts/<env_family>/<prompt_name>.txt`.

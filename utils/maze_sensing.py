@@ -144,8 +144,10 @@ def _neighbor_status(
     n_row = row + d_row
     n_col = col + d_col
     direct_status = _cell_status(maze_map, n_row, n_col)
+    if direct_status == "wall":
+        return "wall"
     if x is None or y is None:
-        return direct_status
+        return "free"
 
     rows = len(maze_map)
     cols = len(maze_map[0]) if maze_map else 0
@@ -166,15 +168,6 @@ def _neighbor_status(
     near_bottom = y - bottom_y <= threshold
     near_top = top_y - y <= threshold
 
-    near_opposite = (
-        (d_row < 0 and near_bottom)
-        or (d_row > 0 and near_top)
-        or (d_col < 0 and near_right)
-        or (d_col > 0 and near_left)
-    )
-    if direct_status == "wall":
-        return "free" if near_opposite else "wall"
-
     if d_col:
         side_checks = ((-1, 0, near_top), (1, 0, near_bottom))
     else:
@@ -190,12 +183,12 @@ def _neighbor_status(
             d_row + side_d_row,
             d_col + side_d_col,
         ):
-            return "wall"
+            return "risk"
     return "free"
 
 
 def build_sensing(position: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
-    """Build shared location and conservative four-neighbor wall sensing."""
+    """Build shared location and conservative four-neighbor wall/risk sensing."""
     x, y = float(position[0]), float(position[1])
     gx, gy = float(goal[0]), float(goal[1])
     maze_map = meta["maze_map"]

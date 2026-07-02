@@ -1576,3 +1576,9 @@ type: project
 
 **验证：**
 - 已通过 py_compile、hard-sample focused unittest、`tests.test_antmaze_support`、`bash -n sbatch/dataGen.ant.hard.slurm` 和 `git diff --check`
+
+## Wall sensing risk state（2026-07-02）
+
+- `utils/maze_sensing.py` 恢复直接邻格为墙时始终报告 `wall`，移除反方向贴边时强制显示为 `free` 的规则
+- `wall_sensing` 新增第三种状态 `risk`：正前方邻格为 free、当前位置贴近侧边、当前同侧格为 free、前方同侧对角格为 wall 时，报告 `risk` 而不是旧的 `wall`
+- PointMaze 和 AntMaze tokenized cache format bump 到 `*_hash_signature_v6`，避免复用旧 wall sensing 文本缓存
