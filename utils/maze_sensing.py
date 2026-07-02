@@ -143,10 +143,9 @@ def _neighbor_status(
 ) -> str:
     n_row = row + d_row
     n_col = col + d_col
-    if _cell_status(maze_map, n_row, n_col) == "wall":
-        return "wall"
+    direct_status = _cell_status(maze_map, n_row, n_col)
     if x is None or y is None:
-        return "free"
+        return direct_status
 
     rows = len(maze_map)
     cols = len(maze_map[0]) if maze_map else 0
@@ -166,6 +165,15 @@ def _neighbor_status(
     near_right = right_x - x <= threshold
     near_bottom = y - bottom_y <= threshold
     near_top = top_y - y <= threshold
+
+    near_opposite = (
+        (d_row < 0 and near_bottom)
+        or (d_row > 0 and near_top)
+        or (d_col < 0 and near_right)
+        or (d_col > 0 and near_left)
+    )
+    if direct_status == "wall":
+        return "free" if near_opposite else "wall"
 
     if d_col:
         side_checks = ((-1, 0, near_top), (1, 0, near_bottom))

@@ -1227,7 +1227,7 @@ class PointMazeDataset(BaseOfflineDataset):
     ENV_FAMILY = "pointmaze"
     VARIANTS = POINTMAZE_VARIANTS
     ACTION_DIM = 2
-    CACHE_FORMAT = "pointmaze_hash_signature_v4"
+    CACHE_FORMAT = "pointmaze_hash_signature_v5"
 
     def __init__(self, variant: str, split: str, samples: list[dict]):
         super().__init__()

@@ -1559,6 +1559,13 @@ type: project
 - Slurm job `5422886` 已为 `local-layout-01..09` 完成 AntMaze data generation：所有 array task 均 `COMPLETED` 且 `ExitCode=0:0`，每个 layout 生成 `2000` episodes，成功率范围 `0.8885..0.9225`，均高于 `MIN_SUCCESS_RATE=0.8`
 - 已通过 `python inspect_antmaze_layouts.py --variants ...` 检查当前 local/test 指标，并通过 `python -m py_compile data/antmaze/variants.py`
 
+## Opposite-boundary direct wall delay（2026-06-30）
+
+- `utils/maze_sensing.py` 的四邻 `wall/free` 判断加入反方向边界优先规则：如果正前方邻格是 wall，但当前位置仍贴近当前格子的反方向边界，则该方向先报告为 `free`
+- 该规则用于缓解 PointMaze medium 下方中间连续转弯处刚进入新格时过早出现“三面墙”播报；离开反方向边界后，正前方墙仍恢复为 `wall`
+- 保留现有 corner-risk 逻辑：正前方邻格 free 时，只有贴近侧边、当前同侧格 free、前方同侧对角格 wall 才保守报告该方向为 `wall`
+- PointMaze 和 AntMaze tokenized cache format bump 到 `*_hash_signature_v5`，避免复用旧 wall sensing 语义下的缓存
+
 ## AntMaze hard-sample local data generation（2026-07-01）
 
 - `local_antmaze_gen.py` 新增 `--hard-sample` / `--hard-retry` / `--hard-sample-alpha` / `--hard-sample-top-n`，仅用于 `--mode diverse`

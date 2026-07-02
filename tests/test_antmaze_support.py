@@ -22,12 +22,14 @@ from data.antmaze.dataset import (
 )
 from data.antmaze.variants import ANTMAZE_VARIANTS
 from data.base_dataset import DatasetBuildRequest
+from data.pointmaze import formatting as pointmaze_formatting
 from data.pointmaze.dataset import (
     PointMazeDataset,
     _apply_pointmaze_data_config,
     _load_local_hdf5_episodes,
     _normalize_pointmaze_data_config,
 )
+from data.pointmaze.variants import POINTMAZE_VARIANTS
 from data.registry import get_action_dim, resolve_variant_env_spec
 from utils.maze_sensing import _neighbor_status
 from utils.prompt_loader import load_template_map, render_template
@@ -239,7 +241,7 @@ class AntMazeSupportTest(unittest.TestCase):
 
         self.assertEqual(base_payload["family_data_config"]["filter_success"], False)
         self.assertEqual(filtered_payload["family_data_config"]["filter_success"], True)
-        self.assertEqual(AntMazeDataset.CACHE_FORMAT, "antmaze_hash_signature_v4")
+        self.assertEqual(AntMazeDataset.CACHE_FORMAT, "antmaze_hash_signature_v5")
         self.assertNotEqual(
             AntMazeDataset._hash_json_payload(base_payload),
             AntMazeDataset._hash_json_payload(filtered_payload),
@@ -359,7 +361,7 @@ class AntMazeSupportTest(unittest.TestCase):
             truncate_payload["family_data_config"],
             {"truncate": True, "truncate_holding": 1},
         )
-        self.assertEqual(PointMazeDataset.CACHE_FORMAT, "pointmaze_hash_signature_v4")
+        self.assertEqual(PointMazeDataset.CACHE_FORMAT, "pointmaze_hash_signature_v5")
         self.assertNotEqual(
             PointMazeDataset._hash_json_payload(base_payload),
             PointMazeDataset._hash_json_payload(truncate_payload),
@@ -729,6 +731,61 @@ class AntMazeSupportTest(unittest.TestCase):
                     ),
                     "wall",
                 )
+
+    def test_opposite_boundary_delays_direct_wall_reporting(self):
+        row = 3
+        col = 3
+        cases = [
+            ("up-near-bottom", -1, 0, 0.0, -0.45),
+            ("down-near-top", 1, 0, 0.0, 0.45),
+            ("left-near-right", 0, -1, 0.45, 0.0),
+            ("right-near-left", 0, 1, -0.45, 0.0),
+        ]
+
+        for name, d_row, d_col, x, y in cases:
+            with self.subTest(direction=name):
+                maze_map = [[0 for _ in range(7)] for _ in range(7)]
+                maze_map[row + d_row][col + d_col] = 1
+
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                    ),
+                    "free",
+                )
+
+    def test_medium_lower_turn_delays_up_wall_at_entry_boundary(self):
+        prompt_vars = POINTMAZE_VARIANTS["medium"]["prompt_vars"]
+
+        near_bottom_payload = pointmaze_formatting.format_obs(
+            {
+                "observation": np.array([-0.5, -1.95, 0.0, 0.0], dtype=np.float32),
+                "desired_goal": np.array([0.5, -0.5], dtype=np.float32),
+            },
+            prompt_vars,
+        )
+        center_payload = pointmaze_formatting.format_obs(
+            {
+                "observation": np.array([-0.5, -1.5, 0.0, 0.0], dtype=np.float32),
+                "desired_goal": np.array([0.5, -0.5], dtype=np.float32),
+            },
+            prompt_vars,
+        )
+
+        self.assertEqual(
+            near_bottom_payload["wall_sensing_en"],
+            "Neighboring cells: up=free, down=free, left=wall, right=wall.",
+        )
+        self.assertEqual(
+            center_payload["wall_sensing_en"],
+            "Neighboring cells: up=wall, down=free, left=wall, right=free.",
+        )
 
     def test_registry_contains_official_d4rl_variants(self):
         official_variants = [
