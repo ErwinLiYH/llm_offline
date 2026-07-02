@@ -102,7 +102,8 @@ class EstimateDatasetTest(unittest.TestCase):
         ]
         captured_configs = []
 
-        def fake_loader(cls, variant, family_data_config=None):
+        def fake_loader(cls, variant, family_data_config=None, local_dataset_root=None):
+            del local_dataset_root
             captured_configs.append(family_data_config)
             return {}, episodes, [len(episode.actions) for episode in episodes]
 
@@ -136,7 +137,8 @@ class EstimateDatasetTest(unittest.TestCase):
         ]
         captured_configs = []
 
-        def fake_loader(cls, variant, family_data_config=None):
+        def fake_loader(cls, variant, family_data_config=None, local_dataset_root=None):
+            del local_dataset_root
             captured_configs.append(family_data_config)
             return {}, episodes, [len(episode.actions) for episode in episodes]
 
@@ -161,6 +163,36 @@ class EstimateDatasetTest(unittest.TestCase):
         self.assertEqual(captured_configs, [config["pointmaze_data_config"]])
         self.assertEqual(data[0].total_steps, 6)
         self.assertEqual(data[0].train_steps + data[0].val_steps, 6)
+
+    def test_local_dataset_root_is_passed_to_loader(self):
+        episodes = [
+            SimpleNamespace(actions=np.zeros((4, 2), dtype=np.float32)),
+            SimpleNamespace(actions=np.zeros((2, 2), dtype=np.float32)),
+        ]
+        captured_roots = []
+
+        def fake_loader(cls, variant, family_data_config=None, local_dataset_root=None):
+            del family_data_config
+            captured_roots.append(local_dataset_root)
+            return {}, episodes, [len(episode.actions) for episode in episodes]
+
+        config = {
+            "env_family": "pointmaze",
+            "prompt_templete_index": ["parallel_full_sensing"],
+            "train_data_ratio": 0.5,
+            "sampling_seed": 123,
+            "local_dataset_root": "/scratch/local_datasets_v2",
+        }
+
+        with mock.patch.object(
+            PointMazeDataset,
+            "_load_variant_episodes",
+            new=classmethod(fake_loader),
+        ):
+            data = load_variant_data(config, ["open"])
+
+        self.assertEqual(captured_roots, ["/scratch/local_datasets_v2"])
+        self.assertEqual(data[0].total_steps, 6)
 
 
 if __name__ == "__main__":

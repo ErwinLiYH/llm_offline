@@ -10,6 +10,7 @@ import argparse
 import contextlib
 import json
 import math
+import os
 import pickle
 import sys
 from collections import deque
@@ -245,6 +246,28 @@ def _family_data_config(config: dict) -> dict | None:
     return None
 
 
+def _local_dataset_root(config: dict) -> str | None:
+    root = config.get("local_dataset_root")
+    alias = config.get("local_dataset_path")
+    if root is not None and alias is not None and root != alias:
+        raise ValueError(
+            "Use only one local dataset path override: local_dataset_root and "
+            "local_dataset_path were both set to different values."
+        )
+    value = root if root is not None else alias
+    if value is None:
+        return None
+    if not isinstance(value, (str, os.PathLike)):
+        raise ValueError(
+            "local_dataset_root must be a path string or null/omitted to use variant defaults, "
+            f"got {type(value).__name__}"
+        )
+    path_text = os.fspath(value)
+    if not path_text:
+        raise ValueError("local_dataset_root must not be an empty path string")
+    return path_text
+
+
 def build_dataset_request(
     config: dict,
     tokenizer,
@@ -277,6 +300,7 @@ def build_dataset_request(
         balanced_train_episode_count=config.get("balanced_train_episode_count"),
         sampling_seed=config.get("sampling_seed", 0),
         family_data_config=_family_data_config(config),
+        local_dataset_root=_local_dataset_root(config),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
         action_token_mode=config.get("action_token_mode", "text"),
@@ -335,11 +359,13 @@ def _balanced_train_episode_count(
 def load_variant_data(config: dict, selected_variants: list[str]) -> list[VariantData]:
     dataset_cls = get_dataset(config["env_family"])
     family_data_config = _family_data_config(config)
+    local_dataset_root = _local_dataset_root(config)
     loaded_by_variant = {}
     for variant in selected_variants:
         meta, episodes, step_counts = dataset_cls._load_variant_episodes(
             variant,
             family_data_config=family_data_config,
+            local_dataset_root=local_dataset_root,
         )
         loaded_by_variant[variant] = (meta, list(episodes), [int(count) for count in step_counts])
 
@@ -362,6 +388,7 @@ def load_variant_data(config: dict, selected_variants: list[str]) -> list[Varian
             balanced_train_target=balanced_target,
             episode_loader=loader,
             family_data_config=family_data_config,
+            local_dataset_root=local_dataset_root,
         )
         variant_data.append(
             VariantData(

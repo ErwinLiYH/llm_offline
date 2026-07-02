@@ -768,11 +768,18 @@ def _apply_pointmaze_data_config(episodes: list, config: dict | None, *, variant
     return processed
 
 
-def _load_variant_episodes(variant: str, family_data_config: dict | None = None):
+def _load_variant_episodes(
+    variant: str,
+    family_data_config: dict | None = None,
+    local_dataset_root: str | None = None,
+):
     meta = POINTMAZE_VARIANTS[variant]
     data_config = _pointmaze_effective_data_config(family_data_config)
     if get_pointmaze_variant_type(meta) == "local":
-        dataset_root = resolve_local_dataset_path(meta["dataset_path"])
+        dataset_root = resolve_local_dataset_path(
+            meta["dataset_path"],
+            local_dataset_root=local_dataset_root,
+        )
         data_path = dataset_root / "data"
         if not data_path.exists():
             raise FileNotFoundError(
@@ -823,8 +830,11 @@ def _load_local_hdf5_episodes(data_path):
     return episodes
 
 
-def _local_dataset_step_signature(meta: dict) -> str:
-    dataset_root = resolve_local_dataset_path(meta["dataset_path"])
+def _local_dataset_step_signature(meta: dict, local_dataset_root: str | None = None) -> str:
+    dataset_root = resolve_local_dataset_path(
+        meta["dataset_path"],
+        local_dataset_root=local_dataset_root,
+    )
     data_path = dataset_root / "data"
     if not data_path.exists():
         raise FileNotFoundError(
@@ -868,6 +878,20 @@ def _normalize_episode_keep_num(value) -> int | None:
     return value
 
 
+def _normalize_local_dataset_root(value) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, (str, os.PathLike)):
+        raise ValueError(
+            "local_dataset_root must be a path string or null/omitted to use variant defaults, "
+            f"got {type(value).__name__}"
+        )
+    path_text = os.fspath(value)
+    if not path_text:
+        raise ValueError("local_dataset_root must not be an empty path string")
+    return path_text
+
+
 def _compute_sampled_episode_target(total_episodes: int, episode_keep_num: int | None) -> int:
     if total_episodes < 1:
         raise ValueError("Offline dataset contains no episodes.")
@@ -877,22 +901,40 @@ def _compute_sampled_episode_target(total_episodes: int, episode_keep_num: int |
     return min(total_episodes, episode_keep_num)
 
 
-def _load_episodes_with_family_config(episode_loader, variant: str, family_data_config: dict | None):
-    if family_data_config is None:
+def _load_episodes_with_family_config(
+    episode_loader,
+    variant: str,
+    family_data_config: dict | None,
+    local_dataset_root: str | None = None,
+):
+    if family_data_config is None and local_dataset_root is None:
         return episode_loader(variant)
     try:
         signature = inspect.signature(episode_loader)
     except (TypeError, ValueError):
-        return episode_loader(variant, family_data_config=family_data_config)
+        kwargs = {}
+        if family_data_config is not None:
+            kwargs["family_data_config"] = family_data_config
+        if local_dataset_root is not None:
+            kwargs["local_dataset_root"] = local_dataset_root
+        return episode_loader(variant, **kwargs)
     parameters = signature.parameters.values()
     accepts_family_config = any(
         parameter.kind == inspect.Parameter.VAR_KEYWORD
         or parameter.name == "family_data_config"
         for parameter in parameters
     )
+    accepts_local_dataset_root = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        or parameter.name == "local_dataset_root"
+        for parameter in parameters
+    )
+    kwargs = {}
     if accepts_family_config:
-        return episode_loader(variant, family_data_config=family_data_config)
-    return episode_loader(variant)
+        kwargs["family_data_config"] = family_data_config
+    if accepts_local_dataset_root:
+        kwargs["local_dataset_root"] = local_dataset_root
+    return episode_loader(variant, **kwargs)
 
 
 def _variant_sampling_seed(variant: str, sampling_seed: int) -> int:
@@ -906,11 +948,13 @@ def _collect_variant_episode_stats(
     *,
     episode_loader=_load_variant_episodes,
     family_data_config: dict | None = None,
+    local_dataset_root: str | None = None,
 ) -> VariantEpisodeStats:
     _, episodes, step_counts = _load_episodes_with_family_config(
         episode_loader,
         variant,
         family_data_config,
+        local_dataset_root=local_dataset_root,
     )
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
@@ -933,6 +977,7 @@ def select_variant_episode_indices(
     *,
     episode_loader=_load_variant_episodes,
     family_data_config: dict | None = None,
+    local_dataset_root: str | None = None,
 ) -> dict:
     if not (0.0 < train_data_ratio < 1.0):
         raise ValueError(
@@ -946,6 +991,7 @@ def select_variant_episode_indices(
         episode_loader,
         variant,
         family_data_config,
+        local_dataset_root=local_dataset_root,
     )
     total_episodes = len(episodes)
     total_steps = sum(step_counts)
@@ -1192,6 +1238,7 @@ class PointMazeBuildConfig:
     balanced_train_episode_count: int | None
     sampling_seed: int
     family_data_config: dict | None
+    local_dataset_root: str | None
     history_num: int
     history_stride: int
     action_token_mode: str
@@ -1241,12 +1288,14 @@ class PointMazeDataset(BaseOfflineDataset):
         variant: str,
         episode_keep_num: int | None,
         family_data_config: dict | None = None,
+        local_dataset_root: str | None = None,
     ) -> VariantEpisodeStats:
         return _collect_variant_episode_stats(
             variant,
             episode_keep_num,
             episode_loader=cls._load_variant_episodes,
             family_data_config=family_data_config,
+            local_dataset_root=local_dataset_root,
         )
 
     @classmethod
@@ -1290,6 +1339,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 balanced_train_target=config.balanced_train_episode_count,
                 episode_loader=cls._load_variant_episodes,
                 family_data_config=config.family_data_config,
+                local_dataset_root=config.local_dataset_root,
             )
             episodes = selection["episodes"]
             step_counts = [len(episode.actions) for episode in episodes]
@@ -1384,8 +1434,17 @@ class PointMazeDataset(BaseOfflineDataset):
         return cls.ACTION_DIM
 
     @classmethod
-    def _load_variant_episodes(cls, variant: str, family_data_config: dict | None = None):
-        return _load_variant_episodes(variant, family_data_config=family_data_config)
+    def _load_variant_episodes(
+        cls,
+        variant: str,
+        family_data_config: dict | None = None,
+        local_dataset_root: str | None = None,
+    ):
+        return _load_variant_episodes(
+            variant,
+            family_data_config=family_data_config,
+            local_dataset_root=local_dataset_root,
+        )
 
     @classmethod
     def _normalize_family_data_config(cls, family_data_config: dict | None):
@@ -1396,10 +1455,14 @@ class PointMazeDataset(BaseOfflineDataset):
         return get_pointmaze_variant_type(meta)
 
     @classmethod
-    def _local_data_signature(cls, meta: dict) -> str | None:
+    def _local_data_signature(
+        cls,
+        meta: dict,
+        local_dataset_root: str | None = None,
+    ) -> str | None:
         if cls._get_variant_type(meta) != "local":
             return None
-        return _local_dataset_step_signature(meta)
+        return _local_dataset_step_signature(meta, local_dataset_root=local_dataset_root)
 
     @classmethod
     def build_batch(cls, requests: list[DatasetBuildRequest]) -> list["PointMazeDataset"]:
@@ -1450,6 +1513,7 @@ class PointMazeDataset(BaseOfflineDataset):
                     balanced_train_target=base_config.balanced_train_episode_count,
                     episode_loader=cls._load_variant_episodes,
                     family_data_config=base_config.family_data_config,
+                    local_dataset_root=base_config.local_dataset_root,
                 )
                 selection = _apply_selection_partition(selection, base_config)
             selection_for_summary = dict(selection)
@@ -1609,6 +1673,7 @@ class PointMazeDataset(BaseOfflineDataset):
             balanced_train_episode_count=request.balanced_train_episode_count,
             sampling_seed=request.sampling_seed,
             family_data_config=cls._normalize_family_data_config(request.family_data_config),
+            local_dataset_root=_normalize_local_dataset_root(request.local_dataset_root),
             history_num=request.history_num,
             history_stride=request.history_stride,
             action_token_mode=action_token_mode,
@@ -1672,10 +1737,26 @@ class PointMazeDataset(BaseOfflineDataset):
         variant_type = cls._get_variant_type(meta)
         prompt_names = cls._resolve_prompt_names(config)
         templates = load_named_templates(cls.ENV_FAMILY, prompt_names)
-        local_data_signature = cls._local_data_signature(meta)
+        local_data_signature = cls._local_data_signature(
+            meta,
+            local_dataset_root=config.local_dataset_root,
+        )
+        effective_dataset_path = None
+        if variant_type == "local":
+            effective_dataset_path = str(
+                resolve_local_dataset_path(
+                    meta["dataset_path"],
+                    local_dataset_root=config.local_dataset_root,
+                )
+            )
         variant_metadata = {
             "dataset_id": meta.get("dataset_id"),
-            "dataset_path": meta.get("dataset_path"),
+            "dataset_path": (
+                effective_dataset_path
+                if effective_dataset_path is not None
+                else meta.get("dataset_path")
+            ),
+            "default_dataset_path": meta.get("dataset_path"),
             "env_id": meta.get("env_id"),
             "env_paras": meta.get("env_paras"),
             "prompt_vars": meta["prompt_vars"],
@@ -1989,6 +2070,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 "balanced_train_episode_count",
                 "sampling_seed",
                 "family_data_config",
+                "local_dataset_root",
                 "history_num",
                 "history_stride",
                 "action_token_mode",

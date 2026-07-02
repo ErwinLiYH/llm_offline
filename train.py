@@ -491,6 +491,28 @@ def _family_data_config(config: dict) -> dict | None:
     return None
 
 
+def _local_dataset_root(config: dict) -> str | None:
+    root = config.get("local_dataset_root")
+    alias = config.get("local_dataset_path")
+    if root is not None and alias is not None and root != alias:
+        raise ValueError(
+            "Use only one local dataset path override: local_dataset_root and "
+            "local_dataset_path were both set to different values."
+        )
+    value = root if root is not None else alias
+    if value is None:
+        return None
+    if not isinstance(value, (str, os.PathLike)):
+        raise ValueError(
+            "local_dataset_root must be a path string or null/omitted to use variant defaults, "
+            f"got {type(value).__name__}"
+        )
+    path_text = os.fspath(value)
+    if not path_text:
+        raise ValueError("local_dataset_root must not be an empty path string")
+    return path_text
+
+
 def build_dataset_request(
     config: dict,
     tokenizer,
@@ -523,6 +545,7 @@ def build_dataset_request(
         balanced_train_episode_count=config.get("balanced_train_episode_count"),
         sampling_seed=config.get("sampling_seed", 0),
         family_data_config=_family_data_config(config),
+        local_dataset_root=_local_dataset_root(config),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
         action_token_mode=config.get("action_token_mode", "text"),
@@ -556,11 +579,13 @@ def _resolve_balanced_train_episode_count(
 
     keep_num = config.get("episode_keep_num")
     family_data_config = _family_data_config(config)
+    local_dataset_root = _local_dataset_root(config)
     variant_stats = [
         dataset_cls.collect_variant_episode_stats(
             variant,
             keep_num,
             family_data_config=family_data_config,
+            local_dataset_root=local_dataset_root,
         )
         for variant in selected_variants
     ]
@@ -4149,6 +4174,10 @@ def main():
             with open(saved_config_path) as saved_config_file:
                 saved_checkpoint_config = yaml.safe_load(saved_config_file) or {}
             config["resume_source_experiment_id"] = saved_checkpoint_config.get("experiment_id")
+
+        local_dataset_root = _local_dataset_root(config)
+        if local_dataset_root is not None:
+            config["local_dataset_root"] = local_dataset_root
 
         if dist_context.is_main_process:
             experiment_id = ensure_experiment_id(config)

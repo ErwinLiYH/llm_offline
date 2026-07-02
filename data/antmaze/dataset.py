@@ -314,8 +314,14 @@ def _apply_antmaze_data_config(episodes: list, config: dict, *, variant: str) ->
     return processed
 
 
-def _local_antmaze_dataset_step_signature(meta: dict) -> str:
-    dataset_root = resolve_local_dataset_path(meta["dataset_path"])
+def _local_antmaze_dataset_step_signature(
+    meta: dict,
+    local_dataset_root: str | None = None,
+) -> str:
+    dataset_root = resolve_local_dataset_path(
+        meta["dataset_path"],
+        local_dataset_root=local_dataset_root,
+    )
     data_path = dataset_root / "data"
     if not data_path.exists():
         raise FileNotFoundError(
@@ -367,13 +373,21 @@ class AntMazeDataset(PointMazeDataset):
         )
 
     @classmethod
-    def _load_variant_episodes(cls, variant: str, family_data_config: dict | None = None):
+    def _load_variant_episodes(
+        cls,
+        variant: str,
+        family_data_config: dict | None = None,
+        local_dataset_root: str | None = None,
+    ):
         if variant not in cls.VARIANTS:
             raise ValueError(f"Unknown AntMaze variant: {variant}")
         data_config = _normalize_antmaze_data_config(family_data_config)
         meta = cls.VARIANTS[variant]
         if cls._get_variant_type(meta) == "local":
-            dataset_root = resolve_local_dataset_path(meta["dataset_path"])
+            dataset_root = resolve_local_dataset_path(
+                meta["dataset_path"],
+                local_dataset_root=local_dataset_root,
+            )
             data_path = dataset_root / "data"
             if not data_path.exists():
                 raise FileNotFoundError(
@@ -399,7 +413,14 @@ class AntMazeDataset(PointMazeDataset):
         return get_antmaze_variant_type(meta)
 
     @classmethod
-    def _local_data_signature(cls, meta: dict) -> str | None:
+    def _local_data_signature(
+        cls,
+        meta: dict,
+        local_dataset_root: str | None = None,
+    ) -> str | None:
         if cls._get_variant_type(meta) != "local":
             return None
-        return _local_antmaze_dataset_step_signature(meta)
+        return _local_antmaze_dataset_step_signature(
+            meta,
+            local_dataset_root=local_dataset_root,
+        )

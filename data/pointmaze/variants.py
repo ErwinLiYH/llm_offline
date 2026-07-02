@@ -1031,8 +1031,20 @@ def get_pointmaze_variant_type(meta: dict) -> str:
     return variant_type
 
 
-def resolve_local_dataset_path(dataset_path: str | Path) -> Path:
-    path = Path(dataset_path).expanduser()
+def resolve_local_dataset_path(
+    dataset_path: str | Path,
+    local_dataset_root: str | Path | None = None,
+) -> Path:
+    default_path = Path(dataset_path).expanduser()
+    if local_dataset_root is None:
+        path = default_path
+    else:
+        root_path = Path(local_dataset_root).expanduser()
+        path = (
+            root_path
+            if root_path.name == default_path.name
+            else root_path / default_path.name
+        )
     if path.is_absolute():
         return path
     repo_root = Path(__file__).resolve().parents[2]

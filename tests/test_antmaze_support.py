@@ -21,6 +21,7 @@ from data.antmaze.dataset import (
     _load_local_antmaze_hdf5_episodes,
 )
 from data.antmaze.variants import ANTMAZE_VARIANTS
+from data.antmaze.variants import resolve_local_dataset_path as resolve_antmaze_local_dataset_path
 from data.base_dataset import DatasetBuildRequest
 from data.pointmaze.dataset import (
     PointMazeDataset,
@@ -28,6 +29,7 @@ from data.pointmaze.dataset import (
     _load_local_hdf5_episodes,
     _normalize_pointmaze_data_config,
 )
+from data.pointmaze.variants import resolve_local_dataset_path as resolve_pointmaze_local_dataset_path
 from data.registry import get_action_dim, resolve_variant_env_spec
 from utils.maze_sensing import _neighbor_status
 from utils.prompt_loader import load_template_map, render_template
@@ -243,6 +245,72 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertNotEqual(
             AntMazeDataset._hash_json_payload(base_payload),
             AntMazeDataset._hash_json_payload(filtered_payload),
+        )
+
+    def test_local_dataset_root_resolves_under_variant_dataset_name(self):
+        with tempfile.TemporaryDirectory() as root_dir:
+            ant_path = resolve_antmaze_local_dataset_path(
+                "local_datasets/antmaze-local-layout-01-v0",
+                local_dataset_root=root_dir,
+            )
+            point_path = resolve_pointmaze_local_dataset_path(
+                "local_datasets/pointmaze-local-layout-01-v0",
+                local_dataset_root=root_dir,
+            )
+            direct_ant_path = resolve_antmaze_local_dataset_path(
+                "local_datasets/antmaze-local-layout-01-v0",
+                local_dataset_root=str(Path(root_dir) / "antmaze-local-layout-01-v0"),
+            )
+
+        self.assertEqual(ant_path, Path(root_dir) / "antmaze-local-layout-01-v0")
+        self.assertEqual(point_path, Path(root_dir) / "pointmaze-local-layout-01-v0")
+        self.assertEqual(direct_ant_path, Path(root_dir) / "antmaze-local-layout-01-v0")
+
+    def test_local_dataset_root_changes_cache_signature_path(self):
+        with tempfile.TemporaryDirectory() as tokenizer_dir:
+            tokenizer = _make_test_tokenizer(tokenizer_dir)
+            base_request = DatasetBuildRequest(
+                variant="local-layout-01",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=2,
+            )
+            override_request = DatasetBuildRequest(
+                variant="local-layout-01",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=2,
+                local_dataset_root="/scratch/local_datasets_v2",
+            )
+
+            with mock.patch.object(
+                PointMazeDataset,
+                "_local_data_signature",
+                return_value="localsteps2",
+            ):
+                base_payload = PointMazeDataset._cache_signature_payload(
+                    PointMazeDataset._normalize_request(base_request)
+                )
+                override_payload = PointMazeDataset._cache_signature_payload(
+                    PointMazeDataset._normalize_request(override_request)
+                )
+
+        self.assertNotEqual(
+            PointMazeDataset._hash_json_payload(base_payload),
+            PointMazeDataset._hash_json_payload(override_payload),
+        )
+        self.assertTrue(
+            override_payload["variant_metadata"]["dataset_path"].endswith(
+                "/scratch/local_datasets_v2/pointmaze-local-layout-01-v0"
+            )
         )
 
     def test_local_minari_dataset_success_path_loads_episodes_before_preprocessing(self):
