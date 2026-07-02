@@ -275,6 +275,20 @@ class ValidationCacheConfigTest(unittest.TestCase):
 
         self.assertEqual(request.family_data_config, config["pointmaze_data_config"])
 
+    def test_local_dataset_root_is_passed_to_dataset_request(self):
+        config = {
+            "env_family": "antmaze",
+            "model_name": "unit-tokenizer",
+            "max_length": 128,
+            "dataset_workers": 1,
+            "action_dim": 8,
+            "local_dataset_root": "/scratch/local_datasets_v2",
+        }
+
+        request = build_dataset_request(config, object(), "local-layout-01", "train")
+
+        self.assertEqual(request.local_dataset_root, "/scratch/local_datasets_v2")
+
 
 if __name__ == "__main__":
     unittest.main()

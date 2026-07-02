@@ -1569,3 +1569,11 @@ type: project
 
 **验证：**
 - 已通过 py_compile、hard-sample focused unittest、`tests.test_antmaze_support`、`bash -n sbatch/dataGen.ant.hard.slurm` 和 `git diff --check`
+
+## Local dataset path override（2026-07-02）
+
+- 新增训练配置 `local_dataset_root`，用于覆盖 PointMaze / AntMaze local variants 的本地 dataset 根目录；未配置或为 `null` 时继续使用 `variants.py` 中的默认 `local_datasets/<family>-<variant>-v0` 路径
+- `local_dataset_root` 可以指向包含多个 local dataset 的父目录，也可以直接指向单个 variant 的 dataset 目录；`local_dataset_path` 作为兼容别名保留，但两个字段同时设置为不同值会报错
+- `train.py` 和 `estimate_dataset.py` 都会把该路径透传到 raw episode 加载、episode balancing、partition shard planning 和 dataset size estimator，保证估算与训练读取同一份 local 数据
+- tokenized cache signature 对 local variants 记录实际 resolved dataset path 和 local step signature，避免不同 local dataset root 之间误复用 cache
+- 新增测试覆盖路径解析、dataset request 透传、estimator 透传和 cache signature 变化
