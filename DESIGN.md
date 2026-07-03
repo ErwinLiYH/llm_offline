@@ -155,7 +155,7 @@ POINTMAZE_VARIANTS = {
 
 AntMaze 必须保持 Minari metadata 中的 v4 数据契约：`observation` 为 27 维本体状态，另有 2 维 `achieved_goal` / `desired_goal`，action 为 8 维关节 torque。不能直接替换成 v5 默认环境，因为 v5 默认包含 contact-force observation，会改变输入维度。每个 variant 的 `env_kwargs` 保存官方 eval map、稀疏奖励、horizon 对应的 continuing/reset 语义；训练期或 standalone eval 可用配置中的 `env_kwargs` 覆盖 `continuing_task`。官方 eval map 与离线采集 map 不保证相同，例如 UMaze 的中间墙朝向不同，因此 rollout 创建环境后会从 `env.unwrapped.maze` 刷新 prompt 使用的 map、visual map 和 `maze_size_scaling`。
 
-本地 AntMaze 变种也注册在同一个 `ANTMAZE_VARIANTS` 字典中，目前包含 `local-layout-01..09` 和 `test-layout-01..04`。local/test 变种使用 `varient_type: local`、`dataset_path: local_datasets/antmaze-<variant>-v0`，并同时保存数据采集地图和带固定 `r/g` 标记的 eval 地图。训练时 `data/antmaze/dataset.py` 会从本地 Minari/HDF5 数据目录读取 episode；缺失数据时需要先运行 `local_antmaze_gen.py` 生成。训练配置可用 `local_dataset_root` 覆盖 local dataset 根目录，指向包含多个 local dataset 的父目录或单个 variant dataset 目录；未配置或为 `null` 时使用 `dataset_path` 默认值。
+本地 AntMaze 变种也注册在同一个 `ANTMAZE_VARIANTS` 字典中，目前包含 `local-layout-01..09`、`test-layout-01..04` 和实验性 `ultra`。local/test/ultra 变种使用 `varient_type: local`、`dataset_path: local_datasets/antmaze-<variant>-v0`，并同时保存数据采集地图和带固定 `r/g` 标记的 eval 地图。`ultra` 使用 Farama D4RL PR #220 中尚未正式合并的 AntMaze-Ultra eval map，并保持本地数据集路径语义而不是官方 Minari 数据集语义。训练时 `data/antmaze/dataset.py` 会从本地 Minari/HDF5 数据目录读取 episode；缺失数据时需要先运行 `local_antmaze_gen.py` 生成。训练配置可用 `local_dataset_root` 覆盖 local dataset 根目录，指向包含多个 local dataset 的父目录或单个 variant dataset 目录；未配置或为 `null` 时使用 `dataset_path` 默认值。
 
 AntMaze local layout 的随机生成和静态拓扑评分是辅助工具，不是官方 D4RL normalized score。简要入口见下方 “Local/custom maze generation and topology scoring”，详细设计、指标公式和引用见 `docs/maze_generation_topology.md`。`score.py` 仍是 PointMaze-only；AntMaze 当前支持训练和普通 return/success-rate rollout eval。
 

@@ -840,7 +840,18 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertEqual(available_variants[: len(official_variants)], official_variants)
         self.assertTrue(any(variant.startswith("local-layout-") for variant in available_variants))
         self.assertTrue(any(variant.startswith("test-layout-") for variant in available_variants))
+        self.assertIn("ultra", available_variants)
         self.assertEqual(get_action_dim("antmaze", ["umaze", "large-diverse"]), 8)
+
+    def test_registry_contains_ultra_as_local_variant(self):
+        meta = ANTMAZE_VARIANTS["ultra"]
+
+        self.assertEqual(meta["varient_type"], "local")
+        self.assertEqual(meta["dataset_path"], "local_datasets/antmaze-ultra-v0")
+        self.assertEqual(meta["env_paras"]["max_episode_steps"], 2000)
+        self.assertEqual(meta["env_paras"]["maze_map"][1][1], "r")
+        self.assertEqual(meta["env_paras"]["maze_map"][10][14], "g")
+        self.assertEqual(meta["prompt_vars"]["maze_shape"], "12x16")
 
     def test_registered_eval_env_matches_d4rl_observation_contract(self):
         _meta, env_id, env_kwargs = resolve_variant_env_spec("antmaze", "umaze")
