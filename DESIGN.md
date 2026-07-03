@@ -200,7 +200,7 @@ Action:
 - `format_obs(obs, meta)` 负责生成 `obs_text` 与动态 `location_sensing_en/zh`、`wall_sensing_en/zh`
 - `format_history(history_entries, meta)` 负责生成可选历史块 `history_block_en/zh`
 - 当历史块存在时，历史条目按时间从早到晚排列：第一条是最早采样到的历史 step，最后一条是当前 step 之前最近的采样历史 step
-- `pointmaze_data_config` 是 PointMaze 专属训练数据预处理配置，默认 `truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` 抽样和 train/val split 之前；multi-variant episode balancing、partition shard planning 和 `estimate_dataset.py` 都基于预处理后的 episode 数和长度。
+- `pointmaze_data_config` 是 PointMaze 专属训练数据预处理配置，默认 `truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` / `episode_keep_per_varient` 抽样和 train/val split 之前；multi-variant episode balancing、partition shard planning 和 `estimate_dataset.py` 都基于预处理后的 episode 数和长度。
 - `pointmaze_data_config.truncate: true` 会在第一次 success 后截断 episode；`truncate_holding: N` 表示 success transition 后额外保留 `N` 个 action 样本。`infos.success` 长度为 `T+1` 时用 `success[1:]` 对齐 action transition，长度为 `T` 时直接使用。PointMaze 没有 AntMaze 的 `filter_success` 或保守翻车事件检测。
 
 #### AntMaze 当前实现
@@ -211,7 +211,7 @@ Action:
 - text action 是 8 个逗号分隔的整数百分位，actuator 顺序为 back-right hip/ankle、front-left hip/ankle、front-right hip/ankle、back-left hip/ankle
 - history 仅保留过去 torso xy、对应格子和实际执行动作，避免把 27 维本体状态重复塞入 prompt
 - `data/antmaze/dataset.py` 复用参数化后的 goal-maze episode cache/tokenization 管线，因此支持 episode split、partition cache、history、全部 action token mode 和多进程 tokenization
-- `antmaze_data_config` 是 AntMaze 专属训练数据预处理配置，默认 `filter_success: false`、`truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` 抽样和 train/val split 之前；multi-variant episode balancing 与 partition shard planning 都基于预处理后的 episode 数和长度。
+- `antmaze_data_config` 是 AntMaze 专属训练数据预处理配置，默认 `filter_success: false`、`truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` / `episode_keep_per_varient` 抽样和 train/val split 之前；multi-variant episode balancing 与 partition shard planning 都基于预处理后的 episode 数和长度。
 - `filter_success: true` 会先按原始 `infos.success.any()` 丢弃失败 episode，减少后续截断和 tokenization 工作量；若同时启用截断，截断后还会再次检查 success，避免“先翻车、后成功”的原始 episode 在 success 被截掉后继续进入训练。
 - `truncate: true` 会在第一次 success 或第一次保守翻车事件后截断 episode；`truncate_holding: N` 表示事件 transition 后额外保留 `N` 个 action 样本。`infos.success` 长度为 `T+1` 时用 `success[1:]` 对齐 action transition，长度为 `T` 时直接使用。翻车检测优先看 action 后状态的 `observation[...,0]` torso z 和归一化 quaternion `observation[...,1:5]`，规则固定为 `z < 0.35 and body_up_z < 0.0`；没有可用 quaternion 时退化为 `z < 0.30`，不使用 `z > 1.0` 作为翻车条件。
 
@@ -223,7 +223,7 @@ Action:
 - action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` / `mtp_bin` / `simple_mtp_bin` 使用离散 action bin。默认 `new_token: false` 时，模型内部复用 tokenizer 词表末尾筛选出的稳定低频 token ID；jsonl、step log 和 history prompt 中的人类可读显示仍统一为 `<act_XX>`。MTP 模式的 AQT 不进入 tokenizer，而是由 `mtp_bin_decoder.pt` 保存可训练 embedding 和 sampler head
 - 训练 tokenization 不再直接编码 `prompt + action_text`；text/bin/gaussian_bin 将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence；`mtp_bin` 构造 generation prompt、action prefix token 和 full-prefix AQT metadata，`simple_mtp_bin` 构造 generation prompt、action prefix token 和一维一个 query 的 AQT metadata
 - `gaussian_bin` 会额外在 dataset 中记录 `action_bin_labels`，动作 token 位置使用高斯 soft-label CE；若设置 `action_soft_label_radius`，则每个动作位置只在中心 bin 及左右 n 个相邻 bin 上做 softmax，窗口外 action token 不产生梯度。chat-template 结束 token 等非动作 assistant token 仍使用普通 CE
-- train/val 划分在 **episode 级别**进行：先按 `episode_keep_num` 随机无放回抽样一个 episode pool（如果真实 episode 数更少则使用全部），再在该 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余 episodes 作为 val，避免同一 episode 同时出现在 train 和 val 中
+- train/val 划分在 **episode 级别**进行：先按 `episode_keep_num` 随机无放回抽样一个 episode pool（如果真实 episode 数更少则使用全部）；多 variant 训练可用 `episode_keep_per_varient` 字典按 selected variant 覆盖该值，未命中的 variant 回退 `episode_keep_num`，值为 `null` 表示使用该 variant 的全部 episodes；随后在该 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余 episodes 作为 val，避免同一 episode 同时出现在 train 和 val 中
 - 每个 episode 的第一个 timestep 没有历史；评估 rollout 中也同样如此，只有一步实际动作执行完成后才会写入在线 history buffer
 
 ---
@@ -305,8 +305,9 @@ action_head_weight_decay: 0.0 # 仅 continuous action MLP Linear weights 的 Ada
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
 dataset_load_partitions: 1  # >1 时只分区 tokenize/load train tokenized 数据；需要 dataset_cache_dir；DDP 下必须 >= world_size 且能整除 world_size
-episode_keep_num: 5000  # 参与 train/val 划分的最大 episode 数；真实 episode 更少时使用全部，cache 命中后仍会重新生效
-balance_variant_episode_count: false  # 多 variant 时是否把 sampled episode pool 对齐到最小 variant
+episode_keep_num: 5000  # 参与 train/val 划分的默认最大 episode 数；真实 episode 更少时使用全部，cache 命中后仍会重新生效
+episode_keep_per_varient: null  # 可选 dict；按 selected variant 覆盖 episode_keep_num，value 为 null 表示该 variant 使用全部 episodes
+balance_variant_episode_count: false  # 多 variant 时是否把 sampled episode pool 对齐到最小 variant；配置 episode_keep_per_varient 时会被跳过
 sampling_seed: 0         # 控制 episode 随机抽样的可复现性
 eval_seed: 1             # 训练期 eval 的 episode reset seeds 为 eval_seed, eval_seed+1, ...
 ```
@@ -442,7 +443,7 @@ dataset_cache/
 - 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
 - `dataset_load_partitions > 1` 时必须设置 `dataset_cache_dir`。原始轨迹由 rank0 按现有逻辑加载并完成 episode 级 train/val selection；随后每个 variant 的 train timesteps 会按 `sampling_seed` 确定性打乱并切成固定 shard，必要时把 episode 拆成 `[start_t, end_t)` segment。segment worker 会拿完整 episode 上下文，但只 emit 指定 timestep 范围，因此 history prompt 可以引用 segment 前的历史。DDP 下要求 `dataset_load_partitions >= world_size` 且能被 `world_size` 整除；每 `world_size` 个 shard 组成一个 round，rank `r` 只处理本 round 的第 `r` 个 shard。val split 不分区，只由 rank0 构建完整 val loader 并在训练期间复用。
 - 每个 DDP round 会按 round 内最大本地 batch 数计算 `target_batches`。每个 rank 的本地 DataLoader 使用确定性 padding/replacement sampler 对齐到同一个 `target_batches`，padding 只从当前本地 shard 内采样。一个 epoch 仍表示跑完所有 train shard round，epoch 间只打乱 round 访问顺序，shard cache 可稳定复用。
-- `episode_keep_num`、`train_data_ratio`、`sampling_seed` 和 `balance_variant_episode_count` 不写入 cache 文件名；cache 命中后会重新按当前配置选择 episode 并切分 train/val
+- `episode_keep_num`、`episode_keep_per_varient`、`train_data_ratio`、`sampling_seed` 和 `balance_variant_episode_count` 不写入 cache 文件名；cache 命中后会重新按当前配置选择 episode 并切分 train/val
 - 如果现有 cache 不覆盖当前 sampled episodes，则忽略旧 cache，重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
 - `max_data_num` 截断发生在最终 dataset 组装之后，只影响本次训练返回的数据，不影响 cache 内容和 cache 命中判断
 - cache 文件名是 32 位 sha256 前缀；hash payload 包含 variant/data signature、tokenizer/max length、`prompt_templete_index` 解析后的 prompt 名称、prompt 模板内容、variant prompt vars、`history_num/history_stride` 和 action 编码配置，避免不同 tokenization 或 prompt 配置误复用同一份 tokenized 数据。源码文件 hash 不进入 payload；若代码改动影响 tokenization 语义，需要手动删除旧 cache。
@@ -806,7 +807,7 @@ micromamba run -n llm_offline python estimate_dataset.py \
   --sample-episodes-per-variant 4
 ```
 
-`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。它也支持 `--config base.yaml override.yaml` 多文件合并。脚本读取合并后的训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`local_dataset_root`、`prompt_templete_index`、`episode_keep_num`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时会透传 `antmaze_data_config`，`env_family: pointmaze` 时会透传 `pointmaze_data_config`，因此数据预处理后的 episode 数/step 数才是统计基础。
+`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。它也支持 `--config base.yaml override.yaml` 多文件合并。脚本读取合并后的训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`local_dataset_root`、`prompt_templete_index`、`episode_keep_num` / `episode_keep_per_varient`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时会透传 `antmaze_data_config`，`env_family: pointmaze` 时会透传 `pointmaze_data_config`，因此数据预处理后的 episode 数/step 数才是统计基础。
 
 体积估算不会写正式 dataset cache。脚本会按每个 selected variant 抽取 `--sample-episodes-per-variant` 条完整 selected episode 做真实 tokenization，把这些样本 pickle 成类似 shard cache 的结构后测量字节数，再按 `sampled_pickle_bytes * target_selected_steps / sampled_steps` 用 step ratio 外推 train、val 和 total `.pkl` 大小，单位为十进制 GB。多 prompt 导致的样本膨胀由抽样 tokenization 自然包含；`max_data_num` 会同时影响样本数和 size target。`--world_size` 只用于数学预估 DDP batch 数和 partition round `target_batches`，不初始化 DDP、不要求真实 rank 或 GPU。
 
@@ -827,7 +828,7 @@ micromamba run -n llm_offline python estimate_dataset.py \
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text`、动态 `location_sensing_en/zh` 和动态 `wall_sensing_en/zh`
    - *AntMaze 实现*：严格校验 27 维 v4 本体 observation，并结合 `achieved_goal` / `desired_goal` 渲染 torso、姿态、关节和速度状态；训练使用离线数据地图，rollout 使用实例化 eval env 的真实地图
    - `location_sensing` 会直接给出当前位置格子和目标格子；`wall_sensing` 会给出上下左右相邻格子的 `wall/free/risk` 状态；行列从左上角开始按 1-based 计数。坐标由 `utils/maze_sensing.py` 按 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。若移动方向邻格本身是 wall，则始终报告为 `wall`。若移动方向邻格本身 free，只有在当前位置落入某一侧 threshold、当前同侧格为 free、而前方同侧对角格为 wall 时，才把该方向报告为 `risk`。这样可以预警路口进入窄道时新出现的墙角，但连续直道侧墙不会导致沿直道方向持续误报 `wall`。
-6. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
+6. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），多 variant 训练可用 `episode_keep_per_varient` 按 selected variant 覆盖 keep 数；再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 7. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 8. **DataLoader 与设备搬运**：`dataloader_config` 统一控制 train/val loader 的 `num_workers`、`pin_memory`、`persistent_workers` 和 `prefetch_factor`，以及 batch tensor 搬到训练设备时的 `non_blocking`。`persistent_workers` / `prefetch_factor` 仅在 `num_workers > 0` 时合法；`pin_memory: true` 配合 `non_blocking: true` 可让 CUDA H2D copy 具备异步重叠条件。DDP 下每个 rank 独立创建相同数量的 DataLoader workers
 9. **DDP 并行训练与评估**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint 和 validation 仍只由 rank0 执行；`eval_distribute_variants: true` 时训练期和 standalone rollout 把 variants 轮转分配到各 rank，由所属 rank 写对应 result、step logs 和视频，rank0 聚合结果并写 W&B

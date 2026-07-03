@@ -82,6 +82,12 @@ from utils.distributed import (
     unwrap_model,
 )
 from utils.distributed_sampler import DistributedWeightedSampler, LocalShardPaddingSampler
+from utils.episode_keep import (
+    RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY,
+    effective_episode_keep_num,
+    has_episode_keep_per_variant,
+    resolve_episode_keep_per_variant,
+)
 from utils.eval_parallel import apply_rollout_config_defaults
 from utils.experiment_config import save_experiment_config_snapshot
 from utils.file_progress import FileProgress
@@ -540,7 +546,7 @@ def build_dataset_request(
         prompt_template_count=config.get("prompt_template_count", 1),
         prompt_templete_index=config.get("prompt_templete_index"),
         train_data_ratio=config.get("train_data_ratio", 0.9),
-        episode_keep_num=config.get("episode_keep_num"),
+        episode_keep_num=effective_episode_keep_num(config, variant),
         balance_variant_episode_count=config.get("balance_variant_episode_count", False),
         balanced_train_episode_count=config.get("balanced_train_episode_count"),
         sampling_seed=config.get("sampling_seed", 0),
@@ -566,6 +572,14 @@ def _resolve_balanced_train_episode_count(
     dist_context: DistributedContext,
 ) -> int | None:
     balance_enabled = config.get("balance_variant_episode_count", False)
+    if balance_enabled and has_episode_keep_per_variant(config):
+        rank_zero_print(
+            dist_context,
+            "[train] WARNING: episode_keep_per_varient is configured; "
+            "ignoring balance_variant_episode_count=true because per-variant episode_keep values take precedence.",
+        )
+        return None
+
     if len(selected_variants) <= 1:
         if balance_enabled:
             rank_zero_print(
@@ -4216,6 +4230,11 @@ def main():
         config["train_varients"] = train_selection.configured_variants
         config.pop("variants", None)
         config["action_dim"] = action_dim
+        config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = resolve_episode_keep_per_variant(
+            config,
+            train_selection.selected_variants,
+            available_variants=available_variants,
+        )
         action_token_mode = get_action_token_mode(config)
         if action_token_mode == "mtp_bin":
             config["mtp_k"] = resolve_mtp_k(action_dim, config.get("mtp_k"))

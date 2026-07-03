@@ -37,6 +37,12 @@ from model.mtp_bin import (
 from utils.action_bins import get_action_token_mode
 from utils.config_loader import load_merged_config
 from utils.distributed import DistributedContext
+from utils.episode_keep import (
+    RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY,
+    effective_episode_keep_num,
+    has_episode_keep_per_variant,
+    resolve_episode_keep_per_variant,
+)
 from utils.prompt_loader import load_template_names
 from utils.variant_selection import get_available_variants, resolve_selection
 
@@ -295,7 +301,7 @@ def build_dataset_request(
         prompt_template_count=config.get("prompt_template_count", 1),
         prompt_templete_index=config.get("prompt_templete_index"),
         train_data_ratio=config.get("train_data_ratio", 0.9),
-        episode_keep_num=config.get("episode_keep_num"),
+        episode_keep_num=effective_episode_keep_num(config, variant),
         balance_variant_episode_count=config.get("balance_variant_episode_count", False),
         balanced_train_episode_count=config.get("balanced_train_episode_count"),
         sampling_seed=config.get("sampling_seed", 0),
@@ -326,6 +332,11 @@ def _resolve_training_config(config: dict, world_size: int) -> tuple[dict, Any, 
     config["train_varients"] = train_selection.configured_variants
     config.pop("variants", None)
     config["action_dim"] = action_dim
+    config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = resolve_episode_keep_per_variant(
+        config,
+        train_selection.selected_variants,
+        available_variants=available_variants,
+    )
 
     action_token_mode = get_action_token_mode(config)
     if action_token_mode == "mtp_bin":
@@ -346,7 +357,17 @@ def _balanced_train_episode_count(
     selected_variants: list[str],
     loaded_by_variant: dict[str, tuple[Any, list[Any], list[int]]],
 ) -> int | None:
-    if len(selected_variants) <= 1 or not bool(config.get("balance_variant_episode_count", False)):
+    balance_enabled = bool(config.get("balance_variant_episode_count", False))
+    if not balance_enabled:
+        return None
+    if has_episode_keep_per_variant(config):
+        print(
+            "[estimate] WARNING: episode_keep_per_varient is configured; "
+            "ignoring balance_variant_episode_count=true because per-variant episode_keep values take precedence.",
+            file=sys.stderr,
+        )
+        return None
+    if len(selected_variants) <= 1:
         return None
     keep_num = config.get("episode_keep_num")
     targets = [
@@ -360,6 +381,13 @@ def load_variant_data(config: dict, selected_variants: list[str]) -> list[Varian
     dataset_cls = get_dataset(config["env_family"])
     family_data_config = _family_data_config(config)
     local_dataset_root = _local_dataset_root(config)
+    if RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY in config:
+        episode_keep_by_variant = {
+            variant: effective_episode_keep_num(config, variant)
+            for variant in selected_variants
+        }
+    else:
+        episode_keep_by_variant = resolve_episode_keep_per_variant(config, selected_variants)
     loaded_by_variant = {}
     for variant in selected_variants:
         meta, episodes, step_counts = dataset_cls._load_variant_episodes(
@@ -383,7 +411,7 @@ def load_variant_data(config: dict, selected_variants: list[str]) -> list[Varian
         selection = select_variant_episode_indices(
             variant=variant,
             train_data_ratio=config.get("train_data_ratio", 0.9),
-            episode_keep_num=config.get("episode_keep_num"),
+            episode_keep_num=episode_keep_by_variant[variant],
             sampling_seed=config.get("sampling_seed", 0),
             balanced_train_target=balanced_target,
             episode_loader=loader,
