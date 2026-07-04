@@ -33,6 +33,7 @@ from data.pointmaze.variants import resolve_local_dataset_path as resolve_pointm
 from data.registry import get_action_dim, resolve_variant_env_spec
 from utils.maze_sensing import _neighbor_status
 from utils.prompt_loader import load_template_map, render_template
+from utils.sensing_config import normalize_sensing_config
 from utils.variant_selection import get_available_variants
 
 
@@ -241,7 +242,7 @@ class AntMazeSupportTest(unittest.TestCase):
 
         self.assertEqual(base_payload["family_data_config"]["filter_success"], False)
         self.assertEqual(filtered_payload["family_data_config"]["filter_success"], True)
-        self.assertEqual(AntMazeDataset.CACHE_FORMAT, "antmaze_hash_signature_v6")
+        self.assertEqual(AntMazeDataset.CACHE_FORMAT, "antmaze_hash_signature_v7")
         self.assertNotEqual(
             AntMazeDataset._hash_json_payload(base_payload),
             AntMazeDataset._hash_json_payload(filtered_payload),
@@ -427,10 +428,146 @@ class AntMazeSupportTest(unittest.TestCase):
             truncate_payload["family_data_config"],
             {"truncate": True, "truncate_holding": 1},
         )
-        self.assertEqual(PointMazeDataset.CACHE_FORMAT, "pointmaze_hash_signature_v6")
+        self.assertEqual(PointMazeDataset.CACHE_FORMAT, "pointmaze_hash_signature_v7")
         self.assertNotEqual(
             PointMazeDataset._hash_json_payload(base_payload),
             PointMazeDataset._hash_json_payload(truncate_payload),
+        )
+
+    def test_sensing_config_defaults_and_validation(self):
+        config = {}
+        normalize_sensing_config(config)
+        self.assertEqual(config["wall_sensing_version"], "v3")
+        self.assertEqual(config["map_sensing_boundary_risk_threshold"], 0.10)
+
+        config = {
+            "wall_sensing_version": None,
+            "map_sensing_boundary_risk_threshold": None,
+        }
+        normalize_sensing_config(config)
+        self.assertEqual(config["wall_sensing_version"], "v3")
+        self.assertEqual(config["map_sensing_boundary_risk_threshold"], 0.10)
+
+        config = {
+            "wall_sensing_version": "v5",
+            "map_sensing_boundary_risk_threshold": "0.25",
+        }
+        normalize_sensing_config(config)
+        self.assertEqual(config["wall_sensing_version"], "v5")
+        self.assertEqual(config["map_sensing_boundary_risk_threshold"], 0.25)
+
+        with self.assertRaisesRegex(ValueError, "wall_sensing_version"):
+            normalize_sensing_config({"wall_sensing_version": "v6"})
+        with self.assertRaisesRegex(ValueError, "map_sensing_boundary_risk_threshold"):
+            normalize_sensing_config({"map_sensing_boundary_risk_threshold": -0.1})
+
+    def test_sensing_config_changes_cache_signature(self):
+        with tempfile.TemporaryDirectory() as tokenizer_dir:
+            tokenizer = _make_test_tokenizer(tokenizer_dir)
+            base_request = DatasetBuildRequest(
+                variant="open",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=2,
+            )
+            v5_request = DatasetBuildRequest(
+                variant="open",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=2,
+                wall_sensing_version="v5",
+            )
+            threshold_request = DatasetBuildRequest(
+                variant="open",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=2,
+                map_sensing_boundary_risk_threshold=0.25,
+            )
+            ant_base_request = DatasetBuildRequest(
+                variant="umaze",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=8,
+            )
+            ant_v5_request = DatasetBuildRequest(
+                variant="umaze",
+                split="train",
+                tokenizer=tokenizer,
+                tokenizer_name_or_path=tokenizer_dir,
+                max_length=1024,
+                prompt_templete_index=["parallel_full_sensing"],
+                action_token_mode="parallel_l1",
+                action_dim=8,
+                wall_sensing_version="v5",
+            )
+
+            base_payload = PointMazeDataset._cache_signature_payload(
+                PointMazeDataset._normalize_request(base_request)
+            )
+            v5_payload = PointMazeDataset._cache_signature_payload(
+                PointMazeDataset._normalize_request(v5_request)
+            )
+            threshold_payload = PointMazeDataset._cache_signature_payload(
+                PointMazeDataset._normalize_request(threshold_request)
+            )
+            ant_base_payload = AntMazeDataset._cache_signature_payload(
+                AntMazeDataset._normalize_request(ant_base_request)
+            )
+            ant_v5_payload = AntMazeDataset._cache_signature_payload(
+                AntMazeDataset._normalize_request(ant_v5_request)
+            )
+            ant_v5_config = AntMazeDataset._normalize_request(ant_v5_request)
+            tokenization_job = AntMazeDataset._create_tokenization_job(
+                ant_v5_config,
+                None,
+                {
+                    "episodes": _fake_episodes(),
+                    "total_episodes": 2,
+                    "train_indices": [0],
+                    "val_indices": [],
+                },
+                [0],
+            )
+
+        self.assertEqual(base_payload["wall_sensing_version"], "v3")
+        self.assertEqual(base_payload["map_sensing_boundary_risk_threshold"], 0.10)
+        self.assertEqual(v5_payload["wall_sensing_version"], "v5")
+        self.assertEqual(threshold_payload["map_sensing_boundary_risk_threshold"], 0.25)
+        self.assertEqual(ant_base_payload["wall_sensing_version"], "v3")
+        self.assertEqual(ant_v5_payload["wall_sensing_version"], "v5")
+        self.assertEqual(tokenization_job.worker_config["wall_sensing_version"], "v5")
+        self.assertEqual(
+            tokenization_job.worker_config["prompt_vars"]["wall_sensing_version"],
+            "v5",
+        )
+        self.assertNotEqual(
+            PointMazeDataset._hash_json_payload(base_payload),
+            PointMazeDataset._hash_json_payload(v5_payload),
+        )
+        self.assertNotEqual(
+            PointMazeDataset._hash_json_payload(base_payload),
+            PointMazeDataset._hash_json_payload(threshold_payload),
+        )
+        self.assertNotEqual(
+            AntMazeDataset._hash_json_payload(ant_base_payload),
+            AntMazeDataset._hash_json_payload(ant_v5_payload),
         )
 
     def test_local_antmaze_hdf5_fallback_reads_infos_and_terminal_fields(self):
@@ -688,7 +825,7 @@ class AntMazeSupportTest(unittest.TestCase):
             2,
         )
 
-    def test_corner_risk_reports_risk_without_treating_continuous_walls_as_blocked(self):
+    def test_wall_sensing_versions_handle_corner_and_risk_semantics(self):
         row = 3
         col = 3
         cases = [
@@ -726,6 +863,45 @@ class AntMazeSupportTest(unittest.TestCase):
                         d_col,
                         x=x,
                         y=y,
+                        wall_sensing_version="v1",
+                    ),
+                    "free",
+                )
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                        wall_sensing_version="v2",
+                    ),
+                    "wall",
+                )
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                    ),
+                    "wall",
+                )
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                        wall_sensing_version="v5",
                     ),
                     "risk",
                 )
@@ -740,6 +916,32 @@ class AntMazeSupportTest(unittest.TestCase):
                         d_col,
                         x=x,
                         y=y,
+                        wall_sensing_version="v2",
+                    ),
+                    "wall",
+                )
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                    ),
+                    "free",
+                )
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                        wall_sensing_version="v5",
                     ),
                     "free",
                 )
@@ -755,6 +957,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         d_col,
                         x=x,
                         y=y,
+                        wall_sensing_version="v5",
                     ),
                     "free",
                 )
@@ -769,6 +972,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         d_col,
                         x=0.0,
                         y=0.0,
+                        wall_sensing_version="v5",
                     ),
                     "free",
                 )
@@ -822,6 +1026,34 @@ class AntMazeSupportTest(unittest.TestCase):
                         d_col,
                         x=x,
                         y=y,
+                        wall_sensing_version="v5",
+                    ),
+                    "wall",
+                )
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=x,
+                        y=y,
+                        wall_sensing_version="v4",
+                    ),
+                    "free",
+                )
+
+                self.assertEqual(
+                    _neighbor_status(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        x=0.0,
+                        y=0.0,
+                        wall_sensing_version="v4",
                     ),
                     "wall",
                 )

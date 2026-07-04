@@ -358,7 +358,7 @@ class AntMazeDataset(PointMazeDataset):
     ENV_FAMILY = "antmaze"
     VARIANTS = ANTMAZE_VARIANTS
     ACTION_DIM = 8
-    CACHE_FORMAT = "antmaze_hash_signature_v6"
+    CACHE_FORMAT = "antmaze_hash_signature_v7"
 
     @classmethod
     def _normalize_family_data_config(cls, family_data_config: dict | None):

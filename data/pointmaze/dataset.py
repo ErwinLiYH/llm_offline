@@ -43,6 +43,10 @@ from utils.file_progress import (
     get_sub_progress_process,
 )
 from utils.prompt_loader import load_named_templates, load_template_names, render_template
+from utils.sensing_config import (
+    apply_sensing_config_to_prompt_vars,
+    resolve_sensing_config,
+)
 
 DEFAULT_TRAIN_DATA_RATIO = 0.9
 DEFAULT_EPISODE_KEEP_NUM = None
@@ -1241,6 +1245,8 @@ class PointMazeBuildConfig:
     local_dataset_root: str | None
     history_num: int
     history_stride: int
+    wall_sensing_version: str
+    map_sensing_boundary_risk_threshold: float
     action_token_mode: str
     action_num_bins: int
     action_bin_min: float
@@ -1274,7 +1280,7 @@ class PointMazeDataset(BaseOfflineDataset):
     ENV_FAMILY = "pointmaze"
     VARIANTS = POINTMAZE_VARIANTS
     ACTION_DIM = 2
-    CACHE_FORMAT = "pointmaze_hash_signature_v6"
+    CACHE_FORMAT = "pointmaze_hash_signature_v7"
 
     def __init__(self, variant: str, split: str, samples: list[dict]):
         super().__init__()
@@ -1676,6 +1682,14 @@ class PointMazeDataset(BaseOfflineDataset):
             local_dataset_root=_normalize_local_dataset_root(request.local_dataset_root),
             history_num=request.history_num,
             history_stride=request.history_stride,
+            **resolve_sensing_config(
+                {
+                    "wall_sensing_version": request.wall_sensing_version,
+                    "map_sensing_boundary_risk_threshold": (
+                        request.map_sensing_boundary_risk_threshold
+                    ),
+                }
+            ),
             action_token_mode=action_token_mode,
             action_num_bins=action_num_bins,
             action_bin_min=action_bin_min,
@@ -1781,6 +1795,10 @@ class PointMazeDataset(BaseOfflineDataset):
             "templates": templates,
             "history_num": config.history_num,
             "history_stride": config.history_stride,
+            "wall_sensing_version": config.wall_sensing_version,
+            "map_sensing_boundary_risk_threshold": (
+                config.map_sensing_boundary_risk_threshold
+            ),
             "action_token_mode": config.action_token_mode,
             "action_num_bins": config.action_num_bins,
             "action_bin_min": config.action_bin_min,
@@ -1902,7 +1920,7 @@ class PointMazeDataset(BaseOfflineDataset):
         meta = cls.VARIANTS[config.variant]
         prompt_names = cls._resolve_prompt_names(config)
         templates = load_named_templates(cls.ENV_FAMILY, prompt_names)
-        prompt_vars = meta["prompt_vars"]
+        prompt_vars = apply_sensing_config_to_prompt_vars(meta["prompt_vars"], vars(config))
 
         all_episodes = selection.get("episodes")
         episode_indices = cls._selected_indices_for_config(config, selection)
@@ -1959,6 +1977,10 @@ class PointMazeDataset(BaseOfflineDataset):
             "prompt_vars": prompt_vars,
             "history_num": config.history_num,
             "history_stride": config.history_stride,
+            "wall_sensing_version": config.wall_sensing_version,
+            "map_sensing_boundary_risk_threshold": (
+                config.map_sensing_boundary_risk_threshold
+            ),
             "action_token_mode": config.action_token_mode,
             "action_num_bins": config.action_num_bins,
             "action_bin_min": config.action_bin_min,
@@ -1979,6 +2001,10 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_dim": config.action_dim,
             "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
+            "wall_sensing_version": config.wall_sensing_version,
+            "map_sensing_boundary_risk_threshold": (
+                config.map_sensing_boundary_risk_threshold
+            ),
         }
         return PointMazeTokenizationJob(
             job_id=job_id,
@@ -2073,6 +2099,8 @@ class PointMazeDataset(BaseOfflineDataset):
                 "local_dataset_root",
                 "history_num",
                 "history_stride",
+                "wall_sensing_version",
+                "map_sensing_boundary_risk_threshold",
                 "action_token_mode",
                 "action_num_bins",
                 "action_bin_min",

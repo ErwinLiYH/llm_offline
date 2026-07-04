@@ -23,6 +23,7 @@ from utils.rollout.artifacts import (
     write_step_log,
 )
 from utils.rollout.protocol import ActionRequest, ActionResponse, EpisodeResult
+from utils.sensing_config import apply_sensing_config_to_prompt_vars
 from utils.video_writer import VideoSaveManager
 
 
@@ -134,7 +135,10 @@ class _RolloutWorker:
                 score_env_spec,
                 render_mode="rgb_array" if self.config.get("record_video", False) else None,
             )
-            self.prompt_vars = POINTMAZE_VARIANTS[self.variant]["prompt_vars"]
+            self.prompt_vars = apply_sensing_config_to_prompt_vars(
+                POINTMAZE_VARIANTS[self.variant]["prompt_vars"],
+                self.config,
+            )
         else:
             meta, env_id, env_kwargs = resolve_variant_env_spec(
                 self.config["env_family"],
@@ -147,6 +151,10 @@ class _RolloutWorker:
                 self.formatter,
                 meta["prompt_vars"],
                 self.env,
+            )
+            self.prompt_vars = apply_sensing_config_to_prompt_vars(
+                self.prompt_vars,
+                self.config,
             )
 
         self.action_shape = tuple(int(value) for value in self.env.action_space.shape)
@@ -408,4 +416,3 @@ def worker_entry(worker_id: int, control_queue, event_queue, worker_config: dict
     finally:
         if worker is not None:
             worker.close()
-

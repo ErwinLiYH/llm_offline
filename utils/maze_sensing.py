@@ -2,8 +2,15 @@ import math
 
 import numpy as np
 
+from utils.sensing_config import (
+    DEFAULT_MAP_SENSING_BOUNDARY_RISK_THRESHOLD,
+    DEFAULT_WALL_SENSING_VERSION,
+    resolve_map_sensing_boundary_risk_threshold,
+    resolve_sensing_config,
+    resolve_wall_sensing_version,
+)
 
-DEFAULT_BOUNDARY_RISK_FRACTION = 0.10
+DEFAULT_BOUNDARY_RISK_FRACTION = DEFAULT_MAP_SENSING_BOUNDARY_RISK_THRESHOLD
 
 
 def obs_xy_to_row_col(
@@ -129,6 +136,52 @@ def _has_new_corner(
     )
 
 
+def _near_cell_boundaries(
+    *,
+    x: float,
+    y: float,
+    row: int,
+    col: int,
+    rows: int,
+    cols: int,
+    maze_size_scaling: float,
+    boundary_risk_threshold: float | None,
+) -> dict[str, bool]:
+    threshold_fraction = resolve_map_sensing_boundary_risk_threshold(
+        boundary_risk_threshold
+    )
+    threshold = threshold_fraction * maze_size_scaling
+    left_x, right_x, bottom_y, top_y = _cell_bounds(
+        row,
+        col,
+        rows,
+        cols,
+        maze_size_scaling,
+    )
+    return {
+        "left": x - left_x <= threshold,
+        "right": right_x - x <= threshold,
+        "bottom": y - bottom_y <= threshold,
+        "top": top_y - y <= threshold,
+    }
+
+
+def _near_opposite_boundary(
+    d_row: int,
+    d_col: int,
+    near: dict[str, bool],
+) -> bool:
+    if d_row < 0:
+        return near["bottom"]
+    if d_row > 0:
+        return near["top"]
+    if d_col < 0:
+        return near["right"]
+    if d_col > 0:
+        return near["left"]
+    return False
+
+
 def _neighbor_status(
     maze_map: list[list[object]],
     row: int,
@@ -140,41 +193,49 @@ def _neighbor_status(
     y: float | None = None,
     maze_size_scaling: float = 1.0,
     boundary_risk_threshold: float | None = None,
+    wall_sensing_version: str | None = None,
 ) -> str:
+    version = resolve_wall_sensing_version(wall_sensing_version)
     n_row = row + d_row
     n_col = col + d_col
     direct_status = _cell_status(maze_map, n_row, n_col)
-    if direct_status == "wall":
-        return "wall"
+    if version == "v1":
+        return direct_status
     if x is None or y is None:
-        return "free"
+        return direct_status
 
     rows = len(maze_map)
     cols = len(maze_map[0]) if maze_map else 0
-    threshold = (
-        float(boundary_risk_threshold)
-        if boundary_risk_threshold is not None
-        else DEFAULT_BOUNDARY_RISK_FRACTION * maze_size_scaling
+    near = _near_cell_boundaries(
+        x=x,
+        y=y,
+        row=row,
+        col=col,
+        rows=rows,
+        cols=cols,
+        maze_size_scaling=maze_size_scaling,
+        boundary_risk_threshold=boundary_risk_threshold,
     )
-    left_x, right_x, bottom_y, top_y = _cell_bounds(
-        row,
-        col,
-        rows,
-        cols,
-        maze_size_scaling,
-    )
-    near_left = x - left_x <= threshold
-    near_right = right_x - x <= threshold
-    near_bottom = y - bottom_y <= threshold
-    near_top = top_y - y <= threshold
+    if direct_status == "wall":
+        if version == "v4" and _near_opposite_boundary(d_row, d_col, near):
+            return "free"
+        return "wall"
 
     if d_col:
-        side_checks = ((-1, 0, near_top), (1, 0, near_bottom))
+        side_checks = ((-1, 0, near["top"]), (1, 0, near["bottom"]))
     else:
-        side_checks = ((0, -1, near_left), (0, 1, near_right))
+        side_checks = ((0, -1, near["left"]), (0, 1, near["right"]))
 
     for side_d_row, side_d_col, near_side in side_checks:
-        if near_side and _has_new_corner(
+        if not near_side:
+            continue
+        diagonal_is_wall = (
+            _cell_status(maze_map, row + d_row + side_d_row, col + d_col + side_d_col)
+            == "wall"
+        )
+        if version == "v2" and diagonal_is_wall:
+            return "wall"
+        if version in {"v3", "v4", "v5"} and _has_new_corner(
             maze_map,
             row,
             col,
@@ -183,19 +244,22 @@ def _neighbor_status(
             d_row + side_d_row,
             d_col + side_d_col,
         ):
-            return "risk"
+            return "risk" if version == "v5" else "wall"
     return "free"
 
 
 def build_sensing(position: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
-    """Build shared location and conservative four-neighbor wall/risk sensing."""
+    """Build shared location and versioned four-neighbor wall/risk sensing."""
     x, y = float(position[0]), float(position[1])
     gx, gy = float(goal[0]), float(goal[1])
     maze_map = meta["maze_map"]
     maze_size_scaling = float(meta.get("maze_size_scaling", 1.0))
-    boundary_risk_threshold = meta.get("map_sensing_boundary_risk_threshold")
-    if boundary_risk_threshold is not None:
-        boundary_risk_threshold = float(boundary_risk_threshold)
+    sensing_config = resolve_sensing_config(meta)
+    wall_sensing_version = sensing_config.get(
+        "wall_sensing_version",
+        DEFAULT_WALL_SENSING_VERSION,
+    )
+    boundary_risk_threshold = sensing_config["map_sensing_boundary_risk_threshold"]
     row, col = obs_xy_to_row_col(
         x,
         y,
@@ -213,6 +277,7 @@ def build_sensing(position: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
         "y": y,
         "maze_size_scaling": maze_size_scaling,
         "boundary_risk_threshold": boundary_risk_threshold,
+        "wall_sensing_version": wall_sensing_version,
     }
     up = _neighbor_status(maze_map, row, col, -1, 0, **neighbor_kwargs)
     down = _neighbor_status(maze_map, row, col, 1, 0, **neighbor_kwargs)

@@ -29,6 +29,7 @@ from utils.pointmaze_score import (
 from utils.prompt_loader import load_named_templates, load_template_names
 from utils.eval_parallel import apply_rollout_config_defaults
 from utils.rollout.score_runner import run_score_variant
+from utils.sensing_config import normalize_sensing_config
 from utils.variant_selection import get_available_variants, resolve_selection
 
 
@@ -117,6 +118,14 @@ def configure_mujoco_gl(config: dict):
 
     if config.get("record_video", False):
         os.environ.setdefault("MUJOCO_GL", "egl")
+
+
+def print_sensing_config(prefix: str, config: dict) -> None:
+    print(
+        f"{prefix} Wall sensing: "
+        f"version={config['wall_sensing_version']}, "
+        f"boundary_risk_threshold={config['map_sensing_boundary_risk_threshold']}"
+    )
 
 
 def _load_waypoint_controller_class():
@@ -266,13 +275,18 @@ def run_reference_mode(config: dict, selection, run_results_dir: str) -> list[di
 
 
 def _resolve_score_prompt(config: dict, *, assume_yes: bool) -> tuple[dict, str, str]:
-    from evaluate import apply_checkpoint_action_config, apply_checkpoint_prompt_config
+    from evaluate import (
+        apply_checkpoint_action_config,
+        apply_checkpoint_prompt_config,
+        apply_checkpoint_sensing_config,
+    )
 
     config = dict(config)
     for prompt_key in ("prompt_templete_index", "prompt_template_index"):
         if prompt_key in config and config[prompt_key] is None:
             config.pop(prompt_key)
     config = apply_checkpoint_action_config(config)
+    config = apply_checkpoint_sensing_config(config)
     config = apply_checkpoint_prompt_config(config, assume_yes=assume_yes)
     prompt_name = config.get("resolved_eval_prompt_name")
     if prompt_name is None:
@@ -313,6 +327,7 @@ def run_score_mode(config: dict, selection, run_results_dir: str, *, assume_yes:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[score] Using device: {device}")
     print(f"[score] Loading model from: {config['model_path']}")
+    print_sensing_config("[score]", config)
     model, tokenizer = load_from_checkpoint(
         config["model_path"],
         load_in_4bit=config.get("load_in_4bit"),
@@ -393,6 +408,8 @@ def main():
     print(f"[score] Resolved variants: {selection.selected_variants}")
 
     if mode == "reference":
+        normalize_sensing_config(config)
+        print_sensing_config("[score]", config)
         results = run_reference_mode(config, selection, run_results_dir)
     elif mode == "score":
         configure_mujoco_gl(config)

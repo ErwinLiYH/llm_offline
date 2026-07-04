@@ -44,6 +44,7 @@ from utils.episode_keep import (
     resolve_episode_keep_per_variant,
 )
 from utils.prompt_loader import load_template_names
+from utils.sensing_config import normalize_sensing_config, resolve_sensing_config
 from utils.variant_selection import get_available_variants, resolve_selection
 
 
@@ -309,6 +310,10 @@ def build_dataset_request(
         local_dataset_root=_local_dataset_root(config),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
+        wall_sensing_version=config.get("wall_sensing_version"),
+        map_sensing_boundary_risk_threshold=config.get(
+            "map_sensing_boundary_risk_threshold"
+        ),
         action_token_mode=config.get("action_token_mode", "text"),
         action_num_bins=config.get("action_num_bins", 10),
         action_bin_min=config.get("action_bin_min", -1.0),
@@ -325,6 +330,7 @@ def _resolve_training_config(config: dict, world_size: int) -> tuple[dict, Any, 
         raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
 
     config = dict(config)
+    normalize_sensing_config(config)
     normalize_prompt_config(config)
     available_variants = get_available_variants(config["env_family"])
     train_selection = resolve_train_selection(config, available_variants)
@@ -725,6 +731,7 @@ def build_estimate(
 ) -> dict:
     prompt_count = len(config["prompt_templete_index"])
     max_data_num = config.get("max_data_num")
+    sensing_config = resolve_sensing_config(config)
     footprints_by_variant = {footprint.variant: footprint for footprint in footprints}
     variants = []
     total_train_bytes = 0.0
@@ -831,6 +838,10 @@ def build_estimate(
             "batch_size": int(config["batch_size"]),
             "max_data_num": max_data_num,
             "sample_seed": int(sample_seed),
+            "wall_sensing_version": sensing_config["wall_sensing_version"],
+            "map_sensing_boundary_risk_threshold": (
+                sensing_config["map_sensing_boundary_risk_threshold"]
+            ),
         },
         "variants": variants,
         "sampling": {

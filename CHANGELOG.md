@@ -1600,3 +1600,14 @@ type: project
 **验证：**
 - 已通过 `conda run -n llm_offline python -m py_compile train.py`
 - 已通过 `PYTHONPATH=. conda run -n llm_offline pytest -q tests/test_resume_training_state.py`
+
+## Wall sensing versioned config（2026-07-04）
+
+- 新增正式配置 `wall_sensing_version` 和 `map_sensing_boundary_risk_threshold`；未配置或显式为 `null` 时规范化为 `v3` 和 `0.10`
+- `utils/maze_sensing.py` 支持 `v1` 到 `v5` 的历史 wall sensing 语义：`v3` 作为默认 new-corner 版，`v5` 保留当前 risk 版行为
+- train / eval / score / estimate / rollout worker / dataset cache 全链路携带规范化 sensing 配置；训练启动配置、eval config、score config 和 cache signature 都会记录最终值
+- standalone eval 和 `score.py mode: score` 优先继承 checkpoint `config.yaml` 中的 sensing 配置；checkpoint 已记录时，eval/score YAML 中冲突的 sensing 值会直接报错
+- train、eval、score 启动日志新增最终 wall sensing 输出，便于确认实际使用的 version 和 boundary threshold
+- PointMaze 和 AntMaze tokenized cache format bump 到 `*_hash_signature_v7`，避免复用旧 wall sensing 文本缓存
+- 更新示例配置、`AGENTS.md` 和 `DESIGN.md`，补充版本语义、默认值、checkpoint 继承规则和 cache signature 说明
+- 新增/更新测试覆盖 sensing 默认值和校验、`v1`-`v5` 行为、cache hash 变化、tokenization worker prompt vars、eval checkpoint 继承和冲突报错

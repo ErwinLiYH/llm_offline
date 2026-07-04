@@ -102,6 +102,7 @@ from utils.lr_scheduler import (
 )
 from utils.prompt_loader import load_template_names
 from utils.resource_monitor import ResourceMonitor, resource_monitor_path
+from utils.sensing_config import normalize_sensing_config
 from utils.training_tags import format_epoch_tag, format_step_tag
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 from utils.wandb_logging import (
@@ -563,6 +564,10 @@ def build_dataset_request(
         local_dataset_root=_local_dataset_root(config),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
+        wall_sensing_version=config.get("wall_sensing_version"),
+        map_sensing_boundary_risk_threshold=config.get(
+            "map_sensing_boundary_risk_threshold"
+        ),
         action_token_mode=config.get("action_token_mode", "text"),
         action_num_bins=config.get("action_num_bins", 10),
         action_bin_min=config.get("action_bin_min", -1.0),
@@ -1273,6 +1278,10 @@ def _build_training_eval_config(config: dict) -> dict:
         "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
         "history_num": config.get("history_num", 0),
         "history_stride": config.get("history_stride", 1),
+        "wall_sensing_version": config.get("wall_sensing_version"),
+        "map_sensing_boundary_risk_threshold": config.get(
+            "map_sensing_boundary_risk_threshold"
+        ),
         "record_video": config.get("record_video", False),
         "record_all": config.get("record_all", False),
         "video_episode_index": config.get("video_episode_index", 0),
@@ -4239,6 +4248,7 @@ def main():
     )
     config["config_sources"] = list(args.config)
     config["tokenize_only"] = bool(args.tokenize_only)
+    normalize_sensing_config(config)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)
     resource_monitor = None
@@ -4378,6 +4388,12 @@ def main():
         device = dist_context.device
         rank_zero_print(dist_context, f"[train] Using device: {device}")
         rank_zero_print(dist_context, f"[train] Experiment ID: {experiment_id}")
+        rank_zero_print(
+            dist_context,
+            "[train] Wall sensing: "
+            f"version={config['wall_sensing_version']}, "
+            f"boundary_risk_threshold={config['map_sensing_boundary_risk_threshold']}",
+        )
         if config.get("init_from_checkpoint"):
             rank_zero_print(
                 dist_context,
