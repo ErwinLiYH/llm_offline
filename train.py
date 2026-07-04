@@ -136,6 +136,15 @@ def parse_args():
         default=None,
         help="Resume training from a checkpoint directory containing trainer_state.pt.",
     )
+    parser.add_argument(
+        "--init_from_checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Initialize model weights from a checkpoint, but start a fresh training run "
+            "without restoring optimizer, scheduler, or loop state."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -2434,6 +2443,50 @@ def _load_trainer_state(checkpoint_dir: str | None) -> dict | None:
     return torch.load(state_path, map_location="cpu")
 
 
+def _load_checkpoint_config(checkpoint_dir: str, *, purpose: str) -> dict:
+    config_path = os.path.join(checkpoint_dir, "config.yaml")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Cannot {purpose} from {checkpoint_dir}: missing config.yaml")
+    with open(config_path) as config_file:
+        return yaml.safe_load(config_file) or {}
+
+
+def _validate_init_checkpoint_compatibility(
+    *,
+    checkpoint_dir: str,
+    saved_config: dict,
+    current_config: dict,
+) -> None:
+    keys = [
+        "env_family",
+        "action_token_mode",
+        "action_dim",
+        "action_query_len",
+        "action_head_num_blocks",
+        "action_head_dropout",
+    ]
+    if get_action_token_mode(current_config) in {"parallel_gaussian", "parallel_t"}:
+        keys.extend(["gaussian_log_std_min", "gaussian_log_std_max"])
+
+    mismatches = []
+    for key in keys:
+        if key not in saved_config or key not in current_config:
+            continue
+        saved_value = saved_config.get(key)
+        current_value = current_config.get(key)
+        if saved_value != current_value:
+            mismatches.append((key, saved_value, current_value))
+
+    if mismatches:
+        lines = [
+            "init_from_checkpoint is incompatible with the current training setup:",
+            f"  checkpoint: {checkpoint_dir}",
+        ]
+        for key, saved_value, current_value in mismatches:
+            lines.append(f"  {key}: checkpoint={saved_value!r}, current={current_value!r}")
+        raise ValueError("\n".join(lines))
+
+
 def _optimizer_param_group_signature(optimizer: torch.optim.Optimizer) -> list[dict]:
     signature = []
     for group in optimizer.param_groups:
@@ -2581,15 +2634,23 @@ def _build_trainer_state(
     loop_state: dict,
     compat_metadata: dict,
 ) -> dict:
-    source_checkpoint = config.get("resume_from_checkpoint")
+    resume_checkpoint = config.get("resume_from_checkpoint")
+    init_checkpoint = config.get("init_from_checkpoint")
+    source_checkpoint = resume_checkpoint or init_checkpoint
+    source_kind = "resume" if resume_checkpoint else ("init" if init_checkpoint else None)
     return {
         "version": 1,
         "optimizer_state_dict": optimizer.state_dict(),
         "lr_scheduler": dict(scheduler_meta),
         "loop_state": dict(loop_state),
         "compat": dict(compat_metadata),
+        "source_checkpoint_kind": source_kind,
         "source_checkpoint_path": str(source_checkpoint) if source_checkpoint else None,
-        "source_experiment_id": config.get("resume_source_experiment_id"),
+        "source_experiment_id": (
+            config.get("resume_source_experiment_id")
+            if resume_checkpoint
+            else config.get("init_source_experiment_id")
+        ),
         "experiment_id": config.get("experiment_id"),
     }
 
@@ -4163,6 +4224,16 @@ def main():
         if not resume_override:
             raise ValueError("--resume_from_checkpoint must not be empty when provided")
         config["resume_from_checkpoint"] = resume_override
+    if args.init_from_checkpoint is not None:
+        init_override = str(args.init_from_checkpoint).strip()
+        if not init_override:
+            raise ValueError("--init_from_checkpoint must not be empty when provided")
+        if config.get("model_path") and os.path.abspath(str(config["model_path"])) != os.path.abspath(init_override):
+            raise ValueError(
+                "Both model_path and --init_from_checkpoint are set to different checkpoints. "
+                "Use only one initialization checkpoint."
+            )
+        config["model_path"] = init_override
     config["train_config_source"] = (
         args.config[0] if len(args.config) == 1 else list(args.config)
     )
@@ -4175,19 +4246,33 @@ def main():
         if "episode_keep_ratio" in config:
             raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
         resume_from_checkpoint = config.get("resume_from_checkpoint")
+        init_from_checkpoint = config.get("model_path") or config.get("init_from_checkpoint")
+        if resume_from_checkpoint and init_from_checkpoint:
+            raise ValueError(
+                "resume_from_checkpoint and model_path/init_from_checkpoint are mutually exclusive. "
+                "Use resume_from_checkpoint for exact interrupted-run resume, or "
+                "model_path to start a new run from checkpoint weights."
+            )
         if resume_from_checkpoint:
             resume_from_checkpoint = os.path.abspath(str(resume_from_checkpoint))
             config["resume_from_checkpoint"] = resume_from_checkpoint
             if args.tokenize_only:
                 raise ValueError("--tokenize-only cannot be combined with resume_from_checkpoint")
-            saved_config_path = os.path.join(resume_from_checkpoint, "config.yaml")
-            if not os.path.exists(saved_config_path):
-                raise FileNotFoundError(
-                    f"Cannot resume from {resume_from_checkpoint}: missing config.yaml"
-                )
-            with open(saved_config_path) as saved_config_file:
-                saved_checkpoint_config = yaml.safe_load(saved_config_file) or {}
+            saved_checkpoint_config = _load_checkpoint_config(
+                resume_from_checkpoint,
+                purpose="resume",
+            )
             config["resume_source_experiment_id"] = saved_checkpoint_config.get("experiment_id")
+        init_checkpoint_config = None
+        if init_from_checkpoint:
+            init_from_checkpoint = os.path.abspath(str(init_from_checkpoint))
+            config["model_path"] = init_from_checkpoint
+            config["init_from_checkpoint"] = init_from_checkpoint
+            init_checkpoint_config = _load_checkpoint_config(
+                init_from_checkpoint,
+                purpose="initialize training",
+            )
+            config["init_source_experiment_id"] = init_checkpoint_config.get("experiment_id")
 
         local_dataset_root = _local_dataset_root(config)
         if local_dataset_root is not None:
@@ -4270,6 +4355,12 @@ def main():
             if action_token_mode == "parallel_t":
                 config["student_t_df"] = resolve_student_t_df(config)
                 config["continuous_mean_l1_weight"] = resolve_continuous_mean_l1_weight(config)
+        if init_checkpoint_config is not None:
+            _validate_init_checkpoint_compatibility(
+                checkpoint_dir=config["init_from_checkpoint"],
+                saved_config=init_checkpoint_config,
+                current_config=config,
+            )
         config["resolved_train_variants"] = train_selection.selected_variants
         config["train_selection_tag"] = train_selection.selection_tag
         config["train_selection_tag_full"] = train_selection.full_selection_tag
@@ -4287,6 +4378,11 @@ def main():
         device = dist_context.device
         rank_zero_print(dist_context, f"[train] Using device: {device}")
         rank_zero_print(dist_context, f"[train] Experiment ID: {experiment_id}")
+        if config.get("init_from_checkpoint"):
+            rank_zero_print(
+                dist_context,
+                f"[train] Initializing weights from checkpoint: {config['init_from_checkpoint']}",
+            )
         rank_zero_print(dist_context, f"[train] Resolved action_dim: {action_dim}")
         rank_zero_print(
             dist_context,
@@ -4361,6 +4457,12 @@ def main():
         if config.get("resume_from_checkpoint"):
             model, tokenizer = load_model_and_tokenizer_for_training_checkpoint(
                 config["resume_from_checkpoint"],
+                config,
+                load_in_4bit=config.get("load_in_4bit"),
+            )
+        elif config.get("init_from_checkpoint"):
+            model, tokenizer = load_model_and_tokenizer_for_training_checkpoint(
+                config["init_from_checkpoint"],
                 config,
                 load_in_4bit=config.get("load_in_4bit"),
             )

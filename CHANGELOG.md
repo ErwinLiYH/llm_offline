@@ -1589,3 +1589,14 @@ type: project
 - `train.py` 和 `estimate_dataset.py` 都会把该路径透传到 raw episode 加载、episode balancing、partition shard planning 和 dataset size estimator，保证估算与训练读取同一份 local 数据
 - tokenized cache signature 对 local variants 记录实际 resolved dataset path 和 local step signature，避免不同 local dataset root 之间误复用 cache
 - 新增测试覆盖路径解析、dataset request 透传、estimator 透传和 cache signature 变化
+
+## Fresh training initialization from checkpoint（2026-07-04）
+
+- `train.py` 新增训练端 `model_path` 语义：非空时从已有 LoRA checkpoint 初始化模型权重、tokenizer 和 continuous/MTP sidecar decoder，但启动一个新的 training run，不恢复 optimizer、LR schedule 或训练 loop 位置
+- `model_path` / `--init_from_checkpoint` 与 `resume_from_checkpoint` 明确互斥；前者用于二阶段或迁移式微调，后者仍用于严格恢复中断训练并要求 `trainer_state.pt`
+- checkpoint 初始化会校验 `env_family`、`action_token_mode`、`action_dim`、continuous action head 结构以及 Gaussian std bounds，避免错配 checkpoint 静默进入训练
+- 新 checkpoint 的 `trainer_state.pt` 会记录来源 checkpoint 类型、路径和来源 experiment id，便于区分 fresh initialization 与 strict resume
+
+**验证：**
+- 已通过 `conda run -n llm_offline python -m py_compile train.py`
+- 已通过 `PYTHONPATH=. conda run -n llm_offline pytest -q tests/test_resume_training_state.py`

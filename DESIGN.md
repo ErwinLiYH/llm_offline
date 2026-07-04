@@ -251,6 +251,7 @@ history_stride: 1        # 每隔多少步采样一条历史
 
 # 基座模型
 model_name: Qwen/Qwen3-0.6B   # 任意 HuggingFace causal LM
+# model_path: checkpoints/.../ep5(step145940)  # 可选；从已有 checkpoint 权重初始化一个新 run，不恢复 optimizer/scheduler
 prompt_templete_index: ["0"]  # 使用的 prompt 文件名（不含 .txt）
 
 # 训练超参数
@@ -358,7 +359,21 @@ checkpoints/
 
 `model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。`selection_tag` 已经包含训练选择语义，因此路径里不再单独重复 `train_mode`；配置化的 `all` 子集和 `except` 排除集使用数量加 hash 的短标签，完整可读标签写入 `train_selection_tag_full`。`experiment_id` 可在配置中指定、由训练启动自动生成，或通过 `train.py --experiment_id <id>` 覆盖；CLI 覆盖发生在 DDP 广播、资源监控和运行配置快照之前。
 
-#### 1.1 训练恢复（resume）
+#### 1.1 从 checkpoint 初始化新训练
+
+训练配置可通过 `model_path` 从已有 checkpoint 初始化一个新的 training run：
+
+```yaml
+model_path: checkpoints/pointmaze/Qwen3-0.6B/all/<old_experiment_id>/ep5(step145940)
+experiment_id: <new_experiment_id>
+num_epochs: 1
+```
+
+该路径会加载 checkpoint 中的 LoRA adapter、tokenizer 和 continuous/MTP sidecar decoder，但不会恢复 optimizer、学习率计划或训练 loop 位置；新 run 会按当前配置重新构建数据集、optimizer 和 LR schedule。这个模式适合二阶段微调、改变数据配比或迁移式 fine-tune。
+
+`model_path` 会在启动时校验 checkpoint 与当前训练配置的关键结构是否一致，包括 `env_family`、`action_token_mode`、`action_dim`、continuous action head 结构，以及 Gaussian std bounds。它和 `resume_from_checkpoint` 互斥。
+
+#### 1.2 训练恢复（resume）
 
 训练配置可通过 `resume_from_checkpoint` 从已有 checkpoint 继续训练：
 
@@ -377,7 +392,7 @@ micromamba run -n llm_offline python train.py \
   --resume_from_checkpoint checkpoints/.../step50000
 ```
 
-`resume_from_checkpoint: null`、空值或注释掉时不触发 resume，训练会从当前 `model_name` 新建模型、LoRA/decoder、optimizer 和 LR schedule。非空路径触发 resume 时，`train.py` 会从该 checkpoint 加载 LoRA adapter、tokenizer、continuous/MTP sidecar decoder，并读取 `trainer_state.pt` 恢复 optimizer、学习率计划和训练 loop 位置；如果缺少 `trainer_state.pt` 会直接报错，因此旧 checkpoint 只能用于 eval/score 或普通模型加载，不能精确 resume。
+`resume_from_checkpoint: null`、空值或注释掉时不触发 strict resume；若同时也未设置 `model_path`，训练会从当前 `model_name` 新建模型、LoRA/decoder、optimizer 和 LR schedule。非空路径触发 resume 时，`train.py` 会从该 checkpoint 加载 LoRA adapter、tokenizer、continuous/MTP sidecar decoder，并读取 `trainer_state.pt` 恢复 optimizer、学习率计划和训练 loop 位置；如果缺少 `trainer_state.pt` 会直接报错，因此旧 checkpoint 只能用于 eval/score 或 `model_path` fresh initialization，不能精确 resume。
 
 resume 语义中，`num_epochs` 表示“额外训练多少个完整 epoch”，而不是总 epoch 数：
 
@@ -399,7 +414,7 @@ resume 语义中，`num_epochs` 表示“额外训练多少个完整 epoch”，
 - `lr_scheduler`：scheduler type、base LR、warmup/decay steps、`min_lr_ratio`、原始 `total_training_steps`、`updates_per_epoch` 和已完成 optimizer step；resume 后继续原始 LR horizon，超过原 horizon 时 linear/cosine 保持在 `min_lr_ratio`
 - `loop_state`：当前 epoch、已完成 epoch-local batch step、全局 batch step、epoch 内 step-eval trigger 计数、下一次 step-eval 触发点，以及分区训练的 partition 位置
 - `compat`：训练 variants、world size、batch size、gradient accumulation、action mode、action dim、partition stats、partition plan hash、round stats、每 epoch batch 数和 optimizer param group 签名
-- `source_checkpoint_path` / `source_experiment_id` / `experiment_id`：resume 来源与当前 run 标识
+- `source_checkpoint_kind` / `source_checkpoint_path` / `source_experiment_id` / `experiment_id`：checkpoint 来源类型、来源路径、来源 run 与当前 run 标识
 
 resume 时会校验 `compat` 中的训练关键配置；例如改变 batch size、world size、训练 variants、action mode、partition 设置或 optimizer param groups 都会报错，避免静默接到不同训练轨迹上。当前配置中的 `model_name` 不会被 `resume_from_checkpoint` 字段覆盖；实际模型权重来自 checkpoint 路径，但为了路径和 metadata 一致，resume 配置应保持与源 checkpoint 相同的 `model_name`。
 
