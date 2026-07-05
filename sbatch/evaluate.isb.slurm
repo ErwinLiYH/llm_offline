@@ -30,6 +30,7 @@ Usage:
   sbatch $0 --config <eval.yaml> [options]
   sbatch $0 --config <base.yaml> <override.yaml> [options]
   sbatch $0 --config <eval.yaml> --model_path <checkpoint_dir>
+  sbatch $0 --config <eval.yaml> --model_path '<checkpoint_prefix>*'
   sbatch $0 --config <eval.yaml> --yes
   sbatch --gpus=4 --cpus-per-task=128 sbatch/evaluate.isb.slurm --config <eval.yaml> --parallel_backend ddp --nproc-per-node 4
   sbatch $0 --config <eval.yaml> -- --future-evaluate-arg value
@@ -37,6 +38,7 @@ Usage:
 Options:
   --config <path> [path ...]         Evaluation config(s) passed to evaluate.py.
   --model_path, --model-path <path>  Override model_path from the merged eval config.
+                                     A single trailing '*' wildcard is supported; quote it in shells.
   --parallel_backend, --parallel-backend <single|ddp>
                                      Override config parallel_backend. Default: use eval config.
   --nproc-per-node <n>               torchrun processes for ddp. Default: ${NPROC_PER_NODE}.
@@ -67,13 +69,22 @@ while [[ $# -gt 0 ]]; do
             done
             ;;
         --model_path|--model-path)
-            if [[ $# -lt 2 ]]; then
-                echo "ERROR: $1 requires a checkpoint path or model id" >&2
+            shift
+            if [[ $# -lt 1 || "$1" == -* ]]; then
+                echo "ERROR: --model_path requires a checkpoint path or model id" >&2
                 usage >&2
                 exit 2
             fi
-            MODEL_PATH="$2"
-            shift 2
+            MODEL_PATH_VALUES=()
+            while [[ $# -gt 0 && "$1" != -* ]]; do
+                MODEL_PATH_VALUES+=("$1")
+                shift
+            done
+            if [[ ${#MODEL_PATH_VALUES[@]} -ne 1 ]]; then
+                echo "ERROR: --model_path expects exactly one value; quote trailing wildcards or use a more specific pattern" >&2
+                exit 2
+            fi
+            MODEL_PATH="${MODEL_PATH_VALUES[0]}"
             ;;
         --parallel_backend|--parallel-backend)
             if [[ $# -lt 2 ]]; then

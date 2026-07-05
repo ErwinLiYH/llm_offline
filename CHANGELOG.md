@@ -1626,3 +1626,10 @@ type: project
 - `sbatch/evaluate.isb.slurm` 新增 `--model_path` / `--model-path`，用于在提交 eval job 时直接覆盖配置文件中的 checkpoint 路径
 - eval sbatch 脚本判断 effective `parallel_backend` 时改为使用 `utils.config_loader.load_merged_config(...)`，避免多 config 场景只读取第一个 YAML
 - 已通过 `python -m py_compile evaluate.py`、`bash -n sbatch/evaluate.isb.slurm` 和 eval sbatch help / 参数解析检查
+
+## Eval model_path trailing wildcard（2026-07-05）
+
+- eval `model_path` 支持一个末尾 `*` 通配，例如 `.../ep7*`；通配只能出现在路径末尾，且必须恰好匹配一个路径，否则报错
+- `--model_path` 保持单值 CLI 参数，不使用 `nargs="+"`；命令行里应给通配路径加引号，避免 shell 先展开
+- 新增 `utils/model_path_glob.py` 和 focused test 覆盖无通配、唯一匹配、非末尾通配、多匹配和零匹配
+- 已通过 `python -m unittest tests.test_model_path_glob`

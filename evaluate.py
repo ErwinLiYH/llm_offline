@@ -3,6 +3,7 @@
 Usage:
     python evaluate.py --config eval.yaml
     python evaluate.py --config eval.yaml --model_path checkpoints/.../final
+    python evaluate.py --config eval.yaml --model_path 'checkpoints/.../ep7*'
 """
 
 import argparse
@@ -46,6 +47,7 @@ from utils.eval_parallel import (
     resolve_rollout_worker_lifetime,
     resolve_rollout_worker_num,
 )
+from utils.model_path_glob import resolve_trailing_wildcard_path
 from utils.prompt_loader import load_named_templates, load_template_names
 from utils.rollout.evaluate_runner import run_evaluate_variant
 from utils.sensing_config import apply_checkpoint_sensing_config as _apply_checkpoint_sensing_config
@@ -58,12 +60,28 @@ def parse_args():
     parser.add_argument("--config", nargs="+", default=["eval.yaml"])
     parser.add_argument(
         "--model_path",
+        metavar="PATH",
         default=None,
-        help="Override model_path from the merged eval config.",
+        help="Override model_path from the merged eval config. A single trailing '*' wildcard is supported.",
     )
     parser.add_argument("--parallel_backend", type=str, choices=["single", "ddp"], default=None)
     parser.add_argument("-y", "--yes", action="store_true", help="Automatically confirm strong warnings.")
     return parser.parse_args()
+
+
+def resolve_eval_model_path(config: dict) -> dict:
+    if "model_path" not in config:
+        return config
+    resolved_model_path = resolve_trailing_wildcard_path(
+        config["model_path"],
+        field_name="model_path",
+    )
+    if resolved_model_path == config["model_path"]:
+        return config
+    resolved = dict(config)
+    resolved["model_path_pattern"] = config["model_path"]
+    resolved["model_path"] = resolved_model_path
+    return resolved
 
 
 
@@ -471,6 +489,7 @@ def main():
     config = load_merged_config(args.config)
     if args.model_path is not None:
         config["model_path"] = args.model_path
+    config = resolve_eval_model_path(config)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)
     try:
@@ -510,6 +529,11 @@ def main():
         if dist_context.is_main_process:
             print(f"[eval] Using backend: {dist_context.backend}")
             print(f"[eval] Output mode: {eval_output_mode}")
+            if "model_path_pattern" in config:
+                print(
+                    "[eval] Resolved model_path wildcard: "
+                    f"{config['model_path_pattern']} -> {config['model_path']}"
+                )
             print(f"[eval] Loading model from: {config['model_path']}")
             print(
                 "[eval] Wall sensing: "
