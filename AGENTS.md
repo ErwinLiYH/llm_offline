@@ -32,8 +32,10 @@ Training:
 
 Evaluation:
 - `micromamba run -n llm_offline python evaluate.py --config eval.yaml`
+- Override eval checkpoint/model path from the CLI: `micromamba run -n llm_offline python evaluate.py --config eval.yaml --model_path <checkpoint_or_model_id>`
 - DDP multi-GPU variant-parallel eval: `micromamba run -n llm_offline torchrun --standalone --nproc_per_node=<num_gpus> evaluate.py --config eval.yaml --parallel_backend ddp`
 - `evaluate.py` accepts the same layered `--config base.yaml override.yaml` form before eval-specific validation.
+- The Slurm eval wrapper also accepts layered configs and model-path override: `sbatch sbatch/evaluate.isb.slurm --config base.yaml override.yaml --model_path <checkpoint_or_model_id>`.
 
 Official normalized scoring:
 - `micromamba run -n llm_offline python score.py --config score.yaml`

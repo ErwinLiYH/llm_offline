@@ -17,7 +17,8 @@ set -euo pipefail
 PROJECT_ROOT=/home/u6mx/yl1118.u6mx/llm_offline
 ENV_BIN=/home/u6mx/yl1118.u6mx/miniforge3/envs/llm_offline/bin
 
-CONFIG_PATH=""
+CONFIG_PATHS=()
+MODEL_PATH=""
 PARALLEL_BACKEND=""
 NPROC_PER_NODE=1
 ASSUME_YES=false
@@ -27,12 +28,15 @@ usage() {
     cat <<EOF
 Usage:
   sbatch $0 --config <eval.yaml> [options]
+  sbatch $0 --config <base.yaml> <override.yaml> [options]
+  sbatch $0 --config <eval.yaml> --model_path <checkpoint_dir>
   sbatch $0 --config <eval.yaml> --yes
   sbatch --gpus=4 --cpus-per-task=128 sbatch/evaluate.isb.slurm --config <eval.yaml> --parallel_backend ddp --nproc-per-node 4
   sbatch $0 --config <eval.yaml> -- --future-evaluate-arg value
 
 Options:
-  --config <path>                    Evaluation config passed to evaluate.py.
+  --config <path> [path ...]         Evaluation config(s) passed to evaluate.py.
+  --model_path, --model-path <path>  Override model_path from the merged eval config.
   --parallel_backend, --parallel-backend <single|ddp>
                                      Override config parallel_backend. Default: use eval config.
   --nproc-per-node <n>               torchrun processes for ddp. Default: ${NPROC_PER_NODE}.
@@ -50,12 +54,25 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --config)
-            if [[ $# -lt 2 ]]; then
-                echo "ERROR: --config requires a path" >&2
+            shift
+            if [[ $# -lt 1 || "$1" == -* ]]; then
+                echo "ERROR: --config requires at least one path" >&2
                 usage >&2
                 exit 2
             fi
-            CONFIG_PATH="$2"
+            CONFIG_PATHS=()
+            while [[ $# -gt 0 && "$1" != -* ]]; do
+                CONFIG_PATHS+=("$1")
+                shift
+            done
+            ;;
+        --model_path|--model-path)
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: $1 requires a checkpoint path or model id" >&2
+                usage >&2
+                exit 2
+            fi
+            MODEL_PATH="$2"
             shift 2
             ;;
         --parallel_backend|--parallel-backend)
@@ -97,15 +114,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -z "${CONFIG_PATH}" ]]; then
+if [[ ${#CONFIG_PATHS[@]} -eq 0 ]]; then
     echo "ERROR: --config is required" >&2
     usage >&2
     exit 2
 fi
-if [[ ! -f "${CONFIG_PATH}" ]]; then
-    echo "ERROR: config file not found: ${CONFIG_PATH}" >&2
-    exit 2
-fi
+for CONFIG_PATH in "${CONFIG_PATHS[@]}"; do
+    if [[ ! -f "${CONFIG_PATH}" ]]; then
+        echo "ERROR: config file not found: ${CONFIG_PATH}" >&2
+        exit 2
+    fi
+done
 if [[ -n "${PARALLEL_BACKEND}" && "${PARALLEL_BACKEND}" != "single" && "${PARALLEL_BACKEND}" != "ddp" ]]; then
     echo "ERROR: --parallel_backend must be single or ddp, got: ${PARALLEL_BACKEND}" >&2
     exit 2
@@ -126,7 +145,7 @@ cd "${PROJECT_ROOT}"
 if [[ -n "${PARALLEL_BACKEND}" ]]; then
     EFFECTIVE_PARALLEL_BACKEND="${PARALLEL_BACKEND}"
 else
-    EFFECTIVE_PARALLEL_BACKEND="$("${ENV_BIN}/python" -c 'import sys, yaml; config = yaml.safe_load(open(sys.argv[1], "r")) or {}; print(config.get("parallel_backend") or "single")' "${CONFIG_PATH}")"
+    EFFECTIVE_PARALLEL_BACKEND="$("${ENV_BIN}/python" -c 'import sys; from utils.config_loader import load_merged_config; config = load_merged_config(sys.argv[1:]); print(config.get("parallel_backend") or "single")' "${CONFIG_PATHS[@]}")"
 fi
 if [[ "${EFFECTIVE_PARALLEL_BACKEND}" != "single" && "${EFFECTIVE_PARALLEL_BACKEND}" != "ddp" ]]; then
     echo "ERROR: effective parallel_backend must be single or ddp, got: ${EFFECTIVE_PARALLEL_BACKEND}" >&2
@@ -135,7 +154,12 @@ fi
 
 echo "Job ${SLURM_JOB_ID:-manual} started at $(date --iso-8601=seconds)"
 echo "Node: $(hostname)"
-echo "Config: ${CONFIG_PATH}"
+echo "Configs: ${CONFIG_PATHS[*]}"
+if [[ -n "${MODEL_PATH}" ]]; then
+    echo "Model path override: ${MODEL_PATH}"
+else
+    echo "Model path override: config default"
+fi
 if [[ -n "${PARALLEL_BACKEND}" ]]; then
     echo "Parallel backend override: ${PARALLEL_BACKEND}"
 else
@@ -148,7 +172,10 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader || true
 fi
 
-EVAL_ARGS=(--config "${CONFIG_PATH}")
+EVAL_ARGS=(--config "${CONFIG_PATHS[@]}")
+if [[ -n "${MODEL_PATH}" ]]; then
+    EVAL_ARGS+=(--model_path "${MODEL_PATH}")
+fi
 if [[ -n "${PARALLEL_BACKEND}" ]]; then
     EVAL_ARGS+=(--parallel_backend "${PARALLEL_BACKEND}")
 fi

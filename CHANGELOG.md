@@ -1618,3 +1618,11 @@ type: project
 - `local-medium` 的默认数据目录为 `local_datasets/pointmaze-local-medium-v0`，用于通过 `local_pointmaze_gen.py --variants local-medium` 在官方 medium 地图上重新采样本地数据，并与官方 `D4RL/pointmaze/medium-v2` 数据隔离
 - 本地 eval horizon 设为 `600`，与 remote PointMaze medium 的 official horizon 对齐
 - 更新 `DESIGN.md` 的 PointMaze registry 和本地数据生成说明，并补充测试确认 `local-medium` 的 local 类型、数据路径、地图和 horizon
+
+## Eval model_path CLI override and sbatch config layering（2026-07-05）
+
+- `evaluate.py` 新增 `--model_path` CLI 覆盖项；多个 eval YAML 合并完成后再覆盖 `config["model_path"]`，因此 checkpoint action / prompt / sensing 配置都会基于覆盖后的路径解析
+- `sbatch/evaluate.isb.slurm` 的 `--config` 改为支持一个或多个 YAML 文件，传给 `evaluate.py --config ...` 时保留顺序合并语义
+- `sbatch/evaluate.isb.slurm` 新增 `--model_path` / `--model-path`，用于在提交 eval job 时直接覆盖配置文件中的 checkpoint 路径
+- eval sbatch 脚本判断 effective `parallel_backend` 时改为使用 `utils.config_loader.load_merged_config(...)`，避免多 config 场景只读取第一个 YAML
+- 已通过 `python -m py_compile evaluate.py`、`bash -n sbatch/evaluate.isb.slurm` 和 eval sbatch help / 参数解析检查

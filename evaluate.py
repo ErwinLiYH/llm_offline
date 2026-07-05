@@ -2,6 +2,7 @@
 
 Usage:
     python evaluate.py --config eval.yaml
+    python evaluate.py --config eval.yaml --model_path checkpoints/.../final
 """
 
 import argparse
@@ -55,6 +56,11 @@ from utils.variant_selection import get_available_variants, resolve_selection
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", nargs="+", default=["eval.yaml"])
+    parser.add_argument(
+        "--model_path",
+        default=None,
+        help="Override model_path from the merged eval config.",
+    )
     parser.add_argument("--parallel_backend", type=str, choices=["single", "ddp"], default=None)
     parser.add_argument("-y", "--yes", action="store_true", help="Automatically confirm strong warnings.")
     return parser.parse_args()
@@ -463,6 +469,8 @@ def evaluate_variant(
 def main():
     args = parse_args()
     config = load_merged_config(args.config)
+    if args.model_path is not None:
+        config["model_path"] = args.model_path
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)
     try:
