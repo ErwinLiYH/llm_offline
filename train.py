@@ -82,6 +82,12 @@ from utils.distributed import (
     unwrap_model,
 )
 from utils.distributed_sampler import DistributedWeightedSampler, LocalShardPaddingSampler
+from utils.episode_keep import (
+    RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY,
+    effective_episode_keep_num,
+    has_episode_keep_per_variant,
+    resolve_episode_keep_per_variant,
+)
 from utils.eval_parallel import apply_rollout_config_defaults
 from utils.experiment_config import save_experiment_config_snapshot
 from utils.file_progress import FileProgress
@@ -96,6 +102,7 @@ from utils.lr_scheduler import (
 )
 from utils.prompt_loader import load_template_names
 from utils.resource_monitor import ResourceMonitor, resource_monitor_path
+from utils.sensing_config import normalize_sensing_config
 from utils.training_tags import format_epoch_tag, format_step_tag
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
 from utils.wandb_logging import (
@@ -129,6 +136,15 @@ def parse_args():
         type=str,
         default=None,
         help="Resume training from a checkpoint directory containing trainer_state.pt.",
+    )
+    parser.add_argument(
+        "--init_from_checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Initialize model weights from a checkpoint, but start a fresh training run "
+            "without restoring optimizer, scheduler, or loop state."
+        ),
     )
     return parser.parse_args()
 
@@ -540,7 +556,7 @@ def build_dataset_request(
         prompt_template_count=config.get("prompt_template_count", 1),
         prompt_templete_index=config.get("prompt_templete_index"),
         train_data_ratio=config.get("train_data_ratio", 0.9),
-        episode_keep_num=config.get("episode_keep_num"),
+        episode_keep_num=effective_episode_keep_num(config, variant),
         balance_variant_episode_count=config.get("balance_variant_episode_count", False),
         balanced_train_episode_count=config.get("balanced_train_episode_count"),
         sampling_seed=config.get("sampling_seed", 0),
@@ -548,6 +564,10 @@ def build_dataset_request(
         local_dataset_root=_local_dataset_root(config),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
+        wall_sensing_version=config.get("wall_sensing_version"),
+        map_sensing_boundary_risk_threshold=config.get(
+            "map_sensing_boundary_risk_threshold"
+        ),
         action_token_mode=config.get("action_token_mode", "text"),
         action_num_bins=config.get("action_num_bins", 10),
         action_bin_min=config.get("action_bin_min", -1.0),
@@ -566,6 +586,14 @@ def _resolve_balanced_train_episode_count(
     dist_context: DistributedContext,
 ) -> int | None:
     balance_enabled = config.get("balance_variant_episode_count", False)
+    if balance_enabled and has_episode_keep_per_variant(config):
+        rank_zero_print(
+            dist_context,
+            "[train] WARNING: episode_keep_per_varient is configured; "
+            "ignoring balance_variant_episode_count=true because per-variant episode_keep values take precedence.",
+        )
+        return None
+
     if len(selected_variants) <= 1:
         if balance_enabled:
             rank_zero_print(
@@ -1250,6 +1278,10 @@ def _build_training_eval_config(config: dict) -> dict:
         "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
         "history_num": config.get("history_num", 0),
         "history_stride": config.get("history_stride", 1),
+        "wall_sensing_version": config.get("wall_sensing_version"),
+        "map_sensing_boundary_risk_threshold": config.get(
+            "map_sensing_boundary_risk_threshold"
+        ),
         "record_video": config.get("record_video", False),
         "record_all": config.get("record_all", False),
         "video_episode_index": config.get("video_episode_index", 0),
@@ -2420,6 +2452,50 @@ def _load_trainer_state(checkpoint_dir: str | None) -> dict | None:
     return torch.load(state_path, map_location="cpu")
 
 
+def _load_checkpoint_config(checkpoint_dir: str, *, purpose: str) -> dict:
+    config_path = os.path.join(checkpoint_dir, "config.yaml")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Cannot {purpose} from {checkpoint_dir}: missing config.yaml")
+    with open(config_path) as config_file:
+        return yaml.safe_load(config_file) or {}
+
+
+def _validate_init_checkpoint_compatibility(
+    *,
+    checkpoint_dir: str,
+    saved_config: dict,
+    current_config: dict,
+) -> None:
+    keys = [
+        "env_family",
+        "action_token_mode",
+        "action_dim",
+        "action_query_len",
+        "action_head_num_blocks",
+        "action_head_dropout",
+    ]
+    if get_action_token_mode(current_config) in {"parallel_gaussian", "parallel_t"}:
+        keys.extend(["gaussian_log_std_min", "gaussian_log_std_max"])
+
+    mismatches = []
+    for key in keys:
+        if key not in saved_config or key not in current_config:
+            continue
+        saved_value = saved_config.get(key)
+        current_value = current_config.get(key)
+        if saved_value != current_value:
+            mismatches.append((key, saved_value, current_value))
+
+    if mismatches:
+        lines = [
+            "init_from_checkpoint is incompatible with the current training setup:",
+            f"  checkpoint: {checkpoint_dir}",
+        ]
+        for key, saved_value, current_value in mismatches:
+            lines.append(f"  {key}: checkpoint={saved_value!r}, current={current_value!r}")
+        raise ValueError("\n".join(lines))
+
+
 def _optimizer_param_group_signature(optimizer: torch.optim.Optimizer) -> list[dict]:
     signature = []
     for group in optimizer.param_groups:
@@ -2567,15 +2643,23 @@ def _build_trainer_state(
     loop_state: dict,
     compat_metadata: dict,
 ) -> dict:
-    source_checkpoint = config.get("resume_from_checkpoint")
+    resume_checkpoint = config.get("resume_from_checkpoint")
+    init_checkpoint = config.get("init_from_checkpoint")
+    source_checkpoint = resume_checkpoint or init_checkpoint
+    source_kind = "resume" if resume_checkpoint else ("init" if init_checkpoint else None)
     return {
         "version": 1,
         "optimizer_state_dict": optimizer.state_dict(),
         "lr_scheduler": dict(scheduler_meta),
         "loop_state": dict(loop_state),
         "compat": dict(compat_metadata),
+        "source_checkpoint_kind": source_kind,
         "source_checkpoint_path": str(source_checkpoint) if source_checkpoint else None,
-        "source_experiment_id": config.get("resume_source_experiment_id"),
+        "source_experiment_id": (
+            config.get("resume_source_experiment_id")
+            if resume_checkpoint
+            else config.get("init_source_experiment_id")
+        ),
         "experiment_id": config.get("experiment_id"),
     }
 
@@ -4149,11 +4233,22 @@ def main():
         if not resume_override:
             raise ValueError("--resume_from_checkpoint must not be empty when provided")
         config["resume_from_checkpoint"] = resume_override
+    if args.init_from_checkpoint is not None:
+        init_override = str(args.init_from_checkpoint).strip()
+        if not init_override:
+            raise ValueError("--init_from_checkpoint must not be empty when provided")
+        if config.get("model_path") and os.path.abspath(str(config["model_path"])) != os.path.abspath(init_override):
+            raise ValueError(
+                "Both model_path and --init_from_checkpoint are set to different checkpoints. "
+                "Use only one initialization checkpoint."
+            )
+        config["model_path"] = init_override
     config["train_config_source"] = (
         args.config[0] if len(args.config) == 1 else list(args.config)
     )
     config["config_sources"] = list(args.config)
     config["tokenize_only"] = bool(args.tokenize_only)
+    normalize_sensing_config(config)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)
     resource_monitor = None
@@ -4161,19 +4256,37 @@ def main():
         if "episode_keep_ratio" in config:
             raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
         resume_from_checkpoint = config.get("resume_from_checkpoint")
+        init_from_checkpoint = config.get("model_path") or config.get("init_from_checkpoint")
+        if resume_from_checkpoint and init_from_checkpoint:
+            raise ValueError(
+                "resume_from_checkpoint and model_path/init_from_checkpoint are mutually exclusive. "
+                "Use resume_from_checkpoint for exact interrupted-run resume, or "
+                "model_path to start a new run from checkpoint weights."
+            )
         if resume_from_checkpoint:
             resume_from_checkpoint = os.path.abspath(str(resume_from_checkpoint))
             config["resume_from_checkpoint"] = resume_from_checkpoint
             if args.tokenize_only:
                 raise ValueError("--tokenize-only cannot be combined with resume_from_checkpoint")
-            saved_config_path = os.path.join(resume_from_checkpoint, "config.yaml")
-            if not os.path.exists(saved_config_path):
-                raise FileNotFoundError(
-                    f"Cannot resume from {resume_from_checkpoint}: missing config.yaml"
-                )
-            with open(saved_config_path) as saved_config_file:
-                saved_checkpoint_config = yaml.safe_load(saved_config_file) or {}
+            saved_checkpoint_config = _load_checkpoint_config(
+                resume_from_checkpoint,
+                purpose="resume",
+            )
             config["resume_source_experiment_id"] = saved_checkpoint_config.get("experiment_id")
+        init_checkpoint_config = None
+        if init_from_checkpoint:
+            init_from_checkpoint = os.path.abspath(str(init_from_checkpoint))
+            config["model_path"] = init_from_checkpoint
+            config["init_from_checkpoint"] = init_from_checkpoint
+            init_checkpoint_config = _load_checkpoint_config(
+                init_from_checkpoint,
+                purpose="initialize training",
+            )
+            config["init_source_experiment_id"] = init_checkpoint_config.get("experiment_id")
+
+        local_dataset_root = _local_dataset_root(config)
+        if local_dataset_root is not None:
+            config["local_dataset_root"] = local_dataset_root
 
         local_dataset_root = _local_dataset_root(config)
         if local_dataset_root is not None:
@@ -4216,6 +4329,11 @@ def main():
         config["train_varients"] = train_selection.configured_variants
         config.pop("variants", None)
         config["action_dim"] = action_dim
+        config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = resolve_episode_keep_per_variant(
+            config,
+            train_selection.selected_variants,
+            available_variants=available_variants,
+        )
         action_token_mode = get_action_token_mode(config)
         if action_token_mode == "mtp_bin":
             config["mtp_k"] = resolve_mtp_k(action_dim, config.get("mtp_k"))
@@ -4251,6 +4369,12 @@ def main():
             if action_token_mode == "parallel_t":
                 config["student_t_df"] = resolve_student_t_df(config)
                 config["continuous_mean_l1_weight"] = resolve_continuous_mean_l1_weight(config)
+        if init_checkpoint_config is not None:
+            _validate_init_checkpoint_compatibility(
+                checkpoint_dir=config["init_from_checkpoint"],
+                saved_config=init_checkpoint_config,
+                current_config=config,
+            )
         config["resolved_train_variants"] = train_selection.selected_variants
         config["train_selection_tag"] = train_selection.selection_tag
         config["train_selection_tag_full"] = train_selection.full_selection_tag
@@ -4268,6 +4392,17 @@ def main():
         device = dist_context.device
         rank_zero_print(dist_context, f"[train] Using device: {device}")
         rank_zero_print(dist_context, f"[train] Experiment ID: {experiment_id}")
+        rank_zero_print(
+            dist_context,
+            "[train] Wall sensing: "
+            f"version={config['wall_sensing_version']}, "
+            f"boundary_risk_threshold={config['map_sensing_boundary_risk_threshold']}",
+        )
+        if config.get("init_from_checkpoint"):
+            rank_zero_print(
+                dist_context,
+                f"[train] Initializing weights from checkpoint: {config['init_from_checkpoint']}",
+            )
         rank_zero_print(dist_context, f"[train] Resolved action_dim: {action_dim}")
         rank_zero_print(
             dist_context,
@@ -4342,6 +4477,12 @@ def main():
         if config.get("resume_from_checkpoint"):
             model, tokenizer = load_model_and_tokenizer_for_training_checkpoint(
                 config["resume_from_checkpoint"],
+                config,
+                load_in_4bit=config.get("load_in_4bit"),
+            )
+        elif config.get("init_from_checkpoint"):
+            model, tokenizer = load_model_and_tokenizer_for_training_checkpoint(
+                config["init_from_checkpoint"],
                 config,
                 load_in_4bit=config.get("load_in_4bit"),
             )

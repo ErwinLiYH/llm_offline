@@ -17,7 +17,7 @@
 
 ### PointMaze 变种完整列表
 
-定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中。当前 registry 包含 8 个 remote D4RL 变种、`local-layout-01..13` 和 `test-layout-01..03`；remote 使用 `dataset_id` / `env_id`，local/test 使用 `dataset_path` / `env_paras`，全部通过 `prompt_vars` 提供 prompt metadata。
+定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中。当前 registry 包含 8 个 remote D4RL 变种、`local-medium`、`local-layout-01..13` 和 `test-layout-01..03`；remote 使用 `dataset_id` / `env_id`，local/test 使用 `dataset_path` / `env_paras`，全部通过 `prompt_vars` 提供 prompt metadata。
 
 `maze_map` 和 `reward_type` 现在收在每个变种的 `prompt_vars` 中，供共享 prompt 渲染使用。
 
@@ -155,7 +155,7 @@ POINTMAZE_VARIANTS = {
 
 AntMaze 必须保持 Minari metadata 中的 v4 数据契约：`observation` 为 27 维本体状态，另有 2 维 `achieved_goal` / `desired_goal`，action 为 8 维关节 torque。不能直接替换成 v5 默认环境，因为 v5 默认包含 contact-force observation，会改变输入维度。每个 variant 的 `env_kwargs` 保存官方 eval map、稀疏奖励、horizon 对应的 continuing/reset 语义；训练期或 standalone eval 可用配置中的 `env_kwargs` 覆盖 `continuing_task`。官方 eval map 与离线采集 map 不保证相同，例如 UMaze 的中间墙朝向不同，因此 rollout 创建环境后会从 `env.unwrapped.maze` 刷新 prompt 使用的 map、visual map 和 `maze_size_scaling`。
 
-本地 AntMaze 变种也注册在同一个 `ANTMAZE_VARIANTS` 字典中，目前包含 `local-layout-01..09` 和 `test-layout-01..04`。local/test 变种使用 `varient_type: local`、`dataset_path: local_datasets/antmaze-<variant>-v0`，并同时保存数据采集地图和带固定 `r/g` 标记的 eval 地图。训练时 `data/antmaze/dataset.py` 会从本地 Minari/HDF5 数据目录读取 episode；缺失数据时需要先运行 `local_antmaze_gen.py` 生成。训练配置可用 `local_dataset_root` 覆盖 local dataset 根目录，指向包含多个 local dataset 的父目录或单个 variant dataset 目录；未配置或为 `null` 时使用 `dataset_path` 默认值。
+本地 AntMaze 变种也注册在同一个 `ANTMAZE_VARIANTS` 字典中，目前包含 `local-layout-01..09`、`test-layout-01..04` 和实验性 `ultra`。local/test/ultra 变种使用 `varient_type: local`、`dataset_path: local_datasets/antmaze-<variant>-v0`，并同时保存数据采集地图和带固定 `r/g` 标记的 eval 地图。`ultra` 使用 Farama D4RL PR #220 中尚未正式合并的 AntMaze-Ultra eval map，并保持本地数据集路径语义而不是官方 Minari 数据集语义。训练时 `data/antmaze/dataset.py` 会从本地 Minari/HDF5 数据目录读取 episode；缺失数据时需要先运行 `local_antmaze_gen.py` 生成。训练配置可用 `local_dataset_root` 覆盖 local dataset 根目录，指向包含多个 local dataset 的父目录或单个 variant dataset 目录；未配置或为 `null` 时使用 `dataset_path` 默认值。
 
 AntMaze local layout 的随机生成和静态拓扑评分是辅助工具，不是官方 D4RL normalized score。简要入口见下方 “Local/custom maze generation and topology scoring”，详细设计、指标公式和引用见 `docs/maze_generation_topology.md`。`score.py` 仍是 PointMaze-only；AntMaze 当前支持训练和普通 return/success-rate rollout eval。
 
@@ -200,7 +200,7 @@ Action:
 - `format_obs(obs, meta)` 负责生成 `obs_text` 与动态 `location_sensing_en/zh`、`wall_sensing_en/zh`
 - `format_history(history_entries, meta)` 负责生成可选历史块 `history_block_en/zh`
 - 当历史块存在时，历史条目按时间从早到晚排列：第一条是最早采样到的历史 step，最后一条是当前 step 之前最近的采样历史 step
-- `pointmaze_data_config` 是 PointMaze 专属训练数据预处理配置，默认 `truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` 抽样和 train/val split 之前；multi-variant episode balancing、partition shard planning 和 `estimate_dataset.py` 都基于预处理后的 episode 数和长度。
+- `pointmaze_data_config` 是 PointMaze 专属训练数据预处理配置，默认 `truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` / `episode_keep_per_varient` 抽样和 train/val split 之前；multi-variant episode balancing、partition shard planning 和 `estimate_dataset.py` 都基于预处理后的 episode 数和长度。
 - `pointmaze_data_config.truncate: true` 会在第一次 success 后截断 episode；`truncate_holding: N` 表示 success transition 后额外保留 `N` 个 action 样本。`infos.success` 长度为 `T+1` 时用 `success[1:]` 对齐 action transition，长度为 `T` 时直接使用。PointMaze 没有 AntMaze 的 `filter_success` 或保守翻车事件检测。
 
 #### AntMaze 当前实现
@@ -211,7 +211,7 @@ Action:
 - text action 是 8 个逗号分隔的整数百分位，actuator 顺序为 back-right hip/ankle、front-left hip/ankle、front-right hip/ankle、back-left hip/ankle
 - history 仅保留过去 torso xy、对应格子和实际执行动作，避免把 27 维本体状态重复塞入 prompt
 - `data/antmaze/dataset.py` 复用参数化后的 goal-maze episode cache/tokenization 管线，因此支持 episode split、partition cache、history、全部 action token mode 和多进程 tokenization
-- `antmaze_data_config` 是 AntMaze 专属训练数据预处理配置，默认 `filter_success: false`、`truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` 抽样和 train/val split 之前；multi-variant episode balancing 与 partition shard planning 都基于预处理后的 episode 数和长度。
+- `antmaze_data_config` 是 AntMaze 专属训练数据预处理配置，默认 `filter_success: false`、`truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` / `episode_keep_per_varient` 抽样和 train/val split 之前；multi-variant episode balancing 与 partition shard planning 都基于预处理后的 episode 数和长度。
 - `filter_success: true` 会先按原始 `infos.success.any()` 丢弃失败 episode，减少后续截断和 tokenization 工作量；若同时启用截断，截断后还会再次检查 success，避免“先翻车、后成功”的原始 episode 在 success 被截掉后继续进入训练。
 - `truncate: true` 会在第一次 success 或第一次保守翻车事件后截断 episode；`truncate_holding: N` 表示事件 transition 后额外保留 `N` 个 action 样本。`infos.success` 长度为 `T+1` 时用 `success[1:]` 对齐 action transition，长度为 `T` 时直接使用。翻车检测优先看 action 后状态的 `observation[...,0]` torso z 和归一化 quaternion `observation[...,1:5]`，规则固定为 `z < 0.35 and body_up_z < 0.0`；没有可用 quaternion 时退化为 `z < 0.30`，不使用 `z > 1.0` 作为翻车条件。
 
@@ -223,7 +223,7 @@ Action:
 - action 的目标文本由动作编码模式决定：`text` 使用 `formatting.py` 中的 `format_action` 生成 `35,-72`；`bin` / `gaussian_bin` / `mtp_bin` / `simple_mtp_bin` 使用离散 action bin。默认 `new_token: false` 时，模型内部复用 tokenizer 词表末尾筛选出的稳定低频 token ID；jsonl、step log 和 history prompt 中的人类可读显示仍统一为 `<act_XX>`。MTP 模式的 AQT 不进入 tokenizer，而是由 `mtp_bin_decoder.pt` 保存可训练 embedding 和 sampler head
 - 训练 tokenization 不再直接编码 `prompt + action_text`；text/bin/gaussian_bin 将渲染后的 prompt 作为 `user` 消息、`action_text` 作为 `assistant` 消息，通过模型原生 `chat_template` 构造最终 sequence；`mtp_bin` 构造 generation prompt、action prefix token 和 full-prefix AQT metadata，`simple_mtp_bin` 构造 generation prompt、action prefix token 和一维一个 query 的 AQT metadata
 - `gaussian_bin` 会额外在 dataset 中记录 `action_bin_labels`，动作 token 位置使用高斯 soft-label CE；若设置 `action_soft_label_radius`，则每个动作位置只在中心 bin 及左右 n 个相邻 bin 上做 softmax，窗口外 action token 不产生梯度。chat-template 结束 token 等非动作 assistant token 仍使用普通 CE
-- train/val 划分在 **episode 级别**进行：先按 `episode_keep_num` 随机无放回抽样一个 episode pool（如果真实 episode 数更少则使用全部），再在该 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余 episodes 作为 val，避免同一 episode 同时出现在 train 和 val 中
+- train/val 划分在 **episode 级别**进行：先按 `episode_keep_num` 随机无放回抽样一个 episode pool（如果真实 episode 数更少则使用全部）；多 variant 训练可用 `episode_keep_per_varient` 字典按 selected variant 覆盖该值，未命中的 variant 回退 `episode_keep_num`，值为 `null` 表示使用该 variant 的全部 episodes；随后在该 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余 episodes 作为 val，避免同一 episode 同时出现在 train 和 val 中
 - 每个 episode 的第一个 timestep 没有历史；评估 rollout 中也同样如此，只有一步实际动作执行完成后才会写入在线 history buffer
 
 ---
@@ -251,6 +251,7 @@ history_stride: 1        # 每隔多少步采样一条历史
 
 # 基座模型
 model_name: Qwen/Qwen3-0.6B   # 任意 HuggingFace causal LM
+# model_path: checkpoints/.../ep5(step145940)  # 可选；从已有 checkpoint 权重初始化一个新 run，不恢复 optimizer/scheduler
 prompt_templete_index: ["0"]  # 使用的 prompt 文件名（不含 .txt）
 
 # 训练超参数
@@ -305,8 +306,9 @@ action_head_weight_decay: 0.0 # 仅 continuous action MLP Linear weights 的 Ada
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
 dataset_load_partitions: 1  # >1 时只分区 tokenize/load train tokenized 数据；需要 dataset_cache_dir；DDP 下必须 >= world_size 且能整除 world_size
-episode_keep_num: 5000  # 参与 train/val 划分的最大 episode 数；真实 episode 更少时使用全部，cache 命中后仍会重新生效
-balance_variant_episode_count: false  # 多 variant 时是否把 sampled episode pool 对齐到最小 variant
+episode_keep_num: 5000  # 参与 train/val 划分的默认最大 episode 数；真实 episode 更少时使用全部，cache 命中后仍会重新生效
+episode_keep_per_varient: null  # 可选 dict；按 selected variant 覆盖 episode_keep_num，value 为 null 表示该 variant 使用全部 episodes
+balance_variant_episode_count: false  # 多 variant 时是否把 sampled episode pool 对齐到最小 variant；配置 episode_keep_per_varient 时会被跳过
 sampling_seed: 0         # 控制 episode 随机抽样的可复现性
 eval_seed: 1             # 训练期 eval 的 episode reset seeds 为 eval_seed, eval_seed+1, ...
 ```
@@ -357,7 +359,21 @@ checkpoints/
 
 `model_slug` 由 `model/policy.py` 的 `get_model_slug()` 生成（取 `/` 后的部分），不同基座模型的实验不会相互覆盖。`selection_tag` 已经包含训练选择语义，因此路径里不再单独重复 `train_mode`；配置化的 `all` 子集和 `except` 排除集使用数量加 hash 的短标签，完整可读标签写入 `train_selection_tag_full`。`experiment_id` 可在配置中指定、由训练启动自动生成，或通过 `train.py --experiment_id <id>` 覆盖；CLI 覆盖发生在 DDP 广播、资源监控和运行配置快照之前。
 
-#### 1.1 训练恢复（resume）
+#### 1.1 从 checkpoint 初始化新训练
+
+训练配置可通过 `model_path` 从已有 checkpoint 初始化一个新的 training run：
+
+```yaml
+model_path: checkpoints/pointmaze/Qwen3-0.6B/all/<old_experiment_id>/ep5(step145940)
+experiment_id: <new_experiment_id>
+num_epochs: 1
+```
+
+该路径会加载 checkpoint 中的 LoRA adapter、tokenizer 和 continuous/MTP sidecar decoder，但不会恢复 optimizer、学习率计划或训练 loop 位置；新 run 会按当前配置重新构建数据集、optimizer 和 LR schedule。这个模式适合二阶段微调、改变数据配比或迁移式 fine-tune。
+
+`model_path` 会在启动时校验 checkpoint 与当前训练配置的关键结构是否一致，包括 `env_family`、`action_token_mode`、`action_dim`、continuous action head 结构，以及 Gaussian std bounds。它和 `resume_from_checkpoint` 互斥。
+
+#### 1.2 训练恢复（resume）
 
 训练配置可通过 `resume_from_checkpoint` 从已有 checkpoint 继续训练：
 
@@ -376,7 +392,7 @@ micromamba run -n llm_offline python train.py \
   --resume_from_checkpoint checkpoints/.../step50000
 ```
 
-`resume_from_checkpoint: null`、空值或注释掉时不触发 resume，训练会从当前 `model_name` 新建模型、LoRA/decoder、optimizer 和 LR schedule。非空路径触发 resume 时，`train.py` 会从该 checkpoint 加载 LoRA adapter、tokenizer、continuous/MTP sidecar decoder，并读取 `trainer_state.pt` 恢复 optimizer、学习率计划和训练 loop 位置；如果缺少 `trainer_state.pt` 会直接报错，因此旧 checkpoint 只能用于 eval/score 或普通模型加载，不能精确 resume。
+`resume_from_checkpoint: null`、空值或注释掉时不触发 strict resume；若同时也未设置 `model_path`，训练会从当前 `model_name` 新建模型、LoRA/decoder、optimizer 和 LR schedule。非空路径触发 resume 时，`train.py` 会从该 checkpoint 加载 LoRA adapter、tokenizer、continuous/MTP sidecar decoder，并读取 `trainer_state.pt` 恢复 optimizer、学习率计划和训练 loop 位置；如果缺少 `trainer_state.pt` 会直接报错，因此旧 checkpoint 只能用于 eval/score 或 `model_path` fresh initialization，不能精确 resume。
 
 resume 语义中，`num_epochs` 表示“额外训练多少个完整 epoch”，而不是总 epoch 数：
 
@@ -398,7 +414,7 @@ resume 语义中，`num_epochs` 表示“额外训练多少个完整 epoch”，
 - `lr_scheduler`：scheduler type、base LR、warmup/decay steps、`min_lr_ratio`、原始 `total_training_steps`、`updates_per_epoch` 和已完成 optimizer step；resume 后继续原始 LR horizon，超过原 horizon 时 linear/cosine 保持在 `min_lr_ratio`
 - `loop_state`：当前 epoch、已完成 epoch-local batch step、全局 batch step、epoch 内 step-eval trigger 计数、下一次 step-eval 触发点，以及分区训练的 partition 位置
 - `compat`：训练 variants、world size、batch size、gradient accumulation、action mode、action dim、partition stats、partition plan hash、round stats、每 epoch batch 数和 optimizer param group 签名
-- `source_checkpoint_path` / `source_experiment_id` / `experiment_id`：resume 来源与当前 run 标识
+- `source_checkpoint_kind` / `source_checkpoint_path` / `source_experiment_id` / `experiment_id`：checkpoint 来源类型、来源路径、来源 run 与当前 run 标识
 
 resume 时会校验 `compat` 中的训练关键配置；例如改变 batch size、world size、训练 variants、action mode、partition 设置或 optimizer param groups 都会报错，避免静默接到不同训练轨迹上。当前配置中的 `model_name` 不会被 `resume_from_checkpoint` 字段覆盖；实际模型权重来自 checkpoint 路径，但为了路径和 metadata 一致，resume 配置应保持与源 checkpoint 相同的 `model_name`。
 
@@ -442,10 +458,10 @@ dataset_cache/
 - 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
 - `dataset_load_partitions > 1` 时必须设置 `dataset_cache_dir`。原始轨迹由 rank0 按现有逻辑加载并完成 episode 级 train/val selection；随后每个 variant 的 train timesteps 会按 `sampling_seed` 确定性打乱并切成固定 shard，必要时把 episode 拆成 `[start_t, end_t)` segment。segment worker 会拿完整 episode 上下文，但只 emit 指定 timestep 范围，因此 history prompt 可以引用 segment 前的历史。DDP 下要求 `dataset_load_partitions >= world_size` 且能被 `world_size` 整除；每 `world_size` 个 shard 组成一个 round，rank `r` 只处理本 round 的第 `r` 个 shard。val split 不分区，只由 rank0 构建完整 val loader 并在训练期间复用。
 - 每个 DDP round 会按 round 内最大本地 batch 数计算 `target_batches`。每个 rank 的本地 DataLoader 使用确定性 padding/replacement sampler 对齐到同一个 `target_batches`，padding 只从当前本地 shard 内采样。一个 epoch 仍表示跑完所有 train shard round，epoch 间只打乱 round 访问顺序，shard cache 可稳定复用。
-- `episode_keep_num`、`train_data_ratio`、`sampling_seed` 和 `balance_variant_episode_count` 不写入 cache 文件名；cache 命中后会重新按当前配置选择 episode 并切分 train/val
+- `episode_keep_num`、`episode_keep_per_varient`、`train_data_ratio`、`sampling_seed` 和 `balance_variant_episode_count` 不写入 cache 文件名；cache 命中后会重新按当前配置选择 episode 并切分 train/val
 - 如果现有 cache 不覆盖当前 sampled episodes，则忽略旧 cache，重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
 - `max_data_num` 截断发生在最终 dataset 组装之后，只影响本次训练返回的数据，不影响 cache 内容和 cache 命中判断
-- cache 文件名是 32 位 sha256 前缀；hash payload 包含 variant/data signature、tokenizer/max length、`prompt_templete_index` 解析后的 prompt 名称、prompt 模板内容、variant prompt vars、`history_num/history_stride` 和 action 编码配置，避免不同 tokenization 或 prompt 配置误复用同一份 tokenized 数据。源码文件 hash 不进入 payload；若代码改动影响 tokenization 语义，需要手动删除旧 cache。
+- cache 文件名是 32 位 sha256 前缀；hash payload 包含 variant/data signature、tokenizer/max length、`prompt_templete_index` 解析后的 prompt 名称、prompt 模板内容、variant prompt vars、`wall_sensing_version`、`map_sensing_boundary_risk_threshold`、`history_num/history_stride` 和 action 编码配置，避免不同 tokenization 或 prompt 配置误复用同一份 tokenized 数据。源码文件 hash 不进入 payload；若代码改动影响 tokenization 语义，需要手动删除旧 cache。
 - 分区模式下，train shard cache hash payload 额外包含 split、`dataset_partition_count`、`dataset_partition_index`、`partition_plan_hash` 和 segment metadata；shard cache 保存 flat sample list 以及 segment metadata。完整 val cache 只包含 `split: val`，不包含 partition count/index；PointMaze/AntMaze cache format 已 bump，旧 cache 会通过新的 hash 自动失效重建。
 - action-bin 模式下，cache signature payload 和 metadata 额外记录 `new_token`、`mtp_k` 与 `action_token_schema_hash`。该 hash 由 `new_token`、真实 ABT token ids 和 display tokens 计算得到；若 cache metadata 与当前 signature 不一致，加载阶段直接报错，避免把旧 action-token 映射下的 tokenized samples 用到新训练里
 - `.jsonl` 中的 `action` 永远使用 display text，例如 `<act_24><act_37>`；`mtp_bin` 还会记录 `action_query`，用于查看 AQT 显示标记。`.pkl` 中保存的 `input_ids` 和 AQT metadata 才是模型实际训练使用的数据。`new_token: false` 时 display text 与真实 token ids 不是同一组文本 token
@@ -615,6 +631,8 @@ env_kwargs:
 ### Local PointMaze data generation
 
 本地 PointMaze offline 数据由 `local_pointmaze_gen.py` 生成，数据默认写入 `local_datasets/`，训练数据读取逻辑只消费最终 Minari/HDF5 数据，不在训练阶段重新生成轨迹。训练配置可用 `local_dataset_root` 覆盖 PointMaze/AntMaze local dataset 根目录，用于在不同 worktree 或 scratch 目录间复用同一份 local 数据；`local_dataset_path` 是兼容别名。生成脚本复用 Farama 官方 `WaypointController` / `QIteration`，但 Minari step callback 在本仓库实现，用于控制 episode 边界并记录 `qpos`、`qvel`、`goal`。
+
+`local-medium` 是复用官方 PointMaze medium 8x8 地图的 local variant，数据路径为 `local_datasets/pointmaze-local-medium-v0`，用于在相同地图上重采样本地 medium 数据并与官方 `D4RL/pointmaze/medium-v2` 数据隔离。
 
 默认生成逻辑保持 D4RL/Minari PointMaze 风格：`continuing_task=True`、`reset_target=True`，每次 first success 时把该 step 标记为 episode truncation。为补充“到达后保持”数据，可以使用：
 
@@ -806,7 +824,7 @@ micromamba run -n llm_offline python estimate_dataset.py \
   --sample-episodes-per-variant 4
 ```
 
-`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。它也支持 `--config base.yaml override.yaml` 多文件合并。脚本读取合并后的训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`local_dataset_root`、`prompt_templete_index`、`episode_keep_num`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时会透传 `antmaze_data_config`，`env_family: pointmaze` 时会透传 `pointmaze_data_config`，因此数据预处理后的 episode 数/step 数才是统计基础。
+`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。它也支持 `--config base.yaml override.yaml` 多文件合并。脚本读取合并后的训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`local_dataset_root`、`prompt_templete_index`、`episode_keep_num` / `episode_keep_per_varient`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时会透传 `antmaze_data_config`，`env_family: pointmaze` 时会透传 `pointmaze_data_config`，因此数据预处理后的 episode 数/step 数才是统计基础。
 
 体积估算不会写正式 dataset cache。脚本会按每个 selected variant 抽取 `--sample-episodes-per-variant` 条完整 selected episode 做真实 tokenization，把这些样本 pickle 成类似 shard cache 的结构后测量字节数，再按 `sampled_pickle_bytes * target_selected_steps / sampled_steps` 用 step ratio 外推 train、val 和 total `.pkl` 大小，单位为十进制 GB。多 prompt 导致的样本膨胀由抽样 tokenization 自然包含；`max_data_num` 会同时影响样本数和 size target。`--world_size` 只用于数学预估 DDP batch 数和 partition round `target_batches`，不初始化 DDP、不要求真实 rank 或 GPU。
 
@@ -826,8 +844,8 @@ micromamba run -n llm_offline python estimate_dataset.py \
 5. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text；`mtp_bin` tokenize generation prompt 和 action prefix，并为 AQT 位置保存 `action_query_*` metadata；`simple_mtp_bin` tokenize generation prompt、`A0..A(D-2)` action prefix 和 `D` 个 query metadata，query offset 与 action 维度一一对应；连续模式只 tokenize generation prompt，存储连续 `action_values`，不拼 assistant action 文本；`parallel_l1` 用 L1 BC；`parallel_gaussian` 先将目标动作 clamp 到 `(-1, 1)` 内并做 `atanh(action)`，再用 latent-space Gaussian NLL 加 tanh change-of-variables correction 训练 bounded likelihood；`parallel_t` 用 Student-t NLL BC，并可通过 `continuous_mean_l1_weight` 额外加入 `alpha * L1(mean, action)`。若配置 `action_head_weight_decay`，训练 optimizer 只对 continuous action MLP head 内的 Linear weight 使用该 AdamW weight decay；LLM/LoRA、`action_queries`、Gaussian `gaussian_log_std`、bias 和 LayerNorm 参数不受影响
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text`、动态 `location_sensing_en/zh` 和动态 `wall_sensing_en/zh`
    - *AntMaze 实现*：严格校验 27 维 v4 本体 observation，并结合 `achieved_goal` / `desired_goal` 渲染 torso、姿态、关节和速度状态；训练使用离线数据地图，rollout 使用实例化 eval env 的真实地图
-   - `location_sensing` 会直接给出当前位置格子和目标格子；`wall_sensing` 会给出上下左右相邻格子的 `wall/free` 状态；行列从左上角开始按 1-based 计数。坐标由 `utils/maze_sensing.py` 按 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。若移动方向邻格本身 free，只有在当前位置落入某一侧 threshold、当前同侧格为 free、而前方同侧对角格为 wall 时，才把该方向报告为 `wall`。这样可以预警路口进入窄道时新出现的墙角，但连续直道侧墙不会导致沿直道方向持续误报 `wall`。
-6. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
+   - `location_sensing` 会直接给出当前位置格子和目标格子；`wall_sensing` 会给出上下左右相邻格子的 `wall/free/risk` 状态，具体状态集取决于版本配置。行列从左上角开始按 1-based 计数。坐标由 `utils/maze_sensing.py` 按 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。`wall_sensing_version` 支持 `v1`-`v5`，缺省或 `null` 规范化为 `v3`；`map_sensing_boundary_risk_threshold` 缺省或 `null` 规范化为 `0.10`，含义是 cell size 的比例。默认 `v3` 是 new-corner 版：移动方向邻格 free 时，只有在当前位置贴近某一侧边界、当前同侧格为 free、而前方同侧对角格为 wall 时，才把该方向报告为 `wall`。`v5` 是 risk 版：移动方向邻格本身为 wall 时始终报告 `wall`，上述 new-corner 条件报告 `risk`。Standalone eval 和 `score.py mode: score` 若 checkpoint `config.yaml` 已记录这两个字段，会继承 checkpoint 值并拒绝 eval/score YAML 中的冲突值；旧 checkpoint 没有字段时才使用 eval/score YAML 或默认值。
+6. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），多 variant 训练可用 `episode_keep_per_varient` 按 selected variant 覆盖 keep 数；再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
 7. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 8. **DataLoader 与设备搬运**：`dataloader_config` 统一控制 train/val loader 的 `num_workers`、`pin_memory`、`persistent_workers` 和 `prefetch_factor`，以及 batch tensor 搬到训练设备时的 `non_blocking`。`persistent_workers` / `prefetch_factor` 仅在 `num_workers > 0` 时合法；`pin_memory: true` 配合 `non_blocking: true` 可让 CUDA H2D copy 具备异步重叠条件。DDP 下每个 rank 独立创建相同数量的 DataLoader workers
 9. **DDP 并行训练与评估**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint 和 validation 仍只由 rank0 执行；`eval_distribute_variants: true` 时训练期和 standalone rollout 把 variants 轮转分配到各 rank，由所属 rank 写对应 result、step logs 和视频，rank0 聚合结果并写 W&B

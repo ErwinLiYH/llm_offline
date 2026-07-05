@@ -1559,6 +1559,13 @@ type: project
 - Slurm job `5422886` 已为 `local-layout-01..09` 完成 AntMaze data generation：所有 array task 均 `COMPLETED` 且 `ExitCode=0:0`，每个 layout 生成 `2000` episodes，成功率范围 `0.8885..0.9225`，均高于 `MIN_SUCCESS_RATE=0.8`
 - 已通过 `python inspect_antmaze_layouts.py --variants ...` 检查当前 local/test 指标，并通过 `python -m py_compile data/antmaze/variants.py`
 
+## Opposite-boundary direct wall delay（2026-06-30）
+
+- `utils/maze_sensing.py` 的四邻 `wall/free` 判断加入反方向边界优先规则：如果正前方邻格是 wall，但当前位置仍贴近当前格子的反方向边界，则该方向先报告为 `free`
+- 该规则用于缓解 PointMaze medium 下方中间连续转弯处刚进入新格时过早出现“三面墙”播报；离开反方向边界后，正前方墙仍恢复为 `wall`
+- 保留现有 corner-risk 逻辑：正前方邻格 free 时，只有贴近侧边、当前同侧格 free、前方同侧对角格 wall 才保守报告该方向为 `wall`
+- PointMaze 和 AntMaze tokenized cache format bump 到 `*_hash_signature_v5`，避免复用旧 wall sensing 语义下的缓存
+
 ## AntMaze hard-sample local data generation（2026-07-01）
 
 - `local_antmaze_gen.py` 新增 `--hard-sample` / `--hard-retry` / `--hard-sample-alpha` / `--hard-sample-top-n`，仅用于 `--mode diverse`
@@ -1570,6 +1577,11 @@ type: project
 **验证：**
 - 已通过 py_compile、hard-sample focused unittest、`tests.test_antmaze_support`、`bash -n sbatch/dataGen.ant.hard.slurm` 和 `git diff --check`
 
+## Wall sensing risk state（2026-07-02）
+
+- `utils/maze_sensing.py` 恢复直接邻格为墙时始终报告 `wall`，移除反方向贴边时强制显示为 `free` 的规则
+- `wall_sensing` 新增第三种状态 `risk`：正前方邻格为 free、当前位置贴近侧边、当前同侧格为 free、前方同侧对角格为 wall 时，报告 `risk` 而不是旧的 `wall`
+- PointMaze 和 AntMaze tokenized cache format bump 到 `*_hash_signature_v6`，避免复用旧 wall sensing 文本缓存
 ## Local dataset path override（2026-07-02）
 
 - 新增训练配置 `local_dataset_root`，用于覆盖 PointMaze / AntMaze local variants 的本地 dataset 根目录；未配置或为 `null` 时继续使用 `variants.py` 中的默认 `local_datasets/<family>-<variant>-v0` 路径
@@ -1577,3 +1589,32 @@ type: project
 - `train.py` 和 `estimate_dataset.py` 都会把该路径透传到 raw episode 加载、episode balancing、partition shard planning 和 dataset size estimator，保证估算与训练读取同一份 local 数据
 - tokenized cache signature 对 local variants 记录实际 resolved dataset path 和 local step signature，避免不同 local dataset root 之间误复用 cache
 - 新增测试覆盖路径解析、dataset request 透传、estimator 透传和 cache signature 变化
+
+## Fresh training initialization from checkpoint（2026-07-04）
+
+- `train.py` 新增训练端 `model_path` 语义：非空时从已有 LoRA checkpoint 初始化模型权重、tokenizer 和 continuous/MTP sidecar decoder，但启动一个新的 training run，不恢复 optimizer、LR schedule 或训练 loop 位置
+- `model_path` / `--init_from_checkpoint` 与 `resume_from_checkpoint` 明确互斥；前者用于二阶段或迁移式微调，后者仍用于严格恢复中断训练并要求 `trainer_state.pt`
+- checkpoint 初始化会校验 `env_family`、`action_token_mode`、`action_dim`、continuous action head 结构以及 Gaussian std bounds，避免错配 checkpoint 静默进入训练
+- 新 checkpoint 的 `trainer_state.pt` 会记录来源 checkpoint 类型、路径和来源 experiment id，便于区分 fresh initialization 与 strict resume
+
+**验证：**
+- 已通过 `conda run -n llm_offline python -m py_compile train.py`
+- 已通过 `PYTHONPATH=. conda run -n llm_offline pytest -q tests/test_resume_training_state.py`
+
+## Wall sensing versioned config（2026-07-04）
+
+- 新增正式配置 `wall_sensing_version` 和 `map_sensing_boundary_risk_threshold`；未配置或显式为 `null` 时规范化为 `v3` 和 `0.10`
+- `utils/maze_sensing.py` 支持 `v1` 到 `v5` 的历史 wall sensing 语义：`v3` 作为默认 new-corner 版，`v5` 保留当前 risk 版行为
+- train / eval / score / estimate / rollout worker / dataset cache 全链路携带规范化 sensing 配置；训练启动配置、eval config、score config 和 cache signature 都会记录最终值
+- standalone eval 和 `score.py mode: score` 优先继承 checkpoint `config.yaml` 中的 sensing 配置；checkpoint 已记录时，eval/score YAML 中冲突的 sensing 值会直接报错
+- train、eval、score 启动日志新增最终 wall sensing 输出，便于确认实际使用的 version 和 boundary threshold
+- PointMaze 和 AntMaze tokenized cache format bump 到 `*_hash_signature_v7`，避免复用旧 wall sensing 文本缓存
+- 更新示例配置、`AGENTS.md` 和 `DESIGN.md`，补充版本语义、默认值、checkpoint 继承规则和 cache signature 说明
+- 新增/更新测试覆盖 sensing 默认值和校验、`v1`-`v5` 行为、cache hash 变化、tokenization worker prompt vars、eval checkpoint 继承和冲突报错
+
+## PointMaze local-medium variant（2026-07-05）
+
+- 新增 PointMaze 本地变种 `local-medium`，复用官方 `medium` 的 8x8 地图，使用 `PointMaze_UMaze-v3` 加自定义 `maze_map` 方式接入本地环境
+- `local-medium` 的默认数据目录为 `local_datasets/pointmaze-local-medium-v0`，用于通过 `local_pointmaze_gen.py --variants local-medium` 在官方 medium 地图上重新采样本地数据，并与官方 `D4RL/pointmaze/medium-v2` 数据隔离
+- 本地 eval horizon 设为 `600`，与 remote PointMaze medium 的 official horizon 对齐
+- 更新 `DESIGN.md` 的 PointMaze registry 和本地数据生成说明，并补充测试确认 `local-medium` 的 local 类型、数据路径、地图和 horizon

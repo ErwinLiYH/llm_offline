@@ -197,7 +197,8 @@ this formula if the chosen start-goal route in `large` is relatively direct.
 
 ## Current AntMaze Layout Summary
 
-The current registered AntMaze local/test layouts have these static scores:
+The current registered AntMaze local/test/experimental layouts have these static
+scores:
 
 ```text
 local-layout-01  57.07
@@ -214,6 +215,8 @@ test-layout-01   57.71
 test-layout-02   51.52
 test-layout-03   70.45
 test-layout-04   63.59
+
+ultra            46.06
 ```
 
 For comparison under the same fixed eval-map scoring:

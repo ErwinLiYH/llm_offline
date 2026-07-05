@@ -140,6 +140,52 @@ class DummyEnv:
 
 
 class EvalParallelTest(unittest.TestCase):
+    def test_checkpoint_sensing_config_is_inherited_for_eval(self):
+        with tempfile.TemporaryDirectory() as checkpoint_dir:
+            (Path(checkpoint_dir) / "config.yaml").write_text(
+                "wall_sensing_version: v5\n"
+                "map_sensing_boundary_risk_threshold: 0.25\n",
+                encoding="utf-8",
+            )
+
+            config = evaluate.apply_checkpoint_sensing_config(
+                {"model_path": checkpoint_dir}
+            )
+
+        self.assertEqual(config["wall_sensing_version"], "v5")
+        self.assertEqual(config["map_sensing_boundary_risk_threshold"], 0.25)
+
+    def test_eval_yaml_sensing_config_is_used_when_checkpoint_is_missing_fields(self):
+        with tempfile.TemporaryDirectory() as checkpoint_dir:
+            (Path(checkpoint_dir) / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+            config = evaluate.apply_checkpoint_sensing_config(
+                {
+                    "model_path": checkpoint_dir,
+                    "wall_sensing_version": "v5",
+                    "map_sensing_boundary_risk_threshold": 0.25,
+                }
+            )
+
+        self.assertEqual(config["wall_sensing_version"], "v5")
+        self.assertEqual(config["map_sensing_boundary_risk_threshold"], 0.25)
+
+    def test_eval_yaml_sensing_config_conflict_with_checkpoint_raises(self):
+        with tempfile.TemporaryDirectory() as checkpoint_dir:
+            (Path(checkpoint_dir) / "config.yaml").write_text(
+                "wall_sensing_version: v5\n"
+                "map_sensing_boundary_risk_threshold: 0.10\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "wall_sensing_version"):
+                evaluate.apply_checkpoint_sensing_config(
+                    {
+                        "model_path": checkpoint_dir,
+                        "wall_sensing_version": "v3",
+                    }
+                )
+
     def test_prepare_eval_prompt_vars_uses_formatter_hook(self):
         formatter = SimpleNamespace(
             prepare_eval_prompt_vars=mock.Mock(return_value={"maze_map": "eval"})

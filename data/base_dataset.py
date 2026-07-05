@@ -85,6 +85,10 @@ class DatasetBuildRequest:
     history_num: int = 0
     history_stride: int = 1
 
+    # Maze sensing prompt behavior.
+    wall_sensing_version: str | None = None
+    map_sensing_boundary_risk_threshold: float | None = None
+
     # Action encoding.
     action_token_mode: str = "text"
     action_num_bins: int = 10

@@ -795,6 +795,14 @@ POINTMAZE_VARIANTS = {
             structure_desc_zh="一个大型迷宫，包含长走廊、多个分支以及由密集内墙形成的若干瓶颈通道。",
         ),
     },
+    "local-medium": _build_local_variant(
+        variant_name="local-medium",
+        env_name="PointMaze Local Medium",
+        maze_map=_MEDIUM,
+        structure_desc_en="A locally generated dataset on the official 8x8 PointMaze medium map.",
+        structure_desc_zh="一个基于官方 8x8 PointMaze medium 地图本地生成的数据集。",
+        max_episode_steps=600,
+    ),
     "local-layout-01": _build_local_variant(
         index=1,
         maze_map=_LOCAL_LAYOUT_01,

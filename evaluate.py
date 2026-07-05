@@ -47,6 +47,7 @@ from utils.eval_parallel import (
 )
 from utils.prompt_loader import load_named_templates, load_template_names
 from utils.rollout.evaluate_runner import run_evaluate_variant
+from utils.sensing_config import apply_checkpoint_sensing_config as _apply_checkpoint_sensing_config
 from utils.training_tags import format_training_eval_tag
 from utils.variant_selection import get_available_variants, resolve_selection
 
@@ -198,6 +199,11 @@ def apply_checkpoint_action_config(config: dict) -> dict:
     get_action_num_bins(merged)
     get_action_bin_range(merged)
     return merged
+
+
+def apply_checkpoint_sensing_config(config: dict) -> dict:
+    saved_config = _load_checkpoint_config(config["model_path"])
+    return _apply_checkpoint_sensing_config(config, saved_config)
 
 
 def _normalize_prompt_name_list(value, *, field_name: str, allow_single_string: bool) -> list[str]:
@@ -462,6 +468,7 @@ def main():
     try:
         if dist_context.is_main_process:
             config = apply_checkpoint_action_config(config)
+            config = apply_checkpoint_sensing_config(config)
             config = apply_checkpoint_prompt_config(config, assume_yes=args.yes)
             config.setdefault("seed", 1)
             config = apply_rollout_config_defaults(config)
@@ -496,6 +503,11 @@ def main():
             print(f"[eval] Using backend: {dist_context.backend}")
             print(f"[eval] Output mode: {eval_output_mode}")
             print(f"[eval] Loading model from: {config['model_path']}")
+            print(
+                "[eval] Wall sensing: "
+                f"version={config['wall_sensing_version']}, "
+                f"boundary_risk_threshold={config['map_sensing_boundary_risk_threshold']}"
+            )
             print(f"[eval] Resolved eval variants: {eval_selection.selected_variants}")
             print(f"[eval] Variant assignments: {assignments}")
             print(

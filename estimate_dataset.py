@@ -37,7 +37,14 @@ from model.mtp_bin import (
 from utils.action_bins import get_action_token_mode
 from utils.config_loader import load_merged_config
 from utils.distributed import DistributedContext
+from utils.episode_keep import (
+    RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY,
+    effective_episode_keep_num,
+    has_episode_keep_per_variant,
+    resolve_episode_keep_per_variant,
+)
 from utils.prompt_loader import load_template_names
+from utils.sensing_config import normalize_sensing_config, resolve_sensing_config
 from utils.variant_selection import get_available_variants, resolve_selection
 
 
@@ -295,7 +302,7 @@ def build_dataset_request(
         prompt_template_count=config.get("prompt_template_count", 1),
         prompt_templete_index=config.get("prompt_templete_index"),
         train_data_ratio=config.get("train_data_ratio", 0.9),
-        episode_keep_num=config.get("episode_keep_num"),
+        episode_keep_num=effective_episode_keep_num(config, variant),
         balance_variant_episode_count=config.get("balance_variant_episode_count", False),
         balanced_train_episode_count=config.get("balanced_train_episode_count"),
         sampling_seed=config.get("sampling_seed", 0),
@@ -303,6 +310,10 @@ def build_dataset_request(
         local_dataset_root=_local_dataset_root(config),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
+        wall_sensing_version=config.get("wall_sensing_version"),
+        map_sensing_boundary_risk_threshold=config.get(
+            "map_sensing_boundary_risk_threshold"
+        ),
         action_token_mode=config.get("action_token_mode", "text"),
         action_num_bins=config.get("action_num_bins", 10),
         action_bin_min=config.get("action_bin_min", -1.0),
@@ -319,6 +330,7 @@ def _resolve_training_config(config: dict, world_size: int) -> tuple[dict, Any, 
         raise ValueError("episode_keep_ratio is no longer supported; use episode_keep_num instead.")
 
     config = dict(config)
+    normalize_sensing_config(config)
     normalize_prompt_config(config)
     available_variants = get_available_variants(config["env_family"])
     train_selection = resolve_train_selection(config, available_variants)
@@ -326,6 +338,11 @@ def _resolve_training_config(config: dict, world_size: int) -> tuple[dict, Any, 
     config["train_varients"] = train_selection.configured_variants
     config.pop("variants", None)
     config["action_dim"] = action_dim
+    config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = resolve_episode_keep_per_variant(
+        config,
+        train_selection.selected_variants,
+        available_variants=available_variants,
+    )
 
     action_token_mode = get_action_token_mode(config)
     if action_token_mode == "mtp_bin":
@@ -346,7 +363,17 @@ def _balanced_train_episode_count(
     selected_variants: list[str],
     loaded_by_variant: dict[str, tuple[Any, list[Any], list[int]]],
 ) -> int | None:
-    if len(selected_variants) <= 1 or not bool(config.get("balance_variant_episode_count", False)):
+    balance_enabled = bool(config.get("balance_variant_episode_count", False))
+    if not balance_enabled:
+        return None
+    if has_episode_keep_per_variant(config):
+        print(
+            "[estimate] WARNING: episode_keep_per_varient is configured; "
+            "ignoring balance_variant_episode_count=true because per-variant episode_keep values take precedence.",
+            file=sys.stderr,
+        )
+        return None
+    if len(selected_variants) <= 1:
         return None
     keep_num = config.get("episode_keep_num")
     targets = [
@@ -360,6 +387,13 @@ def load_variant_data(config: dict, selected_variants: list[str]) -> list[Varian
     dataset_cls = get_dataset(config["env_family"])
     family_data_config = _family_data_config(config)
     local_dataset_root = _local_dataset_root(config)
+    if RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY in config:
+        episode_keep_by_variant = {
+            variant: effective_episode_keep_num(config, variant)
+            for variant in selected_variants
+        }
+    else:
+        episode_keep_by_variant = resolve_episode_keep_per_variant(config, selected_variants)
     loaded_by_variant = {}
     for variant in selected_variants:
         meta, episodes, step_counts = dataset_cls._load_variant_episodes(
@@ -383,7 +417,7 @@ def load_variant_data(config: dict, selected_variants: list[str]) -> list[Varian
         selection = select_variant_episode_indices(
             variant=variant,
             train_data_ratio=config.get("train_data_ratio", 0.9),
-            episode_keep_num=config.get("episode_keep_num"),
+            episode_keep_num=episode_keep_by_variant[variant],
             sampling_seed=config.get("sampling_seed", 0),
             balanced_train_target=balanced_target,
             episode_loader=loader,
@@ -697,6 +731,7 @@ def build_estimate(
 ) -> dict:
     prompt_count = len(config["prompt_templete_index"])
     max_data_num = config.get("max_data_num")
+    sensing_config = resolve_sensing_config(config)
     footprints_by_variant = {footprint.variant: footprint for footprint in footprints}
     variants = []
     total_train_bytes = 0.0
@@ -803,6 +838,10 @@ def build_estimate(
             "batch_size": int(config["batch_size"]),
             "max_data_num": max_data_num,
             "sample_seed": int(sample_seed),
+            "wall_sensing_version": sensing_config["wall_sensing_version"],
+            "map_sensing_boundary_risk_threshold": (
+                sensing_config["map_sensing_boundary_risk_threshold"]
+            ),
         },
         "variants": variants,
         "sampling": {

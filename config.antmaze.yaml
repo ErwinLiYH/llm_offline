@@ -35,6 +35,10 @@ train_varients: [large-play, large-diverse]  # single: exactly one; all: selecte
 ## Prompt templates
 prompt_templete_index: ["parallel_full_sensing"]  # prompt file names without .txt used for each training split
 
+## Maze sensing
+wall_sensing_version: v3              # v1-v5; null/omitted defaults to v3 new-corner wall sensing
+map_sensing_boundary_risk_threshold: 0.10  # fraction of cell size used by v2-v5 boundary sensing
+
 ## Data
 dataset_workers: 3            # processes for parallel episode tokenization
 dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable

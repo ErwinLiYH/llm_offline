@@ -231,6 +231,23 @@ _TEST_LAYOUT_04 = _maze_from_strings([
 ])
 # score=50.72 reset=(7, 1) goal=(5, 7)
 
+_ULTRA = _maze_from_strings([
+    "################",
+    "#.......#......#",
+    "#.###.#.#.##.#.#",
+    "#.###.#....#.#.#",
+    "#...#.##.###.#.#",
+    "#.#...#........#",
+    "#...#...#.###.##",
+    "#.#.###.#...#.##",
+    "#.......#.#....#",
+    "##.##.#...####.#",
+    "##.#..#.#......#",
+    "################",
+])
+# AntMaze-Ultra eval map from Farama D4RL PR #220.
+# reset=(1, 1) goal=(10, 14)
+
 _LARGE = [
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
     [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
@@ -542,6 +559,16 @@ ANTMAZE_VARIANTS = {
         eval_goal_cell=(5, 7),
         structure_desc_en="A held-out compact generated AntMaze layout in the 50 static-difficulty band.",
         dataset_style="held-out local reset and goal trajectories",
+    ),
+    "ultra": _build_local_variant(
+        variant_name="ultra",
+        env_name="AntMaze Ultra",
+        maze_map=_ULTRA,
+        eval_reset_cell=(1, 1),
+        eval_goal_cell=(10, 14),
+        max_episode_steps=2000,
+        structure_desc_en="An experimental AntMaze-Ultra layout from Farama D4RL PR #220, larger than the official large map with long corridors and sparse bottlenecks.",
+        dataset_style="experimental local AntMaze-Ultra trajectories",
     ),
 }
 
