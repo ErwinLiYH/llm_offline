@@ -29,6 +29,7 @@ from data.pointmaze.dataset import (
     _load_local_hdf5_episodes,
     _normalize_pointmaze_data_config,
 )
+from data.pointmaze.variants import POINTMAZE_VARIANTS, get_pointmaze_variant_type
 from data.pointmaze.variants import resolve_local_dataset_path as resolve_pointmaze_local_dataset_path
 from data.registry import get_action_dim, resolve_variant_env_spec
 from utils.maze_sensing import _neighbor_status
@@ -266,6 +267,17 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertEqual(ant_path, Path(root_dir) / "antmaze-local-layout-01-v0")
         self.assertEqual(point_path, Path(root_dir) / "pointmaze-local-layout-01-v0")
         self.assertEqual(direct_ant_path, Path(root_dir) / "antmaze-local-layout-01-v0")
+
+    def test_pointmaze_local_medium_reuses_official_medium_map(self):
+        local_meta, env_id, env_kwargs = resolve_variant_env_spec("pointmaze", "local-medium")
+        official_meta = POINTMAZE_VARIANTS["medium"]
+
+        self.assertEqual(get_pointmaze_variant_type(local_meta), "local")
+        self.assertEqual(local_meta["dataset_path"], "local_datasets/pointmaze-local-medium-v0")
+        self.assertEqual(env_id, "PointMaze_UMaze-v3")
+        self.assertEqual(env_kwargs["maze_map"], official_meta["prompt_vars"]["maze_map"])
+        self.assertEqual(local_meta["prompt_vars"]["maze_map"], official_meta["prompt_vars"]["maze_map"])
+        self.assertEqual(env_kwargs["max_episode_steps"], 600)
 
     def test_local_dataset_root_changes_cache_signature_path(self):
         with tempfile.TemporaryDirectory() as tokenizer_dir:

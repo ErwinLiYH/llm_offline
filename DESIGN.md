@@ -17,7 +17,7 @@
 
 ### PointMaze 变种完整列表
 
-定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中。当前 registry 包含 8 个 remote D4RL 变种、`local-layout-01..13` 和 `test-layout-01..03`；remote 使用 `dataset_id` / `env_id`，local/test 使用 `dataset_path` / `env_paras`，全部通过 `prompt_vars` 提供 prompt metadata。
+定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中。当前 registry 包含 8 个 remote D4RL 变种、`local-medium`、`local-layout-01..13` 和 `test-layout-01..03`；remote 使用 `dataset_id` / `env_id`，local/test 使用 `dataset_path` / `env_paras`，全部通过 `prompt_vars` 提供 prompt metadata。
 
 `maze_map` 和 `reward_type` 现在收在每个变种的 `prompt_vars` 中，供共享 prompt 渲染使用。
 
@@ -631,6 +631,8 @@ env_kwargs:
 ### Local PointMaze data generation
 
 本地 PointMaze offline 数据由 `local_pointmaze_gen.py` 生成，数据默认写入 `local_datasets/`，训练数据读取逻辑只消费最终 Minari/HDF5 数据，不在训练阶段重新生成轨迹。训练配置可用 `local_dataset_root` 覆盖 PointMaze/AntMaze local dataset 根目录，用于在不同 worktree 或 scratch 目录间复用同一份 local 数据；`local_dataset_path` 是兼容别名。生成脚本复用 Farama 官方 `WaypointController` / `QIteration`，但 Minari step callback 在本仓库实现，用于控制 episode 边界并记录 `qpos`、`qvel`、`goal`。
+
+`local-medium` 是复用官方 PointMaze medium 8x8 地图的 local variant，数据路径为 `local_datasets/pointmaze-local-medium-v0`，用于在相同地图上重采样本地 medium 数据并与官方 `D4RL/pointmaze/medium-v2` 数据隔离。
 
 默认生成逻辑保持 D4RL/Minari PointMaze 风格：`continuing_task=True`、`reset_target=True`，每次 first success 时把该 step 标记为 episode truncation。为补充“到达后保持”数据，可以使用：
 

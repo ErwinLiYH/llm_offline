@@ -1611,3 +1611,10 @@ type: project
 - PointMaze 和 AntMaze tokenized cache format bump 到 `*_hash_signature_v7`，避免复用旧 wall sensing 文本缓存
 - 更新示例配置、`AGENTS.md` 和 `DESIGN.md`，补充版本语义、默认值、checkpoint 继承规则和 cache signature 说明
 - 新增/更新测试覆盖 sensing 默认值和校验、`v1`-`v5` 行为、cache hash 变化、tokenization worker prompt vars、eval checkpoint 继承和冲突报错
+
+## PointMaze local-medium variant（2026-07-05）
+
+- 新增 PointMaze 本地变种 `local-medium`，复用官方 `medium` 的 8x8 地图，使用 `PointMaze_UMaze-v3` 加自定义 `maze_map` 方式接入本地环境
+- `local-medium` 的默认数据目录为 `local_datasets/pointmaze-local-medium-v0`，用于通过 `local_pointmaze_gen.py --variants local-medium` 在官方 medium 地图上重新采样本地数据，并与官方 `D4RL/pointmaze/medium-v2` 数据隔离
+- 本地 eval horizon 设为 `600`，与 remote PointMaze medium 的 official horizon 对齐
+- 更新 `DESIGN.md` 的 PointMaze registry 和本地数据生成说明，并补充测试确认 `local-medium` 的 local 类型、数据路径、地图和 horizon
