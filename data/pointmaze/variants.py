@@ -637,6 +637,69 @@ _TEST_LAYOUT_V2_06 = _maze_from_strings([
     "#############",
 ])
 
+# local-EXturn: size=11x11, extreme-turn layout built from diagonal staircase
+# corridors, double-thick walls on the left half and medium-style single walls
+# on the right half, one mid-wall shortcut hole, plus umaze-style single-nub
+# U-turn pockets; shortest-path turn rate 0.592 vs medium 0.516, 22 S-turn
+# zigzags, 7 U-turn motifs, detour ratio 1.43.
+_LOCAL_EXTURN = _maze_from_strings([
+    "###########",
+    "#..###...##",
+    "#....#.#..#",
+    "#..#....#.#",
+    "#.###.#..##",
+    "#..#...#..#",
+    "##..##..#.#",
+    "###..##.#.#",
+    "####..#...#",
+    "#####...#.#",
+    "###########",
+])
+
+# test-EXturn: size=13x11, extreme-turn layout built from anti-diagonal
+# staircase corridors, double-thick walls on the top half and medium-style
+# single walls on the bottom half, one mid-wall shortcut hole, plus
+# umaze-style single-nub U-turn pockets; shortest-path turn rate 0.620,
+# 30 S-turn zigzags, 11 U-turn motifs, detour ratio 1.61.
+_TEST_EXTURN = _maze_from_strings([
+    "###########",
+    "###...#...#",
+    "##..#...#.#",
+    "#..##..##.#",
+    "#.##..##..#",
+    "#.#..##..##",
+    "#...##..###",
+    "##.##..#..#",
+    "#.....#...#",
+    "#.#..#..#.#",
+    "#.#.#...#.#",
+    "#.....#...#",
+    "###########",
+])
+
+# local-EXturn-simple: size=5x7, umaze-scale minimal layout with one staircase
+# double-turn corridor plus a short straight tail; 7 free cells like umaze,
+# shortest-path turn rate 0.536 vs medium 0.516, 3 S-turn zigzags.
+_LOCAL_EXTURN_SIMPLE = _maze_from_strings([
+    "#######",
+    "#..####",
+    "##..###",
+    "###...#",
+    "#######",
+])
+
+_POINTMAZE_EXTURN_DESC = (
+    "An extreme-turn PointMaze layout made of diagonal staircase corridors, "
+    "where nearly every step along a shortest path requires a 90-degree turn.",
+    "一个极高转弯率的 PointMaze 布局，由对角阶梯走廊构成，最短路径上几乎每一步都需要 90 度转弯。",
+)
+
+_POINTMAZE_EXTURN_SIMPLE_DESC = (
+    "A minimal umaze-scale PointMaze layout containing a single staircase "
+    "corridor with consecutive 90-degree turns and a short straight tail.",
+    "一个 umaze 级别的极简 PointMaze 布局，只包含一段需要连续 90 度转弯的阶梯走廊和一小段直走廊。",
+)
+
 _POINTMAZE_V2_DESCS = {
     "55-60": (
         "A generated V2 PointMaze layout in the 55-60 static-difficulty band, with moderate branches and bottlenecks.",
@@ -1028,6 +1091,27 @@ POINTMAZE_VARIANTS = {
         maze_map=_TEST_LAYOUT_V2_06,
         structure_desc_en=_POINTMAZE_V2_DESCS["65-70"][0],
         structure_desc_zh=_POINTMAZE_V2_DESCS["65-70"][1],
+    ),
+    "local-EXturn": _build_local_variant(
+        variant_name="local-EXturn",
+        env_name="PointMaze Local EXturn",
+        maze_map=_LOCAL_EXTURN,
+        structure_desc_en=_POINTMAZE_EXTURN_DESC[0],
+        structure_desc_zh=_POINTMAZE_EXTURN_DESC[1],
+    ),
+    "test-EXturn": _build_local_variant(
+        variant_name="test-EXturn",
+        env_name="PointMaze Test EXturn",
+        maze_map=_TEST_EXTURN,
+        structure_desc_en=_POINTMAZE_EXTURN_DESC[0],
+        structure_desc_zh=_POINTMAZE_EXTURN_DESC[1],
+    ),
+    "local-EXturn-simple": _build_local_variant(
+        variant_name="local-EXturn-simple",
+        env_name="PointMaze Local EXturn Simple",
+        maze_map=_LOCAL_EXTURN_SIMPLE,
+        structure_desc_en=_POINTMAZE_EXTURN_SIMPLE_DESC[0],
+        structure_desc_zh=_POINTMAZE_EXTURN_SIMPLE_DESC[1],
     ),
 }
 
