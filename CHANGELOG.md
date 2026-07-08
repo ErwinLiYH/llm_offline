@@ -1633,3 +1633,12 @@ type: project
 - `--model_path` 保持单值 CLI 参数，不使用 `nargs="+"`；命令行里应给通配路径加引号，避免 shell 先展开
 - 新增 `utils/model_path_glob.py` 和 focused test 覆盖无通配、唯一匹配、非末尾通配、多匹配和零匹配
 - 已通过 `python -m unittest tests.test_model_path_glob`
+
+## CrossMaze environment package extraction（2026-07-08）
+
+- 新增 standalone `crossmaze` 包，集中维护 PointMaze/AntMaze 的 plain 0/1 maze maps、variant env facts、layout rendering、location/wall sensing、sensing config、score env specs 和 `crossmaze.make(...)` 环境构造入口
+- `data/pointmaze/variants.py` 和 `data/antmaze/variants.py` 收敛为 prompt copywriting 层，环境事实从 `crossmaze.variants` 派生；`utils/maze_sensing.py`、`utils/sensing_config.py` 和 `utils/pointmaze_score.py` 改为兼容 shim
+- eval/score rollout worker 统一通过 `crossmaze.make(env_family, variant, mode="eval|score", config=...)` 构造环境；`CrossMazeEnv` 在 observation 中附加 `obs["crossmaze"]` 结构化 sensing state，并用 `assert_meta_consistent(...)` 检查 prompt/env 几何和 sensing 配置一致
+- AntMaze eval 改为使用 offline collection map + `eval_reset_cell` / `eval_goal_cell` 坐标，由 `CrossMazeEnv.reset(options=...)` 应用固定评测起点/终点，不再在 variant eval map 中写入 `r/g` 标记；AntMaze cache signature 因 variant metadata 统一发生一次性变化
+- PointMaze official score env construction 移入 `crossmaze.score`，仍保留官方 goal-marked score maps、official horizons、local reference fingerprint 语义，并在 standalone helper 中注册 Gymnasium Robotics env
+- 一次性 golden parity / smoke 验证用于确认 extraction 前后 sensing、prompt 和 cache signature 行为一致；相关大 fixture 可作为历史验证记录保留，不要求长期留在主分支最终文件树中

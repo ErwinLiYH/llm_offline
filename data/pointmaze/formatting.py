@@ -5,6 +5,7 @@ import numpy as np
 from utils.maze_sensing import (
     build_sensing as _build_sensing,
     obs_xy_to_row_col as _obs_xy_to_row_col,
+    sensing_text_from_obs as _sensing_text_from_obs,
 )
 
 
@@ -101,7 +102,7 @@ def format_obs(obs, meta: dict) -> dict:
             f"  Velocity: (vx={vx:.4f}, vy={vy:.4f})\n"
             f"  Goal:     (gx={gx:.4f}, gy={gy:.4f})"
         ),
-        **_build_sensing(obs_vec, goal, meta),
+        **_sensing_text_from_obs(obs, obs_vec, goal, meta),
     }
 
 

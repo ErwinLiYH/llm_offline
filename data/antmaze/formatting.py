@@ -2,7 +2,9 @@ import re
 
 import numpy as np
 
-from utils.maze_sensing import build_sensing, obs_xy_to_row_col
+from crossmaze.layout import format_visual_map as _format_visual_map  # noqa: F401 back-compat name
+from crossmaze.layout import live_env_layout_overrides
+from utils.maze_sensing import build_sensing, obs_xy_to_row_col, sensing_text_from_obs
 
 
 ACTION_DIM = 8
@@ -11,26 +13,11 @@ _ACTION_PATTERN = re.compile(
     r"(?<![\d,])[-+]?\d+(?:\s*,\s*[-+]?\d+){7}(?!\s*,\s*[-+]?\d)"
 )
 
-def _format_visual_map(maze_map: list[list[object]]) -> str:
-    return "\n".join(
-        "  " + " ".join("#" if cell == 1 else "." for cell in row)
-        for row in maze_map
-    )
-
 
 def prepare_eval_prompt_vars(prompt_vars: dict, env) -> dict:
     """Use the instantiated eval env map for rollout sensing and rendering."""
-    maze = env.unwrapped.maze
-    maze_map = [list(row) for row in maze.maze_map]
     resolved = dict(prompt_vars)
-    resolved.update(
-        {
-            "maze_map": maze_map,
-            "maze_size_scaling": float(maze.maze_size_scaling),
-            "maze_shape": f"{len(maze_map)}x{len(maze_map[0])}",
-            "maze_visual": _format_visual_map(maze_map),
-        }
-    )
+    resolved.update(live_env_layout_overrides(env))
     return resolved
 
 
@@ -90,7 +77,7 @@ def format_obs(obs, meta: dict) -> dict:
             f"  Joints:   q={_format_vector(joint_angles)}\n"
             f"  JointVel: dq={_format_vector(joint_velocities)}"
         ),
-        **build_sensing(achieved_goal, desired_goal, meta),
+        **sensing_text_from_obs(obs, achieved_goal, desired_goal, meta),
     }
 
 

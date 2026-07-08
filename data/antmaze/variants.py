@@ -1,15 +1,16 @@
+"""AntMaze variant registry: prompt copywriting over CrossMaze env facts.
+
+Maze layouts, env ids/kwargs, dataset ids/paths, horizons, and the fixed
+evaluation start/goal cells live in `crossmaze.variants`. Evaluation uses the
+same maps the offline data was collected on; start/goal are recorded as
+`eval_reset_cell` / `eval_goal_cell` coordinates (passed to the env through
+`reset(options=...)`) instead of "r"/"g" map markers.
+"""
+
 from pathlib import Path
 
-
-R = "r"
-G = "g"
-
-
-def _format_visual_map(maze_map: list[list[int]]) -> str:
-    return "\n".join(
-        "  " + " ".join("#" if cell == 1 else "." for cell in row)
-        for row in maze_map
-    )
+from crossmaze.layout import format_visual_map, maze_shape_text
+from crossmaze.variants import ANTMAZE_ENV_FACTS
 
 
 def _build_prompt_vars(
@@ -19,342 +20,47 @@ def _build_prompt_vars(
     maze_map: list[list[int]],
     structure_desc_en: str,
 ) -> dict:
-    rows = len(maze_map)
-    cols = len(maze_map[0]) if maze_map else 0
     return {
         "env_name": env_name,
         "dataset_style": dataset_style,
         "maze_map": maze_map,
         "maze_size_scaling": 4.0,
-        "maze_shape": f"{rows}x{cols}",
-        "maze_visual": _format_visual_map(maze_map),
+        "maze_shape": maze_shape_text(maze_map),
+        "maze_visual": format_visual_map(maze_map),
         "structure_desc_en": structure_desc_en,
     }
 
 
-def _maze_from_strings(rows: list[str]) -> list[list[int]]:
-    if not rows:
-        raise ValueError("maze rows must be non-empty")
-    width = len(rows[0])
-    if width == 0:
-        raise ValueError("maze rows must be non-empty")
-    if any(len(row) != width for row in rows):
-        raise ValueError(f"maze rows must have equal width: {rows}")
-    return [[1 if cell == "#" else 0 for cell in row] for row in rows]
-
-
-_UMAZE = [
-    [1, 1, 1, 1, 1],
-    [1, 0, 0, 0, 1],
-    [1, 1, 1, 0, 1],
-    [1, 0, 0, 0, 1],
-    [1, 1, 1, 1, 1],
-]
-
-_MEDIUM = [
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 0, 0, 1, 1, 0, 0, 1],
-    [1, 0, 0, 1, 0, 0, 0, 1],
-    [1, 1, 0, 0, 0, 1, 1, 1],
-    [1, 0, 0, 1, 0, 0, 0, 1],
-    [1, 0, 1, 0, 0, 1, 0, 1],
-    [1, 0, 0, 0, 1, 0, 0, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-]
-
-_LOCAL_LAYOUT_01 = _maze_from_strings([
-    "#############",
-    "#...#.......#",
-    "#.#.#.#.#.#.#",
-    "#.....#.....#",
-    "#.###...###.#",
-    "#.....#.....#",
-    "#.#.#.###.#.#",
-    "#.........#.#",
-    "#############",
-])
-# score=47.92 reset=(1, 1) goal=(7, 11)
-
-_LOCAL_LAYOUT_02 = _maze_from_strings([
-    "#############",
-    "#.........#.#",
-    "#.#.###.#.#.#",
-    "#.....#.#...#",
-    "#.#.#...#.#.#",
-    "#...#.#.....#",
-    "#.#.#.###.###",
-    "#...#.......#",
-    "#############",
-])
-# score=48.27 reset=(7, 1) goal=(5, 11)
-
-_LOCAL_LAYOUT_03 = _maze_from_strings([
-    "#############",
-    "#.........#.#",
-    "#.#.###.#.#.#",
-    "#.........#.#",
-    "#.###.###.#.#",
-    "#.#...#.....#",
-    "#.#.#.#.#.#.#",
-    "#...#.......#",
-    "#############",
-])
-# score=46.52 reset=(7, 1) goal=(1, 11)
-
-_LOCAL_LAYOUT_04 = _maze_from_strings([
-    "#############",
-    "#.....#.....#",
-    "#.#.#.#.#.###",
-    "#...#.#.#...#",
-    "#.#.#.#.###.#",
-    "#.#.........#",
-    "#.####.####.#",
-    "#...........#",
-    "#############",
-])
-# score=42.20 reset=(7, 1) goal=(1, 11)
-
-_LOCAL_LAYOUT_05 = _maze_from_strings([
-    "#############",
-    "#.....#.....#",
-    "#.#####.#.#.#",
-    "#...........#",
-    "#.#.###.#.#.#",
-    "#.....#.....#",
-    "#.###.#.#.#.#",
-    "#...........#",
-    "#############",
-])
-# score=45.08 reset=(1, 5) goal=(7, 11)
-
-_LOCAL_LAYOUT_06 = _maze_from_strings([
-    "#############",
-    "#...#.......#",
-    "#.#.#.#####.#",
-    "#.#.#.#.....#",
-    "#.#.#.#.#.#.#",
-    "#.#.....#.#.#",
-    "#.#.#####.#.#",
-    "#.....#.....#",
-    "#############",
-])
-# score=50.12 reset=(3, 1) goal=(7, 11)
-
-_LOCAL_LAYOUT_07 = _maze_from_strings([
-    "#############",
-    "#.#.......#.#",
-    "#.#.#.###.#.#",
-    "#.#.#...#.#.#",
-    "#.#.###.#.#.#",
-    "#.......#...#",
-    "#.#.#.#.###.#",
-    "#.....#.....#",
-    "#############",
-])
-# score=49.87 reset=(1, 11) goal=(1, 1)
-
-_LOCAL_LAYOUT_08 = _maze_from_strings([
-    "#############",
-    "#...#.......#",
-    "#.#.#.#######",
-    "#...........#",
-    "#.#.###.#.#.#",
-    "#.#...#.....#",
-    "#.#.#######.#",
-    "#...........#",
-    "#############",
-])
-# score=49.93 reset=(1, 11) goal=(7, 9)
-
-_LOCAL_LAYOUT_09 = _maze_from_strings([
-    "#############",
-    "#.........#.#",
-    "#.#######.#.#",
-    "#...........#",
-    "######.####.#",
-    "#...........#",
-    "#.#.#.###.#.#",
-    "#......#....#",
-    "#############",
-])
-# score=42.85 reset=(6, 11) goal=(1, 1)
-
-_TEST_LAYOUT_01 = _maze_from_strings([
-    "#############",
-    "#...........#",
-    "#.#.#.#.#.#.#",
-    "#...#.......#",
-    "###.#.#.#.#.#",
-    "#.#.........#",
-    "#.#.###.#.#.#",
-    "#...........#",
-    "#############",
-])
-# score=44.99 reset=(5, 1) goal=(1, 11)
-
-_TEST_LAYOUT_02 = _maze_from_strings([
-    "#############",
-    "#...........#",
-    "#.#####.#.#.#",
-    "#.......#.#.#",
-    "#####.###.#.#",
-    "#.....#...#.#",
-    "#.#.#.#.#.#.#",
-    "#.......#...#",
-    "#############",
-])
-# score=42.06 reset=(7, 1) goal=(1, 11)
-
-_TEST_LAYOUT_03 = _maze_from_strings([
-    "#############",
-    "#...........#",
-    "#.#.#.#.#.#.#",
-    "#.#.........#",
-    "#.#.#.#.#.#.#",
-    "#.#...#.#.#.#",
-    "#.#.#.###.#.#",
-    "#...#.....#.#",
-    "#############",
-])
-# score=47.02 reset=(7, 1) goal=(7, 11)
-
-_TEST_LAYOUT_04 = _maze_from_strings([
-    "###########",
-    "#.........#",
-    "#.#.#####.#",
-    "#.....#...#",
-    "#.###.#.#.#",
-    "#...#...#.#",
-    "#.#.#.###.#",
-    "#.#...#...#",
-    "###########",
-])
-# score=50.72 reset=(7, 1) goal=(5, 7)
-
-_ULTRA = _maze_from_strings([
-    "################",
-    "#.......#......#",
-    "#.###.#.#.##.#.#",
-    "#.###.#....#.#.#",
-    "#...#.##.###.#.#",
-    "#.#...#........#",
-    "#...#...#.###.##",
-    "#.#.###.#...#.##",
-    "#.......#.#....#",
-    "##.##.#...####.#",
-    "##.#..#.#......#",
-    "################",
-])
-# AntMaze-Ultra eval map from Farama D4RL PR #220.
-# reset=(1, 1) goal=(10, 14)
-
-_LARGE = [
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
-    [1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1],
-    [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
-    [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1],
-    [1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1],
-    [1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1],
-    [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-]
-
-_UMAZE_EVAL = [
-    [1, 1, 1, 1, 1],
-    [1, 0, 0, "r", 1],
-    [1, 0, 1, 1, 1],
-    [1, 0, 0, "g", 1],
-    [1, 1, 1, 1, 1],
-]
-
-_MEDIUM_EVAL = [
-    [1, 1, 1, 1, 1, 1, 1, 1],
-    [1, "r", 0, 1, 1, 0, 0, 1],
-    [1, 0, 0, 1, 0, 0, 0, 1],
-    [1, 1, 0, 0, 0, 1, 1, 1],
-    [1, 0, 0, 1, 0, 0, 0, 1],
-    [1, 0, 1, 0, 0, 1, 0, 1],
-    [1, 0, 0, 0, 1, 0, "g", 1],
-    [1, 1, 1, 1, 1, 1, 1, 1],
-]
-
-_LARGE_EVAL = [
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, "r", 0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
-    [1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1],
-    [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
-    [1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1],
-    [1, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1],
-    [1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1],
-    [1, 0, 0, 1, 0, 0, 0, 1, 0, "g", 0, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-]
-
-
-def _variant(
+def _build_remote_variant(
+    variant_name: str,
     *,
-    dataset_id: str,
-    env_id: str,
     env_name: str,
     dataset_style: str,
-    maze_map: list[list[int]],
-    eval_maze_map: list[list[int | str]],
     structure_desc_en: str,
 ) -> dict:
+    facts = ANTMAZE_ENV_FACTS[variant_name]
     return {
-        "dataset_id": dataset_id,
-        "env_id": env_id,
-        "env_kwargs": {
-            "maze_map": eval_maze_map,
-            "reward_type": "sparse",
-            "continuing_task": True,
-            "reset_target": False,
-        },
+        "dataset_id": facts["dataset_id"],
+        "env_id": facts["env_id"],
+        "env_kwargs": dict(facts["env_kwargs"]),
+        "eval_reset_cell": list(facts["eval_reset_cell"]),
+        "eval_goal_cell": list(facts["eval_goal_cell"]),
         "prompt_vars": _build_prompt_vars(
             env_name=env_name,
             dataset_style=dataset_style,
-            maze_map=maze_map,
+            maze_map=facts["maze_map"],
             structure_desc_en=structure_desc_en,
         ),
     }
-
-
-def _default_local_max_episode_steps(maze_map: list[list[int]]) -> int:
-    rows = len(maze_map)
-    cols = len(maze_map[0]) if maze_map else 0
-    return max(1000, rows * cols * 8)
-
-
-def _clean_maze_map(maze_map: list[list[object]]) -> list[list[int]]:
-    return [[1 if cell == 1 else 0 for cell in row] for row in maze_map]
-
-
-def _mark_cells(
-    maze_map: list[list[object]],
-    markers: list[tuple[int, int, str]],
-) -> list[list[object]]:
-    marked = [list(row) for row in maze_map]
-    for row, col, marker in markers:
-        if row < 0 or row >= len(marked) or col < 0 or col >= len(marked[row]):
-            raise ValueError(f"Marker cell {(row, col)} is outside the maze")
-        if marked[row][col] == 1:
-            raise ValueError(f"Marker cell {(row, col)} is a wall")
-        marked[row][col] = marker
-    return marked
 
 
 def _build_local_variant(
     *,
     index: int | None = None,
     variant_name: str | None = None,
-    maze_map: list[list[int]],
-    eval_reset_cell: tuple[int, int],
-    eval_goal_cell: tuple[int, int],
+    env_name: str | None = None,
     structure_desc_en: str,
     dataset_style: str = "local reset and goal trajectories",
-    max_episode_steps: int | None = None,
-    env_name: str | None = None,
 ) -> dict:
     if variant_name is None:
         if index is None:
@@ -365,208 +71,122 @@ def _build_local_variant(
             env_name = f"AntMaze Local Layout {index:02d}"
         else:
             env_name = f"AntMaze {variant_name}"
-    clean_map = _clean_maze_map(maze_map)
-    episode_steps = (
-        int(max_episode_steps)
-        if max_episode_steps is not None
-        else _default_local_max_episode_steps(clean_map)
-    )
-    eval_maze_map = _mark_cells(
-        clean_map,
-        [
-            (int(eval_reset_cell[0]), int(eval_reset_cell[1]), R),
-            (int(eval_goal_cell[0]), int(eval_goal_cell[1]), G),
-        ],
-    )
+    facts = ANTMAZE_ENV_FACTS[variant_name]
     return {
         "varient_type": "local",
-        "dataset_path": f"local_datasets/antmaze-{variant_name}-v0",
-        "collection_env_paras": {
-            "id": "AntMaze_UMaze-v4",
-            "maze_map": clean_map,
-            "reward_type": "sparse",
-            "continuing_task": True,
-            "reset_target": False,
-            "max_episode_steps": episode_steps,
-        },
-        "env_paras": {
-            "id": "AntMaze_UMaze-v4",
-            "maze_map": eval_maze_map,
-            "reward_type": "sparse",
-            "continuing_task": True,
-            "reset_target": False,
-            "max_episode_steps": episode_steps,
-        },
+        "dataset_path": facts["dataset_path"],
+        "env_paras": dict(facts["env_paras"]),
+        "eval_reset_cell": list(facts["eval_reset_cell"]),
+        "eval_goal_cell": list(facts["eval_goal_cell"]),
         "prompt_vars": _build_prompt_vars(
             env_name=env_name,
             dataset_style=dataset_style,
-            maze_map=clean_map,
+            maze_map=facts["maze_map"],
             structure_desc_en=structure_desc_en,
         ),
     }
 
 
 ANTMAZE_VARIANTS = {
-    "umaze": _variant(
-        dataset_id="D4RL/antmaze/umaze-v1",
-        env_id="AntMaze_UMaze-v4",
+    "umaze": _build_remote_variant(
+        "umaze",
         env_name="AntMaze UMaze",
         dataset_style="fixed reset and goal locations",
-        maze_map=_UMAZE,
-        eval_maze_map=_UMAZE_EVAL,
         structure_desc_en="A compact U-shaped maze with one long route around a central wall.",
     ),
-    "umaze-diverse": _variant(
-        dataset_id="D4RL/antmaze/umaze-diverse-v1",
-        env_id="AntMaze_UMaze-v4",
+    "umaze-diverse": _build_remote_variant(
+        "umaze-diverse",
         env_name="AntMaze UMaze Diverse",
         dataset_style="diverse offline trajectories in the U-shaped maze",
-        maze_map=_UMAZE,
-        eval_maze_map=_UMAZE_EVAL,
         structure_desc_en="A compact U-shaped maze with one long route around a central wall.",
     ),
-    "medium-play": _variant(
-        dataset_id="D4RL/antmaze/medium-play-v1",
-        env_id="AntMaze_Medium-v4",
+    "medium-play": _build_remote_variant(
+        "medium-play",
         env_name="AntMaze Medium Play",
         dataset_style="play-style trajectories with varied starts and goals",
-        maze_map=_MEDIUM,
-        eval_maze_map=_MEDIUM_EVAL,
         structure_desc_en="A medium maze with several corridors, turns, and dead ends.",
     ),
-    "medium-diverse": _variant(
-        dataset_id="D4RL/antmaze/medium-diverse-v1",
-        env_id="AntMaze_Medium_Diverse_GR-v4",
+    "medium-diverse": _build_remote_variant(
+        "medium-diverse",
         env_name="AntMaze Medium Diverse",
         dataset_style="diverse-goal-and-reset trajectories",
-        maze_map=_MEDIUM,
-        eval_maze_map=_MEDIUM_EVAL,
         structure_desc_en="A medium maze with several corridors, turns, and dead ends.",
     ),
-    "large-play": _variant(
-        dataset_id="D4RL/antmaze/large-play-v1",
-        env_id="AntMaze_Large-v4",
+    "large-play": _build_remote_variant(
+        "large-play",
         env_name="AntMaze Large Play",
         dataset_style="play-style trajectories with varied starts and goals",
-        maze_map=_LARGE,
-        eval_maze_map=_LARGE_EVAL,
         structure_desc_en="A large maze with long corridors, branches, and narrow bottlenecks.",
     ),
-    "large-diverse": _variant(
-        dataset_id="D4RL/antmaze/large-diverse-v1",
-        env_id="AntMaze_Large_Diverse_GR-v4",
+    "large-diverse": _build_remote_variant(
+        "large-diverse",
         env_name="AntMaze Large Diverse",
         dataset_style="diverse-goal-and-reset trajectories",
-        maze_map=_LARGE,
-        eval_maze_map=_LARGE_EVAL,
         structure_desc_en="A large maze with long corridors, branches, and narrow bottlenecks.",
     ),
     "local-layout-01": _build_local_variant(
         index=1,
-        maze_map=_LOCAL_LAYOUT_01,
-        eval_reset_cell=(1, 1),
-        eval_goal_cell=(7, 11),
         structure_desc_en="A compact generated AntMaze layout in the 45 static-difficulty band, with open corridor choices and light bottlenecks.",
     ),
     "local-layout-02": _build_local_variant(
         index=2,
-        maze_map=_LOCAL_LAYOUT_02,
-        eval_reset_cell=(7, 1),
-        eval_goal_cell=(5, 11),
         structure_desc_en="A compact generated AntMaze layout in the 45 static-difficulty band, with open corridor choices and light bottlenecks.",
     ),
     "local-layout-03": _build_local_variant(
         index=3,
-        maze_map=_LOCAL_LAYOUT_03,
-        eval_reset_cell=(7, 1),
-        eval_goal_cell=(1, 11),
         structure_desc_en="A compact generated AntMaze layout in the 45 static-difficulty band, with open corridor choices and light bottlenecks.",
     ),
     "local-layout-04": _build_local_variant(
         index=4,
-        maze_map=_LOCAL_LAYOUT_04,
-        eval_reset_cell=(7, 1),
-        eval_goal_cell=(1, 11),
         structure_desc_en="A compact generated AntMaze layout in the 45 static-difficulty band, with open corridor choices and light bottlenecks.",
     ),
     "local-layout-05": _build_local_variant(
         index=5,
-        maze_map=_LOCAL_LAYOUT_05,
-        eval_reset_cell=(1, 5),
-        eval_goal_cell=(7, 11),
         structure_desc_en="A compact generated AntMaze layout in the 45 static-difficulty band, with open corridor choices and light bottlenecks.",
     ),
     "local-layout-06": _build_local_variant(
         index=6,
-        maze_map=_LOCAL_LAYOUT_06,
-        eval_reset_cell=(3, 1),
-        eval_goal_cell=(7, 11),
         structure_desc_en="A compact generated AntMaze layout in the 50 static-difficulty band, with longer turns and moderate bottlenecks.",
     ),
     "local-layout-07": _build_local_variant(
         index=7,
-        maze_map=_LOCAL_LAYOUT_07,
-        eval_reset_cell=(1, 11),
-        eval_goal_cell=(1, 1),
         structure_desc_en="A compact generated AntMaze layout in the 50 static-difficulty band, with longer turns and moderate bottlenecks.",
     ),
     "local-layout-08": _build_local_variant(
         index=8,
-        maze_map=_LOCAL_LAYOUT_08,
-        eval_reset_cell=(1, 11),
-        eval_goal_cell=(7, 9),
         structure_desc_en="A compact generated AntMaze layout in the 50 static-difficulty band, with longer turns and moderate bottlenecks.",
     ),
     "local-layout-09": _build_local_variant(
         index=9,
-        maze_map=_LOCAL_LAYOUT_09,
-        eval_reset_cell=(6, 11),
-        eval_goal_cell=(1, 1),
         structure_desc_en="A compact generated AntMaze layout in the 45 static-difficulty band, with open corridor choices and light bottlenecks.",
     ),
     "test-layout-01": _build_local_variant(
         variant_name="test-layout-01",
         env_name="AntMaze Test Layout 01",
-        maze_map=_TEST_LAYOUT_01,
-        eval_reset_cell=(5, 1),
-        eval_goal_cell=(1, 11),
         structure_desc_en="A held-out compact generated AntMaze layout in the 45 static-difficulty band.",
         dataset_style="held-out local reset and goal trajectories",
     ),
     "test-layout-02": _build_local_variant(
         variant_name="test-layout-02",
         env_name="AntMaze Test Layout 02",
-        maze_map=_TEST_LAYOUT_02,
-        eval_reset_cell=(7, 1),
-        eval_goal_cell=(1, 11),
         structure_desc_en="A held-out compact generated AntMaze layout in the 45 static-difficulty band.",
         dataset_style="held-out local reset and goal trajectories",
     ),
     "test-layout-03": _build_local_variant(
         variant_name="test-layout-03",
         env_name="AntMaze Test Layout 03",
-        maze_map=_TEST_LAYOUT_03,
-        eval_reset_cell=(7, 1),
-        eval_goal_cell=(7, 11),
         structure_desc_en="A held-out compact generated AntMaze layout in the 50 static-difficulty band.",
         dataset_style="held-out local reset and goal trajectories",
     ),
     "test-layout-04": _build_local_variant(
         variant_name="test-layout-04",
         env_name="AntMaze Test Layout 04",
-        maze_map=_TEST_LAYOUT_04,
-        eval_reset_cell=(7, 1),
-        eval_goal_cell=(5, 7),
         structure_desc_en="A held-out compact generated AntMaze layout in the 50 static-difficulty band.",
         dataset_style="held-out local reset and goal trajectories",
     ),
     "ultra": _build_local_variant(
         variant_name="ultra",
         env_name="AntMaze Ultra",
-        maze_map=_ULTRA,
-        eval_reset_cell=(1, 1),
-        eval_goal_cell=(10, 14),
-        max_episode_steps=2000,
         structure_desc_en="An experimental AntMaze-Ultra layout from Farama D4RL PR #220, larger than the official large map with long corridors and sparse bottlenecks.",
         dataset_style="experimental local AntMaze-Ultra trajectories",
     ),

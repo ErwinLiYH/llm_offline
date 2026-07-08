@@ -6,14 +6,13 @@ import sys
 import traceback
 import uuid
 
-import gymnasium as gym
 import gymnasium_robotics  # noqa: F401 registers maze environments
 import numpy as np
 
+from crossmaze import make as crossmaze_make
 from data.pointmaze.variants import POINTMAZE_VARIANTS
-from data.registry import get_formatter, resolve_variant_env_spec
+from data.registry import get_formatter, get_variant
 from utils.eval_rollout import render_policy_prompt, validate_history_config
-from utils.pointmaze_score import build_pointmaze_score_env_spec, make_pointmaze_score_env
 from utils.rollout.artifacts import (
     capture_render_frame,
     capture_video_frames,
@@ -25,16 +24,6 @@ from utils.rollout.artifacts import (
 from utils.rollout.protocol import ActionRequest, ActionResponse, EpisodeResult
 from utils.sensing_config import apply_sensing_config_to_prompt_vars
 from utils.video_writer import VideoSaveManager
-
-
-def _prepare_video_env_kwargs(config: dict, env_kwargs: dict) -> dict:
-    resolved = dict(env_kwargs)
-    if not bool(config.get("record_video", False)):
-        return resolved
-    render_mode = resolved.get("render_mode")
-    if render_mode != "rgb_array":
-        resolved["render_mode"] = "rgb_array"
-    return resolved
 
 
 def _prepare_eval_prompt_vars(formatter, prompt_vars: dict, env) -> dict:
@@ -130,23 +119,24 @@ class _RolloutWorker:
             return
 
         if self.mode == "score":
-            score_env_spec = build_pointmaze_score_env_spec(self.variant, self.config)
-            self.env = make_pointmaze_score_env(
-                score_env_spec,
-                render_mode="rgb_array" if self.config.get("record_video", False) else None,
+            self.env = crossmaze_make(
+                self.config["env_family"],
+                self.variant,
+                mode="score",
+                config=self.config,
             )
             self.prompt_vars = apply_sensing_config_to_prompt_vars(
                 POINTMAZE_VARIANTS[self.variant]["prompt_vars"],
                 self.config,
             )
         else:
-            meta, env_id, env_kwargs = resolve_variant_env_spec(
+            meta = get_variant(self.config["env_family"], self.variant)
+            self.env = crossmaze_make(
                 self.config["env_family"],
                 self.variant,
+                mode="eval",
+                config=self.config,
             )
-            env_kwargs.update(dict(self.config.get("env_kwargs") or {}))
-            env_kwargs = _prepare_video_env_kwargs(self.config, env_kwargs)
-            self.env = gym.make(env_id, **env_kwargs)
             self.prompt_vars = _prepare_eval_prompt_vars(
                 self.formatter,
                 meta["prompt_vars"],
@@ -156,6 +146,7 @@ class _RolloutWorker:
                 self.prompt_vars,
                 self.config,
             )
+        self.env.assert_meta_consistent(self.prompt_vars)
 
         self.action_shape = tuple(int(value) for value in self.env.action_space.shape)
         self.action_dim = int(self.env.action_space.shape[0])

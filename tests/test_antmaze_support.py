@@ -1093,8 +1093,9 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertEqual(meta["varient_type"], "local")
         self.assertEqual(meta["dataset_path"], "local_datasets/antmaze-ultra-v0")
         self.assertEqual(meta["env_paras"]["max_episode_steps"], 2000)
-        self.assertEqual(meta["env_paras"]["maze_map"][1][1], "r")
-        self.assertEqual(meta["env_paras"]["maze_map"][10][14], "g")
+        self.assertEqual(meta["env_paras"]["maze_map"], meta["prompt_vars"]["maze_map"])
+        self.assertEqual(meta["eval_reset_cell"], [1, 1])
+        self.assertEqual(meta["eval_goal_cell"], [10, 14])
         self.assertEqual(meta["prompt_vars"]["maze_shape"], "12x16")
 
     def test_registered_eval_env_matches_d4rl_observation_contract(self):
@@ -1145,7 +1146,7 @@ class AntMazeSupportTest(unittest.TestCase):
                 finally:
                     env.close()
 
-    def test_eval_sensing_uses_instantiated_official_eval_map(self):
+    def test_eval_sensing_uses_instantiated_collection_map(self):
         for variant in ANTMAZE_VARIANTS:
             with self.subTest(variant=variant):
                 meta, env_id, env_kwargs = resolve_variant_env_spec(
@@ -1186,8 +1187,8 @@ class AntMazeSupportTest(unittest.TestCase):
         try:
             prompt_vars = formatting.prepare_eval_prompt_vars(meta["prompt_vars"], env)
             maze = env.unwrapped.maze
-            current_xy = maze.cell_rowcol_to_xy(np.asarray([1, 3]))
-            goal_xy = maze.cell_rowcol_to_xy(np.asarray([3, 3]))
+            current_xy = maze.cell_rowcol_to_xy(np.asarray(meta["eval_reset_cell"]))
+            goal_xy = maze.cell_rowcol_to_xy(np.asarray(meta["eval_goal_cell"]))
             obs = {
                 "observation": np.zeros(27, dtype=np.float32),
                 "achieved_goal": current_xy,
@@ -1197,13 +1198,14 @@ class AntMazeSupportTest(unittest.TestCase):
             payload = formatting.format_obs(obs, prompt_vars)
 
             self.assertEqual(prompt_vars["maze_map"], maze.maze_map)
+            self.assertEqual(prompt_vars["maze_map"], meta["prompt_vars"]["maze_map"])
             self.assertIn(
-                "Current cell: row 2, column 4. Goal cell: row 4, column 4.",
+                "Current cell: row 2, column 2. Goal cell: row 4, column 2.",
                 payload["location_sensing_en"],
             )
             self.assertEqual(
                 payload["wall_sensing_en"],
-                "Neighboring cells: up=wall, down=wall, left=free, right=wall.",
+                "Neighboring cells: up=wall, down=wall, left=wall, right=free.",
             )
         finally:
             env.close()

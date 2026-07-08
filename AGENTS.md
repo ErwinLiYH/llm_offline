@@ -50,9 +50,10 @@ Key files:
 - `evaluate.py`: entry point; reads one or more eval config YAML files
 - `score.py`: official-style PointMaze normalized score entry point; reads one or more score config YAML files
 - `estimate_dataset.py`: tokenizer-only dataset size estimator; reads one or more training config YAML files and reports selected steps, one-epoch batches, estimated tokenized `.pkl` GB, and estimated tokenized-sample Python memory GB
+- `crossmaze/`: standalone environment package (installable via the repo-root `pyproject.toml`, deps: numpy/gymnasium/gymnasium-robotics only). It owns all environment facts and construction: `crossmaze.maps` (plain 0/1 maze layouts), `crossmaze.variants` (per-variant env facts: env id/kwargs, dataset id/path, horizons, AntMaze `eval_reset_cell`/`eval_goal_cell`), `crossmaze.sensing` + `crossmaze.sensing_config` (canonical location/wall sensing), `crossmaze.layout` (visual map/raw matrix/shape rendering), `crossmaze.score` (official PointMaze score env specs/fingerprints/env construction), `crossmaze.make(env_family, variant, mode="eval|score", config=...)`, and `CrossMazeEnv` (gym wrapper attaching structured `obs["crossmaze"]` and applying default eval reset options). The rest of the repo only builds envs through `crossmaze.make`, renders prompts, and interacts.
 - `data/registry.py`: routes `env_family` to dataset, formatter, variants, and eval env specs
 - `data/base_dataset.py`: abstract dataset interface
-- `data/<env_family>/variants.py`: variant metadata
+- `data/<env_family>/variants.py`: prompt copywriting assembled over `crossmaze.variants` env facts
 - `data/<env_family>/dataset.py`: load data, expand to one sample per selected prompt template per timestep, tokenize
 - `data/<env_family>/formatting.py`: `format_obs`, `format_action`, `parse_action`, `validate_action`
 - `model/policy.py`: load base model and LoRA adapters
@@ -63,8 +64,8 @@ Key files:
 - `utils/eval_parallel.py`: eval episode-count validation and DDP variant-to-rank assignment
 - `utils/eval_rollout.py`: shared prompt rendering, history sampling, model action generation, parse retry, fallback, and action-bin eval logging helpers
 - `utils/experiment_config.py`: save per-experiment runtime config snapshots
-- `utils/maze_sensing.py`: shared maze xy-to-cell conversion plus location and conservative four-neighbor wall sensing
-- `utils/pointmaze_score.py`: PointMaze score env specs, official remote reference scores, local reference validation, env fingerprints, and normalized score helpers
+- `utils/maze_sensing.py` / `utils/sensing_config.py`: re-export shims over `crossmaze.sensing` / `crossmaze.sensing_config`; only checkpoint sensing-config merging (`apply_checkpoint_sensing_config`) stays repo-side
+- `utils/pointmaze_score.py`: official remote reference scores, local reference validation, and normalized score helpers; score env specs/fingerprints/construction are re-exported from `crossmaze.score`
 - `utils/prompt_loader.py`: load shared prompt templates for an environment family
 - `utils/variant_selection.py`: resolve `single | all | except` plus variant lists into concrete training/eval sets
 - `prompts/<env_family>/<prompt_name>.txt`: shared prompt templates for that family; the filename stem is the prompt name
@@ -90,13 +91,13 @@ To add a new environment family:
 
 ## Implementation Notes
 
-- Observation/action formatting remains per environment family; common maze geometry and sensing live in `utils/maze_sensing.py`.
+- Observation/action formatting remains per environment family; common maze geometry and sensing live in `crossmaze.sensing` (re-exported through `utils/maze_sensing.py`).
 - AntMaze supports the six official Minari D4RL datasets: `umaze`, `umaze-diverse`, `medium-play`, `medium-diverse`, `large-play`, and `large-diverse`. Local/custom AntMaze maps are not implemented.
 - AntMaze intentionally uses the Minari metadata's Gymnasium Robotics v4 env specs. The offline contract is a 27-dimensional proprioceptive `observation`, 2D `achieved_goal`, 2D `desired_goal`, and 8-dimensional torque action. Do not silently switch rollout to v5 defaults, which include contact-force observations and change the input shape.
 - AntMaze keeps `0` for text actions. Its action-bin prompts are `bin_full_sensing`, `bin_loca_sensing`, `bin_wall_sensing`, and `bin_no_sensing`, shared by `bin` / `gaussian_bin` / `mtp_bin` / `simple_mtp_bin`; continuous prompts are `parallel_full_sensing`, `parallel_loca_sensing`, `parallel_wall_sensing`, and `parallel_no_sensing`, shared by `parallel_l1` / `parallel_gaussian` / `parallel_t`.
 - AntMaze text actions use eight comma-separated integer hundredths in actuator order: back-right hip/ankle, front-left hip/ankle, front-right hip/ankle, back-left hip/ankle.
 - AntMaze emits the same `location_sensing_*` / `wall_sensing_*` fields as PointMaze, using torso `achieved_goal` xy and `maze_size_scaling: 4.0`; history entries include torso xy, 1-based row/column, and the executed action.
-- Official AntMaze evaluation maps can differ from the offline collection maps, including UMaze wall orientation. During rollout, `evaluate.py` lets the AntMaze formatter refresh prompt map, visual map, and scaling from the instantiated environment before rendering sensing fields.
+- AntMaze evaluation deliberately uses the same maps the D4RL offline data was collected on (the official eval UMaze map is mirrored relative to the collection map; medium/large walls are identical). Fixed eval start/goal are recorded as `eval_reset_cell` / `eval_goal_cell` coordinates in `crossmaze.variants` — never as "r"/"g" map markers — and `CrossMazeEnv` applies them automatically through `reset(options=...)` (position noise and seeding semantics match the official r/g sampling). UMaze eval cells are the mirror image of the official ones: reset (1,1), goal (3,1). The AntMaze formatter still refreshes prompt map/visual/scaling from the instantiated env as a guard; with unified maps this is an identity operation. Because the r/g maps left the variant metadata, AntMaze dataset cache signatures shifted once with this change (tokenized content is unchanged; old AntMaze caches are simply rebuilt). Official PointMaze scoring (`score.py`) is the one deliberate exception and keeps the official goal-marked eval maps and reference semantics.
 - Shared prompt templates render the environment/task text only; final training/eval token sequences are built through the model tokenizer's native `chat_template`, not by plain-text concatenation.
 - Qwen3.5 models loaded through Unsloth may return a `Qwen3VLProcessor` instead of a plain tokenizer. The outer processor does not expose tokenizer mutation methods such as `add_special_tokens`; unwrap `processor.tokenizer` first. In this repo, use `utils.action_bins.get_tokenizer_backend(...)` before adding action tokens, resizing embeddings, selecting reused action token ids, or looking up action token ids.
 - `evaluate.py` uses `registry.get_formatter(env_family)` for text-mode `parse_action` and all-mode `validate_action`; bin-mode parsing is centralized in `utils.action_bins.ActionBinCodec` and uses generated/AQT-selected token ids; `mtp_bin`, `simple_mtp_bin`, and continuous modes skip `generate()` and run direct forward paths.

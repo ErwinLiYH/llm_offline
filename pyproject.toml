@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crossmaze"
+version = "0.1.0"
+description = "CrossMaze: PointMaze/AntMaze benchmark environments with structured maze layout and sensing observations"
+readme = { text = "CrossMaze wraps Gymnasium-Robotics PointMaze/AntMaze environments, attaching structured maze layout, location sensing, and wall sensing to observations. Evaluation environments use the same maps the D4RL offline data was collected on, with fixed start/goal cells applied through reset options.", content-type = "text/plain" }
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "numpy",
+    "gymnasium>=1.0",
+    "gymnasium-robotics>=1.4",
+]
+
+[tool.setuptools]
+packages = [
+    "crossmaze",
+]

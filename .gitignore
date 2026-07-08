@@ -78,6 +78,9 @@ tests/*
 !tests/test_estimate_dataset.py
 !tests/test_config_loader.py
 !tests/test_variant_selection.py
+!tests/test_crossmaze.py
+!tests/fixtures/
+!tests/fixtures/*
 scripts/
 exp_configs/
 local_references/
@@ -85,3 +88,6 @@ score_results/
 
 *.err
 *.out
+
+# core dumps
+/core
