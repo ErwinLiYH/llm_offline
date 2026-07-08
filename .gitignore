@@ -66,21 +66,6 @@ Thumbs.db
 # unsloth cache
 unsloth_compiled_cache/
 
-
-tests/
-!tests/
-tests/*
-!tests/test_eval_parallel.py
-!tests/test_antmaze_support.py
-!tests/test_resource_monitor.py
-!tests/test_resume_training_state.py
-!tests/test_partition_sharding.py
-!tests/test_estimate_dataset.py
-!tests/test_config_loader.py
-!tests/test_variant_selection.py
-!tests/test_crossmaze.py
-!tests/fixtures/
-!tests/fixtures/*
 scripts/
 exp_configs/
 local_references/
