@@ -1641,4 +1641,3 @@ type: project
 - eval/score rollout worker 统一通过 `crossmaze.make(env_family, variant, mode="eval|score", config=...)` 构造环境；`CrossMazeEnv` 在 observation 中附加 `obs["crossmaze"]` 结构化 sensing state，并用 `assert_meta_consistent(...)` 检查 prompt/env 几何和 sensing 配置一致
 - AntMaze eval 改为使用 offline collection map + `eval_reset_cell` / `eval_goal_cell` 坐标，由 `CrossMazeEnv.reset(options=...)` 应用固定评测起点/终点，不再在 variant eval map 中写入 `r/g` 标记；AntMaze cache signature 因 variant metadata 统一发生一次性变化
 - PointMaze official score env construction 移入 `crossmaze.score`，仍保留官方 goal-marked score maps、official horizons、local reference fingerprint 语义，并在 standalone helper 中注册 Gymnasium Robotics env
-- 一次性 golden parity / smoke 验证用于确认 extraction 前后 sensing、prompt 和 cache signature 行为一致；相关大 fixture 可作为历史验证记录保留，不要求长期留在主分支最终文件树中
