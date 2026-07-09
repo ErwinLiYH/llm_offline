@@ -45,6 +45,8 @@ if [[ -n "${MAX_EPISODE_ATTEMPTS}" ]]; then
     EXTRA_ARGS+=(--max-episode-attempts "${MAX_EPISODE_ATTEMPTS}")
 fi
 
+# Do not inherit login-session TMPDIR (/local/user/<uid> -> /run/user, deleted by logind ~20s into the job)
+export TMPDIR=/tmp
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1

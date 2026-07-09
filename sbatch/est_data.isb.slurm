@@ -136,6 +136,8 @@ for CONFIG_PATH in "${CONFIG_PATHS[@]}"; do
     fi
 done
 
+# Do not inherit login-session TMPDIR (/local/user/<uid> -> /run/user, deleted by logind ~20s into the job)
+export TMPDIR=/tmp
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=16

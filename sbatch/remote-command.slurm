@@ -21,6 +21,8 @@ REMOTE_COMMAND_PORT=${REMOTE_COMMAND_PORT:-8000}
 STATE_DIRECTORY=${SLURM_TMPDIR:-/tmp}/remote-command-${USER}-${SLURM_JOB_ID}
 
 export PATH="${ENV_BIN}:${PATH}"
+# Do not inherit login-session TMPDIR (/local/user/<uid> -> /run/user, deleted by logind ~20s into the job)
+export TMPDIR=/tmp
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=32

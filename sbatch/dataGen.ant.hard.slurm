@@ -42,6 +42,8 @@ VARIANTS=(
 
 VARIANT=${VARIANTS[${SLURM_ARRAY_TASK_ID}]}
 
+# Do not inherit login-session TMPDIR (/local/user/<uid> -> /run/user, deleted by logind ~20s into the job)
+export TMPDIR=/tmp
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
