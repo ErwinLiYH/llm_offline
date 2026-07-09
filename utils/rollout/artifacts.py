@@ -10,6 +10,9 @@ from utils.record_format import format_eval_step_text
 from utils.video_writer import VideoSaveManager
 
 
+_ANTMAZE_GLOBAL_FLOOR_RGBA = np.array([0.18, 0.22, 0.26, 1.0], dtype=np.float64)
+
+
 def set_episode_rng_seed(seed: int | None):
     if seed is None:
         return
@@ -50,7 +53,127 @@ def normalize_render_frame(frame) -> np.ndarray:
     return arr
 
 
-def capture_render_frame(env, frames: list[np.ndarray]):
+def _mujoco_render_owner(env, env_family: str | None):
+    unwrapped = getattr(env, "unwrapped", env)
+    candidates = []
+    if env_family == "pointmaze":
+        candidates.append(getattr(unwrapped, "point_env", None))
+    elif env_family == "antmaze":
+        candidates.append(getattr(unwrapped, "ant_env", None))
+    candidates.extend([unwrapped, env])
+
+    for owner in candidates:
+        if owner is None:
+            continue
+        renderer = getattr(owner, "mujoco_renderer", None)
+        if renderer is not None and hasattr(renderer, "_get_viewer"):
+            return owner, renderer
+    return None, None
+
+
+def _camera_state(cam) -> dict:
+    return {
+        "type": cam.type,
+        "fixedcamid": cam.fixedcamid,
+        "lookat": np.array(cam.lookat, dtype=np.float64),
+        "distance": cam.distance,
+        "elevation": cam.elevation,
+        "azimuth": cam.azimuth,
+    }
+
+
+def _restore_camera_state(cam, state: dict):
+    cam.type = state["type"]
+    cam.fixedcamid = state["fixedcamid"]
+    cam.lookat[:] = state["lookat"]
+    cam.distance = state["distance"]
+    cam.elevation = state["elevation"]
+    cam.azimuth = state["azimuth"]
+
+
+def _maze_topdown_distance(
+    env,
+    owner,
+    *,
+    min_distance: float,
+    fallback_extent_multiplier: float,
+) -> float:
+    unwrapped = getattr(env, "unwrapped", env)
+    maze = getattr(unwrapped, "maze", None) or getattr(owner, "maze", None)
+    if maze is not None:
+        span_x = float(maze.map_width) * float(maze.maze_size_scaling)
+        span_y = float(maze.map_length) * float(maze.maze_size_scaling)
+        return max(float(min_distance), max(span_x, span_y) * 1.6)
+
+    model = getattr(owner, "model", None)
+    extent = float(getattr(getattr(model, "stat", None), "extent", 8.0))
+    return max(float(min_distance), extent * float(fallback_extent_multiplier))
+
+
+def _resolve_topdown_camera(
+    env,
+    owner,
+    *,
+    min_distance: float,
+    fallback_extent_multiplier: float,
+) -> dict:
+    return {
+        "lookat": np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        "distance": _maze_topdown_distance(
+            env,
+            owner,
+            min_distance=min_distance,
+            fallback_extent_multiplier=fallback_extent_multiplier,
+        ),
+        "elevation": -90.0,
+        "azimuth": 90.0,
+    }
+
+
+def _capture_with_topdown_camera(env, frames: list[np.ndarray], renderer, camera: dict):
+    viewer = renderer._get_viewer("rgb_array")
+    cam = viewer.cam
+    original_renderer_camera_id = getattr(renderer, "camera_id", None)
+    original_cam_state = _camera_state(cam)
+
+    try:
+        renderer.camera_id = -1
+        cam.lookat[:] = camera["lookat"]
+        cam.distance = camera["distance"]
+        cam.elevation = camera["elevation"]
+        cam.azimuth = camera["azimuth"]
+        frame = env.render()
+        if frame is None:
+            raise ValueError("render() returned None while recording top-down view")
+        frames.append(normalize_render_frame(frame))
+    finally:
+        renderer.camera_id = original_renderer_camera_id
+        _restore_camera_state(cam, original_cam_state)
+
+
+def capture_pointmaze_render_frame(env, frames: list[np.ndarray]) -> bool:
+    owner, renderer = _mujoco_render_owner(env, "pointmaze")
+    if owner is None or renderer is None:
+        return False
+    camera = _resolve_topdown_camera(
+        env,
+        owner,
+        min_distance=7.0,
+        fallback_extent_multiplier=1.6,
+    )
+    _capture_with_topdown_camera(env, frames, renderer, camera)
+    return True
+
+
+def capture_render_frame(
+    env,
+    frames: list[np.ndarray],
+    *,
+    env_family: str | None = None,
+):
+    if env_family == "pointmaze" and capture_pointmaze_render_frame(env, frames):
+        return
+
     frame = env.render()
     if frame is None:
         raise ValueError("render() returned None; use render_mode='rgb_array' when recording")
@@ -63,23 +186,47 @@ def should_record_antmaze_global_video(config: dict) -> bool:
 
 def _resolve_antmaze_global_camera(env) -> dict:
     unwrapped = getattr(env, "unwrapped", env)
-    maze = getattr(unwrapped, "maze", None)
-    if maze is not None:
-        span_x = float(maze.map_width) * float(maze.maze_size_scaling)
-        span_y = float(maze.map_length) * float(maze.maze_size_scaling)
-        distance = max(14.0, max(span_x, span_y) * 1.6)
-    else:
-        ant_env = getattr(unwrapped, "ant_env", None)
-        model = getattr(ant_env, "model", None)
-        extent = float(getattr(getattr(model, "stat", None), "extent", 8.0))
-        distance = max(14.0, extent * 3.0)
+    ant_env = getattr(unwrapped, "ant_env", None)
+    return _resolve_topdown_camera(
+        env,
+        ant_env,
+        min_distance=14.0,
+        fallback_extent_multiplier=3.0,
+    )
 
-    return {
-        "lookat": np.array([0.0, 0.0, 0.0], dtype=np.float64),
-        "distance": distance,
-        "elevation": -90.0,
-        "azimuth": 90.0,
-    }
+
+def _geom_name(model, geom_id: int) -> str | None:
+    geom = None
+    geom_accessor = getattr(model, "geom", None)
+    if callable(geom_accessor):
+        try:
+            geom = geom_accessor(geom_id)
+        except (KeyError, IndexError, TypeError, ValueError):
+            geom = None
+    return getattr(geom, "name", None)
+
+
+def _find_geom_id(model, geom_name: str) -> int | None:
+    ngeom = int(getattr(model, "ngeom", 0))
+    for geom_id in range(ngeom):
+        if _geom_name(model, geom_id) == geom_name:
+            return geom_id
+    return None
+
+
+def _set_antmaze_global_floor_color(ant_env) -> tuple[np.ndarray, int] | None:
+    model = getattr(ant_env, "model", None)
+    geom_rgba = getattr(model, "geom_rgba", None)
+    if model is None or geom_rgba is None:
+        return None
+
+    floor_geom_id = _find_geom_id(model, "floor")
+    if floor_geom_id is None:
+        return None
+
+    original_rgba = np.array(geom_rgba[floor_geom_id], dtype=np.float64)
+    geom_rgba[floor_geom_id] = _ANTMAZE_GLOBAL_FLOOR_RGBA
+    return original_rgba, floor_geom_id
 
 
 def capture_antmaze_global_render_frame(env, frames: list[np.ndarray]):
@@ -93,14 +240,8 @@ def capture_antmaze_global_render_frame(env, frames: list[np.ndarray]):
     cam = viewer.cam
     camera = _resolve_antmaze_global_camera(env)
     original_renderer_camera_id = getattr(renderer, "camera_id", None)
-    original_cam_state = {
-        "type": cam.type,
-        "fixedcamid": cam.fixedcamid,
-        "lookat": np.array(cam.lookat, dtype=np.float64),
-        "distance": cam.distance,
-        "elevation": cam.elevation,
-        "azimuth": cam.azimuth,
-    }
+    original_cam_state = _camera_state(cam)
+    floor_state = _set_antmaze_global_floor_color(ant_env)
 
     try:
         renderer.camera_id = -1
@@ -113,21 +254,21 @@ def capture_antmaze_global_render_frame(env, frames: list[np.ndarray]):
             raise ValueError("render() returned None while recording AntMaze global view")
         frames.append(normalize_render_frame(frame))
     finally:
+        if floor_state is not None:
+            original_rgba, floor_geom_id = floor_state
+            ant_env.model.geom_rgba[floor_geom_id] = original_rgba
         renderer.camera_id = original_renderer_camera_id
-        cam.type = original_cam_state["type"]
-        cam.fixedcamid = original_cam_state["fixedcamid"]
-        cam.lookat[:] = original_cam_state["lookat"]
-        cam.distance = original_cam_state["distance"]
-        cam.elevation = original_cam_state["elevation"]
-        cam.azimuth = original_cam_state["azimuth"]
+        _restore_camera_state(cam, original_cam_state)
 
 
 def capture_video_frames(
     env,
     frames: list[np.ndarray],
     global_frames: list[np.ndarray] | None = None,
+    *,
+    env_family: str | None = None,
 ):
-    capture_render_frame(env, frames)
+    capture_render_frame(env, frames, env_family=env_family)
     if global_frames is not None:
         capture_antmaze_global_render_frame(env, global_frames)
 
@@ -195,4 +336,3 @@ def write_step_log(
         if step_index > 0:
             f.write("\n")
         f.write(step_payload)
-

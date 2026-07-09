@@ -1650,3 +1650,16 @@ type: project
 - rollout `EpisodeResult` 和 standalone eval `result.json` 新增 start/goal cell、difficulty、source/index、mean difficulty、selection policy 和 pair count 等字段；`score.py` official PointMaze scoring 不使用该 eval-position override，并在 score episode result 中剥离这些普通 eval 字段
 - `local_antmaze_gen.py` 改用 `crossmaze.eval_position.build_hard_start_goal_pair_space`，保证 AntMaze hard-sample 数据生成和 eval difficulty 计算同源
 - 新增/更新测试覆盖 hard-pair metrics、AntMaze 固定 eval cells、PointMaze hard-pair 表、seed 控制、per-episode cycle、standalone package boundary、rollout dataclass 和 score schema 隔离
+
+## PointMaze video framing and AntMaze global floor contrast（2026-07-09）
+
+- PointMaze `record_video` 的普通 `rollout.<gif|mp4>` 改为 map-aware 顶视 MuJoCo free camera；按 `maze.map_width`、`maze.map_length` 和 `maze_size_scaling` 自动拉远相机，避免 large/local 大图在视频中被默认视角裁掉
+- rollout worker 在 eval、training-time eval 和 `score.py` 录制普通视频时都会把 `env_family` 传给 frame capture，因此 PointMaze standalone eval 与 official score 视频都使用同一套完整地图取景
+- AntMaze `rollout_global.<gif|mp4>` 捕帧时临时把 `floor` geom 改成深蓝灰，增强地板与 tan ant / brown wall 的对比；捕帧完成或 render 抛错后都会恢复原始 RGBA，不影响环境状态或普通跟随视角视频
+- 新增 `tests/test_rollout_artifacts.py`，用 fake MuJoCo renderer/viewer/model 覆盖 PointMaze 顶视相机应用与恢复、AntMaze global 地板临时改色与异常恢复，以及非 PointMaze 默认 render 路径
+
+**验证：**
+- 已通过 `conda run -n llm_offline python -m unittest tests.test_rollout_artifacts`
+- 已通过 `conda run -n llm_offline python -m py_compile utils/rollout/artifacts.py utils/rollout/worker_main.py tests/test_rollout_artifacts.py`
+- 已通过 `conda run -n llm_offline python -c "import utils.rollout.artifacts; import utils.rollout.worker_main"`
+- 已通过 `git diff --check -- utils/rollout/artifacts.py utils/rollout/worker_main.py tests/test_rollout_artifacts.py`

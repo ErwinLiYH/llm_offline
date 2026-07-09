@@ -246,9 +246,18 @@ class _RolloutWorker:
         global_frames = [] if record_this_episode and record_global_video else None
         if frames is not None:
             if self.mode == "score":
-                capture_render_frame(self.env, frames)
+                capture_render_frame(
+                    self.env,
+                    frames,
+                    env_family=self.config["env_family"],
+                )
             else:
-                capture_video_frames(self.env, frames, global_frames)
+                capture_video_frames(
+                    self.env,
+                    frames,
+                    global_frames,
+                    env_family=self.config["env_family"],
+                )
 
         history_buffer = []
         episode_return = 0.0
@@ -316,9 +325,18 @@ class _RolloutWorker:
 
             if frames is not None:
                 if self.mode == "score":
-                    capture_render_frame(self.env, frames)
+                    capture_render_frame(
+                        self.env,
+                        frames,
+                        env_family=self.config["env_family"],
+                    )
                 else:
-                    capture_video_frames(self.env, frames, global_frames)
+                    capture_video_frames(
+                        self.env,
+                        frames,
+                        global_frames,
+                        env_family=self.config["env_family"],
+                    )
 
             episode_return += float(reward)
             episode_steps += 1
