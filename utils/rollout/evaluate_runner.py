@@ -4,6 +4,10 @@ from dataclasses import asdict
 
 import numpy as np
 
+from crossmaze.eval_position import (
+    eval_position_count,
+    eval_position_selection_policy,
+)
 from data.registry import get_formatter
 from utils.action_bins import uses_action_bins
 from utils.eval_parallel import (
@@ -26,6 +30,21 @@ def _mean(values, default: float = 0.0) -> float:
 
 def _std(values, default: float = 0.0) -> float:
     return float(np.std(values)) if values else float(default)
+
+
+def _eval_position_source(episodes: list[EpisodeResult]) -> str | None:
+    sources = sorted(
+        {
+            str(episode.start_goal_source)
+            for episode in episodes
+            if not episode.worker_failed and episode.start_goal_source is not None
+        }
+    )
+    if not sources:
+        return None
+    if len(sources) == 1:
+        return sources[0]
+    return "mixed"
 
 
 def run_evaluate_variant(
@@ -80,6 +99,11 @@ def run_evaluate_variant(
     total_actions = sum(int(episode.action_count) for episode in episodes)
     mean_action_time_ms = (total_action_time / total_actions * 1000) if total_actions else 0.0
     worker_failures = [failure.to_dict() for failure in supervisor_result.worker_failures]
+    start_goal_difficulties = [
+        float(episode.start_goal_difficulty)
+        for episode in episodes
+        if not episode.worker_failed and episode.start_goal_difficulty is not None
+    ]
 
     return {
         "variant": variant,
@@ -91,6 +115,17 @@ def run_evaluate_variant(
         "success_rate": _mean(successes),
         "mean_episode_steps": _mean(steps),
         "std_episode_steps": _std(steps),
+        "mean_start_goal_difficulty": (
+            _mean(start_goal_difficulties)
+            if start_goal_difficulties
+            else None
+        ),
+        "eval_position_source": _eval_position_source(episodes),
+        "eval_position_selection_policy": eval_position_selection_policy(
+            config["env_family"],
+            variant,
+        ),
+        "eval_position_count": eval_position_count(config["env_family"], variant),
         "total_parse_failures": int(sum(episode.parse_failures for episode in episodes)),
         "total_fallbacks": int(sum(episode.fallbacks for episode in episodes)),
         "mean_action_time_ms": round(mean_action_time_ms, 2),
@@ -114,4 +149,3 @@ def run_evaluate_variant(
         "video_save_workers": int(config.get("video_save_workers", 1)),
         "video_save_max_pending": config.get("video_save_max_pending", 2),
     }
-

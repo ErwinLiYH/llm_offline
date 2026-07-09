@@ -54,6 +54,11 @@ class EpisodeResult:
     video_path: str | None = None
     global_video_path: str | None = None
     episode_artifact_dir: str | None = None
+    start_cell: list[int] | None = None
+    goal_cell: list[int] | None = None
+    start_goal_difficulty: float | None = None
+    start_goal_source: str | None = None
+    start_goal_index: int | None = None
     worker_failed: bool = False
     failure_error: str | None = None
 
@@ -79,4 +84,3 @@ class SupervisorResult:
     episode_results: list[EpisodeResult]
     worker_failures: list[WorkerFailure] = field(default_factory=list)
     workers_used: list[int] = field(default_factory=list)
-

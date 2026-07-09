@@ -22,6 +22,14 @@ from utils.rollout.policy import RolloutPolicy
 from utils.rollout.protocol import EpisodeResult
 from utils.rollout.supervisor import run_episode_supervisor
 
+_EVAL_POSITION_EPISODE_KEYS = {
+    "start_cell",
+    "goal_cell",
+    "start_goal_difficulty",
+    "start_goal_source",
+    "start_goal_index",
+}
+
 
 def _reference_for_variant(config: dict, variant: str, score_env_spec) -> dict:
     meta = POINTMAZE_VARIANTS[variant]
@@ -47,6 +55,13 @@ def _mean(values, default: float = 0.0) -> float:
 
 def _std(values, default: float = 0.0) -> float:
     return float(np.std(values)) if values else float(default)
+
+
+def _score_episode_dict(episode: EpisodeResult) -> dict:
+    payload = asdict(episode)
+    for key in _EVAL_POSITION_EPISODE_KEYS:
+        payload.pop(key, None)
+    return payload
 
 
 def run_score_variant(
@@ -138,8 +153,7 @@ def run_score_variant(
         "worker_failures": [failure.to_dict() for failure in supervisor_result.worker_failures],
         "completed_episodes": int(sum(1 for episode in episodes if not episode.worker_failed)),
         "failed_episodes": int(sum(1 for episode in episodes if episode.worker_failed)),
-        "episode_results": [asdict(episode) for episode in episodes],
+        "episode_results": [_score_episode_dict(episode) for episode in episodes],
         "video_save_workers": int(config.get("video_save_workers", 1)),
         "video_save_max_pending": config.get("video_save_max_pending", 2),
     }
-

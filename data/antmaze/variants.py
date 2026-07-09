@@ -1,14 +1,14 @@
 """AntMaze variant registry: prompt copywriting over CrossMaze env facts.
 
-Maze layouts, env ids/kwargs, dataset ids/paths, horizons, and the fixed
-evaluation start/goal cells live in `crossmaze.variants`. Evaluation uses the
-same maps the offline data was collected on; start/goal are recorded as
-`eval_reset_cell` / `eval_goal_cell` coordinates (passed to the env through
-`reset(options=...)`) instead of "r"/"g" map markers.
+Maze layouts, env ids/kwargs, dataset ids/paths, and horizons live in
+`crossmaze.variants`. Evaluation uses the same maps the offline data was
+collected on; start/goal are recorded as coordinates in
+`crossmaze.eval_position` instead of "r"/"g" map markers.
 """
 
 from pathlib import Path
 
+from crossmaze.eval_position import eval_reset_options
 from crossmaze.layout import format_visual_map, maze_shape_text
 from crossmaze.variants import ANTMAZE_ENV_FACTS
 
@@ -39,12 +39,15 @@ def _build_remote_variant(
     structure_desc_en: str,
 ) -> dict:
     facts = ANTMAZE_ENV_FACTS[variant_name]
+    reset_options = eval_reset_options("antmaze", variant_name)
+    if reset_options is None:
+        raise ValueError(f"Missing AntMaze eval reset options for {variant_name!r}")
     return {
         "dataset_id": facts["dataset_id"],
         "env_id": facts["env_id"],
         "env_kwargs": dict(facts["env_kwargs"]),
-        "eval_reset_cell": list(facts["eval_reset_cell"]),
-        "eval_goal_cell": list(facts["eval_goal_cell"]),
+        "eval_reset_cell": list(reset_options["reset_cell"]),
+        "eval_goal_cell": list(reset_options["goal_cell"]),
         "prompt_vars": _build_prompt_vars(
             env_name=env_name,
             dataset_style=dataset_style,
@@ -72,12 +75,15 @@ def _build_local_variant(
         else:
             env_name = f"AntMaze {variant_name}"
     facts = ANTMAZE_ENV_FACTS[variant_name]
+    reset_options = eval_reset_options("antmaze", variant_name)
+    if reset_options is None:
+        raise ValueError(f"Missing AntMaze eval reset options for {variant_name!r}")
     return {
         "varient_type": "local",
         "dataset_path": facts["dataset_path"],
         "env_paras": dict(facts["env_paras"]),
-        "eval_reset_cell": list(facts["eval_reset_cell"]),
-        "eval_goal_cell": list(facts["eval_goal_cell"]),
+        "eval_reset_cell": list(reset_options["reset_cell"]),
+        "eval_goal_cell": list(reset_options["goal_cell"]),
         "prompt_vars": _build_prompt_vars(
             env_name=env_name,
             dataset_style=dataset_style,

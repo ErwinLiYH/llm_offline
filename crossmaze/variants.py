@@ -1,15 +1,14 @@
 """Canonical environment facts for every CrossMaze variant.
 
 This module owns the environment side of each variant: maze layout, size
-scaling, Gymnasium env id and construction kwargs, offline dataset id or
-local dataset directory name, and (for AntMaze) the fixed evaluation
-start/goal cells passed through `reset(options=...)`. Prompt copywriting
-(env names, structure descriptions) stays on the repo side.
+scaling, Gymnasium env id and construction kwargs, and offline dataset id or
+local dataset directory name. Prompt copywriting (env names, structure
+descriptions) stays on the repo side.
 
 AntMaze evaluation deliberately uses the same maps the D4RL offline data
 was collected on (the official eval UMaze map is mirrored relative to the
-collection map); eval start/goal cells are recorded as coordinates instead
-of "r"/"g" map markers.
+collection map); eval start/goal cells are recorded as coordinates in
+`crossmaze.eval_position` instead of "r"/"g" map markers.
 """
 
 from crossmaze import maps as _maps
@@ -665,8 +664,6 @@ ANTMAZE_ENV_FACTS = {
             "continuing_task": True,
             "reset_target": False,
         },
-        "eval_reset_cell": (1, 1),
-        "eval_goal_cell": (3, 1),
     },
     "umaze-diverse": {
         "kind": "remote",
@@ -681,8 +678,6 @@ ANTMAZE_ENV_FACTS = {
             "continuing_task": True,
             "reset_target": False,
         },
-        "eval_reset_cell": (1, 1),
-        "eval_goal_cell": (3, 1),
     },
     "medium-play": {
         "kind": "remote",
@@ -697,8 +692,6 @@ ANTMAZE_ENV_FACTS = {
             "continuing_task": True,
             "reset_target": False,
         },
-        "eval_reset_cell": (1, 1),
-        "eval_goal_cell": (6, 6),
     },
     "medium-diverse": {
         "kind": "remote",
@@ -713,8 +706,6 @@ ANTMAZE_ENV_FACTS = {
             "continuing_task": True,
             "reset_target": False,
         },
-        "eval_reset_cell": (1, 1),
-        "eval_goal_cell": (6, 6),
     },
     "large-play": {
         "kind": "remote",
@@ -729,8 +720,6 @@ ANTMAZE_ENV_FACTS = {
             "continuing_task": True,
             "reset_target": False,
         },
-        "eval_reset_cell": (1, 1),
-        "eval_goal_cell": (7, 9),
     },
     "large-diverse": {
         "kind": "remote",
@@ -745,8 +734,6 @@ ANTMAZE_ENV_FACTS = {
             "continuing_task": True,
             "reset_target": False,
         },
-        "eval_reset_cell": (1, 1),
-        "eval_goal_cell": (7, 9),
     },
     "local-layout-01": {
         "kind": "local",
@@ -762,8 +749,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (1, 1),
-        "eval_goal_cell": (7, 11),
     },
     "local-layout-02": {
         "kind": "local",
@@ -779,8 +764,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (7, 1),
-        "eval_goal_cell": (5, 11),
     },
     "local-layout-03": {
         "kind": "local",
@@ -796,8 +779,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (7, 1),
-        "eval_goal_cell": (1, 11),
     },
     "local-layout-04": {
         "kind": "local",
@@ -813,8 +794,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (7, 1),
-        "eval_goal_cell": (1, 11),
     },
     "local-layout-05": {
         "kind": "local",
@@ -830,8 +809,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (1, 5),
-        "eval_goal_cell": (7, 11),
     },
     "local-layout-06": {
         "kind": "local",
@@ -847,8 +824,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (3, 1),
-        "eval_goal_cell": (7, 11),
     },
     "local-layout-07": {
         "kind": "local",
@@ -864,8 +839,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (1, 11),
-        "eval_goal_cell": (1, 1),
     },
     "local-layout-08": {
         "kind": "local",
@@ -881,8 +854,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (1, 11),
-        "eval_goal_cell": (7, 9),
     },
     "local-layout-09": {
         "kind": "local",
@@ -898,8 +869,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (6, 11),
-        "eval_goal_cell": (1, 1),
     },
     "test-layout-01": {
         "kind": "local",
@@ -915,8 +884,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (5, 1),
-        "eval_goal_cell": (1, 11),
     },
     "test-layout-02": {
         "kind": "local",
@@ -932,8 +899,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (7, 1),
-        "eval_goal_cell": (1, 11),
     },
     "test-layout-03": {
         "kind": "local",
@@ -949,8 +914,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (7, 1),
-        "eval_goal_cell": (7, 11),
     },
     "test-layout-04": {
         "kind": "local",
@@ -966,8 +929,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 1000,
         },
-        "eval_reset_cell": (7, 1),
-        "eval_goal_cell": (5, 7),
     },
     "ultra": {
         "kind": "local",
@@ -983,8 +944,6 @@ ANTMAZE_ENV_FACTS = {
             "reset_target": False,
             "max_episode_steps": 2000,
         },
-        "eval_reset_cell": (1, 1),
-        "eval_goal_cell": (10, 14),
     },
 }
 
@@ -1026,16 +985,19 @@ def eval_env_spec(env_family: str, variant: str) -> tuple[str, dict]:
     return facts["env_id"], dict(facts.get("env_kwargs") or {})
 
 
-def eval_reset_options(env_family: str, variant: str) -> dict | None:
-    """Fixed eval start/goal cells as `reset(options=...)`, if the variant has them."""
-    facts = get_env_facts(env_family, variant)
-    reset_cell = facts.get("eval_reset_cell")
-    goal_cell = facts.get("eval_goal_cell")
-    if reset_cell is None and goal_cell is None:
-        return None
-    options = {}
-    if reset_cell is not None:
-        options["reset_cell"] = [int(reset_cell[0]), int(reset_cell[1])]
-    if goal_cell is not None:
-        options["goal_cell"] = [int(goal_cell[0]), int(goal_cell[1])]
-    return options
+def eval_reset_options(
+    env_family: str,
+    variant: str,
+    episode_index: int | None = None,
+    seed: int | None = None,
+) -> dict | None:
+    """Eval start/goal cells as `reset(options=...)`, if the variant has them."""
+    from crossmaze.eval_position import eval_reset_options as _eval_reset_options
+
+    get_env_facts(env_family, variant)
+    return _eval_reset_options(
+        env_family,
+        variant,
+        episode_index=episode_index,
+        seed=seed,
+    )

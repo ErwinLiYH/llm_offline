@@ -22,6 +22,9 @@ from minari import DataCollector, MinariDataset, StepDataCallback
 from minari.data_collector.episode_buffer import EpisodeBuffer
 from minari.storage.local import get_dataset_path
 
+from crossmaze.eval_position import (
+    build_hard_start_goal_pair_space as _build_hard_sample_pair_space,
+)
 from data.antmaze.variants import (
     ANTMAZE_VARIANTS,
     get_antmaze_variant_type,
@@ -404,125 +407,6 @@ def _bfs_distances(
                 distances[neighbor] = next_distance
                 queue.append(neighbor)
     return distances
-
-
-def _shortest_path(
-    start: tuple[int, int],
-    goal: tuple[int, int],
-    free_cell_set: set[tuple[int, int]],
-) -> list[tuple[int, int]] | None:
-    parent: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
-    queue = [start]
-    for cell in queue:
-        if cell == goal:
-            break
-        for neighbor in _cell_neighbors(cell, free_cell_set):
-            if neighbor not in parent:
-                parent[neighbor] = cell
-                queue.append(neighbor)
-    if goal not in parent:
-        return None
-
-    path = []
-    cell: tuple[int, int] | None = goal
-    while cell is not None:
-        path.append(cell)
-        cell = parent[cell]
-    path.reverse()
-    return path
-
-
-def _path_away_steps(
-    path: list[tuple[int, int]],
-    goal: tuple[int, int],
-) -> int:
-    if len(path) < 2:
-        return 0
-
-    def manhattan(cell: tuple[int, int]) -> int:
-        return abs(cell[0] - goal[0]) + abs(cell[1] - goal[1])
-
-    return sum(
-        1
-        for current, next_cell in zip(path, path[1:])
-        if manhattan(next_cell) > manhattan(current)
-    )
-
-
-def _build_hard_sample_pair_space(
-    maze_map: list[list[object]],
-    candidate_cells: list[tuple[int, int]],
-    hard_sample_alpha: float,
-    hard_sample_top_n: int = 0,
-) -> tuple[list[dict], int]:
-    clean_map = _clean_collection_map(maze_map)
-    free_cell_set = set(_free_cells(clean_map))
-    candidates = sorted(
-        {
-            (int(cell[0]), int(cell[1]))
-            for cell in candidate_cells
-        }
-    )
-    if len(candidates) < 2:
-        raise ValueError("--hard-sample requires at least two candidate free cells")
-
-    invalid_cells = [cell for cell in candidates if cell not in free_cell_set]
-    if invalid_cells:
-        raise ValueError(f"Hard-sample candidate cells are not free: {invalid_cells}")
-
-    records = []
-    max_path_len = 0
-    for start_cell in candidates:
-        for goal_cell in candidates:
-            if start_cell == goal_cell:
-                continue
-            path = _shortest_path(start_cell, goal_cell, free_cell_set)
-            if path is None:
-                continue
-            path_len = len(path) - 1
-            away_steps = _path_away_steps(path, goal_cell)
-            records.append(
-                {
-                    "start_cell": start_cell,
-                    "goal_cell": goal_cell,
-                    "path_len": int(path_len),
-                    "away_steps": int(away_steps),
-                    "away_frac": float(away_steps / max(path_len, 1)),
-                }
-            )
-            max_path_len = max(max_path_len, path_len)
-
-    if not records:
-        raise ValueError("--hard-sample found no reachable ordered start/goal pairs")
-    if max_path_len <= 0:
-        raise ValueError("--hard-sample pair paths must have positive length")
-
-    for record in records:
-        path_score = float(record["path_len"] / max_path_len)
-        difficulty = 0.5 * path_score + 0.5 * float(record["away_frac"])
-        record["path_score"] = path_score
-        record["difficulty"] = float(difficulty)
-
-    records = sorted(
-        records,
-        key=lambda record: (
-            float(record["difficulty"]),
-            int(record["path_len"]),
-            int(record["away_steps"]),
-            record["start_cell"],
-            record["goal_cell"],
-        ),
-    )
-    total_reachable_pairs = len(records)
-    if hard_sample_top_n > 0:
-        records = records[-int(hard_sample_top_n):]
-
-    rank_denominator = max(len(records) - 1, 1)
-    for rank, record in enumerate(records):
-        rank_score = float(rank / rank_denominator)
-        record["rank_score"] = rank_score
-        record["sample_weight"] = float(1.0 + float(hard_sample_alpha) * rank_score)
-    return records, total_reachable_pairs
 
 
 def _hard_pair_probabilities(pair_space: list[dict]) -> np.ndarray:

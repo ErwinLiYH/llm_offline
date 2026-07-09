@@ -631,7 +631,9 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertTrue(bool(episodes[0].infos["success"][-1]))
 
     def test_antmaze_hard_sample_pair_metrics_and_weights(self):
-        from local_antmaze_gen import _build_hard_sample_pair_space
+        from crossmaze.eval_position import (
+            build_hard_start_goal_pair_space as _build_hard_sample_pair_space,
+        )
 
         maze_map = [
             [1, 1, 1, 1, 1],

@@ -9,6 +9,7 @@ import uuid
 import gymnasium_robotics  # noqa: F401 registers maze environments
 import numpy as np
 
+from crossmaze.eval_position import select_eval_position
 from crossmaze import make as crossmaze_make
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from data.registry import get_formatter, get_variant
@@ -205,14 +206,28 @@ class _RolloutWorker:
 
     def run_episode(self, *, episode_index: int, seed: int | None) -> EpisodeResult:
         self.ensure_env()
+        eval_position = None
+        reset_options = None
         if self.mode != "score":
             set_episode_rng_seed(seed)
+            eval_seed = self.config.get("seed")
+            eval_position = select_eval_position(
+                self.config["env_family"],
+                self.variant,
+                episode_index=int(episode_index),
+                seed=int(eval_seed) if eval_seed is not None else None,
+            )
+            if eval_position is not None:
+                reset_options = {
+                    "reset_cell": np.asarray(eval_position["start_cell"], dtype=np.int64),
+                    "goal_cell": np.asarray(eval_position["goal_cell"], dtype=np.int64),
+                }
         if seed is not None and hasattr(self.env.action_space, "seed"):
             self.env.action_space.seed(seed)
         if seed is None:
-            obs, _ = self.env.reset()
+            obs, _ = self.env.reset(options=reset_options)
         else:
-            obs, _ = self.env.reset(seed=seed)
+            obs, _ = self.env.reset(seed=seed, options=reset_options)
 
         num_episodes = int(self.config["num_episodes"])
         history_num, history_stride = validate_history_config(self.config)
@@ -340,6 +355,31 @@ class _RolloutWorker:
             video_path=video_path,
             global_video_path=global_video_path,
             episode_artifact_dir=episode_dir,
+            start_cell=(
+                list(eval_position["start_cell"])
+                if eval_position is not None
+                else None
+            ),
+            goal_cell=(
+                list(eval_position["goal_cell"])
+                if eval_position is not None
+                else None
+            ),
+            start_goal_difficulty=(
+                float(eval_position["difficulty"])
+                if eval_position is not None
+                else None
+            ),
+            start_goal_source=(
+                str(eval_position["source"])
+                if eval_position is not None
+                else None
+            ),
+            start_goal_index=(
+                int(eval_position["index"])
+                if eval_position is not None
+                else None
+            ),
         )
 
 

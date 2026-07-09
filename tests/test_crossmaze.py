@@ -186,8 +186,27 @@ class MapUnificationTest(unittest.TestCase):
             self.assertEqual(env_map, meta["prompt_vars"]["maze_map"], msg=variant)
 
     def test_antmaze_eval_cells_are_free_and_official_mapping_holds(self):
+        from crossmaze.eval_position import EVAL_POSITIONS
+
         for variant, meta in ANTMAZE_VARIANTS.items():
             maze_map = meta["prompt_vars"]["maze_map"]
+            position_config = EVAL_POSITIONS["antmaze"][variant]
+            self.assertIn("fix_start_goal", position_config, msg=variant)
+            self.assertEqual(
+                position_config["fix_start_goal"]["start_cell"],
+                meta["eval_reset_cell"],
+                msg=variant,
+            )
+            self.assertEqual(
+                position_config["fix_start_goal"]["goal_cell"],
+                meta["eval_goal_cell"],
+                msg=variant,
+            )
+            self.assertIsInstance(
+                position_config["fix_start_goal"]["difficulty"],
+                float,
+                msg=variant,
+            )
             for key in ("eval_reset_cell", "eval_goal_cell"):
                 row, col = meta[key]
                 self.assertEqual(
@@ -205,6 +224,7 @@ class MapUnificationTest(unittest.TestCase):
 
     def test_repo_variants_derive_from_crossmaze_env_facts(self):
         from crossmaze.variants import ANTMAZE_ENV_FACTS, POINTMAZE_ENV_FACTS
+        from crossmaze.eval_position import eval_reset_options
 
         self.assertEqual(set(POINTMAZE_ENV_FACTS), set(POINTMAZE_VARIANTS))
         self.assertEqual(set(ANTMAZE_ENV_FACTS), set(ANTMAZE_VARIANTS))
@@ -216,8 +236,117 @@ class MapUnificationTest(unittest.TestCase):
         for variant, facts in ANTMAZE_ENV_FACTS.items():
             meta = ANTMAZE_VARIANTS[variant]
             self.assertEqual(facts["maze_map"], meta["prompt_vars"]["maze_map"])
-            self.assertEqual(list(facts["eval_reset_cell"]), meta["eval_reset_cell"])
-            self.assertEqual(list(facts["eval_goal_cell"]), meta["eval_goal_cell"])
+            self.assertNotIn("eval_reset_cell", facts)
+            self.assertNotIn("eval_goal_cell", facts)
+            reset_options = eval_reset_options("antmaze", variant)
+            self.assertEqual(reset_options["reset_cell"], meta["eval_reset_cell"])
+            self.assertEqual(reset_options["goal_cell"], meta["eval_goal_cell"])
+
+    def test_pointmaze_eval_position_tables_use_top_hard_pairs(self):
+        from crossmaze.eval_position import (
+            build_hard_start_goal_pair_space,
+            get_eval_position_config,
+        )
+        from crossmaze.variants import POINTMAZE_ENV_FACTS
+
+        seed = 17
+        for variant, facts in POINTMAZE_ENV_FACTS.items():
+            with self.subTest(variant=variant):
+                table = get_eval_position_config(
+                    "pointmaze",
+                    variant,
+                    seed=seed,
+                )["start_goal_list"]
+                candidate_cells = [
+                    (row_idx, col_idx)
+                    for row_idx, row in enumerate(facts["maze_map"])
+                    for col_idx, cell in enumerate(row)
+                    if cell != 1
+                ]
+                pair_space, _total = build_hard_start_goal_pair_space(
+                    facts["maze_map"],
+                    candidate_cells,
+                    hard_sample_alpha=0.0,
+                )
+                hard_pool = pair_space[-min(400, len(pair_space)):]
+                hard_by_pair = {
+                    (record["start_cell"], record["goal_cell"]): record
+                    for record in hard_pool
+                }
+
+                self.assertEqual(len(table), min(100, len(hard_pool)))
+                for record in table:
+                    start_cell = tuple(record["start_cell"])
+                    goal_cell = tuple(record["goal_cell"])
+                    self.assertIn((start_cell, goal_cell), hard_by_pair)
+                    self.assertEqual(facts["maze_map"][start_cell[0]][start_cell[1]], 0)
+                    self.assertEqual(facts["maze_map"][goal_cell[0]][goal_cell[1]], 0)
+                    self.assertAlmostEqual(
+                        record["difficulty"],
+                        hard_by_pair[(start_cell, goal_cell)]["difficulty"],
+                    )
+
+    def test_eval_position_selection_is_seeded_permutation_cycle(self):
+        from crossmaze.eval_position import (
+            get_eval_position_config,
+            select_eval_position,
+        )
+
+        variant = "umaze"
+        table = get_eval_position_config(
+            "pointmaze",
+            variant,
+            seed=17,
+        )["start_goal_list"]
+        count = len(table)
+        seed = 17
+        first_cycle = [
+            select_eval_position("pointmaze", variant, idx, seed)["index"]
+            for idx in range(count)
+        ]
+        second_read = [
+            select_eval_position("pointmaze", variant, idx, seed)["index"]
+            for idx in range(count)
+        ]
+
+        self.assertEqual(first_cycle, second_read)
+        self.assertEqual(len(set(first_cycle)), count)
+        for idx in range(count):
+            self.assertEqual(
+                select_eval_position("pointmaze", variant, idx + count, seed)["index"],
+                first_cycle[idx],
+            )
+
+        fixed = select_eval_position("antmaze", "umaze", 999, seed)
+        self.assertEqual(fixed["source"], "fix_start_goal")
+        self.assertEqual(fixed["index"], 0)
+
+    def test_pointmaze_eval_seed_controls_hard_pair_table(self):
+        from crossmaze.eval_position import get_eval_position_config
+        from crossmaze.variants import POINTMAZE_ENV_FACTS
+
+        changed_variants = []
+        for variant in POINTMAZE_ENV_FACTS:
+            table_a = get_eval_position_config(
+                "pointmaze",
+                variant,
+                seed=17,
+            )["start_goal_list"]
+            table_b = get_eval_position_config(
+                "pointmaze",
+                variant,
+                seed=17,
+            )["start_goal_list"]
+            table_c = get_eval_position_config(
+                "pointmaze",
+                variant,
+                seed=18,
+            )["start_goal_list"]
+            self.assertEqual(table_a, table_b, msg=variant)
+            if table_a != table_c:
+                changed_variants.append(variant)
+
+        self.assertTrue(changed_variants)
 
     def test_antmaze_eval_reset_places_start_and_goal_at_recorded_cells(self):
         import crossmaze
@@ -260,9 +389,13 @@ class MapUnificationTest(unittest.TestCase):
             "import sys\n"
             "import crossmaze\n"
             "from crossmaze.variants import eval_reset_options\n"
+            "from crossmaze.eval_position import select_eval_position\n"
             "from crossmaze.score import build_pointmaze_score_env_spec\n"
             "assert eval_reset_options('antmaze', 'umaze') == "
             "{'reset_cell': [1, 1], 'goal_cell': [3, 1]}\n"
+            "assert eval_reset_options('pointmaze', 'umaze') is None\n"
+            "assert select_eval_position('pointmaze', 'umaze', 0, 1)['source'] == "
+            "'start_goal_list'\n"
             "env = crossmaze.make('pointmaze', 'umaze', mode='eval', config={})\n"
             "obs, _ = env.reset(seed=0)\n"
             "assert crossmaze.CROSSMAZE_OBS_KEY in obs\n"
