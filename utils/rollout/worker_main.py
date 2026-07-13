@@ -389,6 +389,11 @@ class _RolloutWorker:
                 if eval_position is not None
                 else None
             ),
+            start_goal_difficulty_components=(
+                dict(eval_position["difficulty_components"])
+                if eval_position is not None
+                else None
+            ),
             start_goal_source=(
                 str(eval_position["source"])
                 if eval_position is not None

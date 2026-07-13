@@ -8,6 +8,8 @@ Public API:
 - `CrossMazeEnv` / `CROSSMAZE_OBS_KEY`: the wrapper class and the obs key.
 - `compute_sensing_state` / `render_sensing_text`: the sensing compute/render
   split shared with the offline training pipeline.
+- `get_map_difficulty_config` / `path_difficulty_config`: versioned geometric
+  path/map difficulty metadata shared by ordinary eval and eval hard-sample.
 
 Heavy imports (gymnasium, env registries) are deferred until `make` or
 `CrossMazeEnv` is first accessed so that `crossmaze.layout` and
@@ -29,6 +31,14 @@ _LAZY_EXPORTS = {
     "list_variants": ("crossmaze.variants", "list_variants"),
     "eval_env_spec": ("crossmaze.variants", "eval_env_spec"),
     "eval_reset_options": ("crossmaze.variants", "eval_reset_options"),
+    "get_map_difficulty_config": (
+        "crossmaze.eval_position",
+        "get_map_difficulty_config",
+    ),
+    "path_difficulty_config": (
+        "crossmaze.eval_position",
+        "path_difficulty_config",
+    ),
 }
 
 __all__ = [
@@ -40,8 +50,10 @@ __all__ = [
     "eval_env_spec",
     "eval_reset_options",
     "get_env_facts",
+    "get_map_difficulty_config",
     "list_variants",
     "make",
+    "path_difficulty_config",
     "render_sensing_text",
 ]
 

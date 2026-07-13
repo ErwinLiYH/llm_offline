@@ -1,6 +1,7 @@
 """Long-term tests for the CrossMaze environment package boundary."""
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -245,7 +246,7 @@ class MapUnificationTest(unittest.TestCase):
     def test_pointmaze_eval_position_tables_use_top_hard_pairs(self):
         from crossmaze.eval_position import (
             HARD_SAMPLE_MODE,
-            build_hard_start_goal_pair_space,
+            build_eval_start_goal_pair_space,
             get_eval_position_config,
             _hard_sample_pool_size,
         )
@@ -271,7 +272,7 @@ class MapUnificationTest(unittest.TestCase):
                     for col_idx, cell in enumerate(row)
                     if cell != 1
                 ]
-                pair_space, _total = build_hard_start_goal_pair_space(
+                pair_space, _total = build_eval_start_goal_pair_space(
                     facts["maze_map"],
                     candidate_cells,
                     hard_sample_alpha=0.0,
@@ -299,6 +300,155 @@ class MapUnificationTest(unittest.TestCase):
                         record["difficulty"],
                         hard_by_pair[(start_cell, goal_cell)]["difficulty"],
                     )
+
+    def test_hard_sample_builds_only_the_requested_variant(self):
+        from unittest.mock import patch
+
+        import crossmaze.eval_position as eval_position
+        from crossmaze.variants import POINTMAZE_ENV_FACTS
+
+        hard_config = {
+            "eval_start_goal_mode": eval_position.HARD_SAMPLE_MODE,
+            "eval_hard_sample_top_percent": 0.2,
+        }
+        variant = "local-layoutV2-12"
+        requested_map = POINTMAZE_ENV_FACTS[variant]["maze_map"]
+        original_builder = eval_position.build_eval_start_goal_pair_space
+        built_maps = []
+
+        def recording_builder(maze_map, *args, **kwargs):
+            built_maps.append(maze_map)
+            return original_builder(maze_map, *args, **kwargs)
+
+        eval_position._hard_sample_eval_position_for_settings.cache_clear()
+        eval_position._eval_pair_space_for_variant.cache_clear()
+        try:
+            with patch.object(
+                eval_position,
+                "build_eval_start_goal_pair_space",
+                side_effect=recording_builder,
+            ):
+                first = eval_position.get_eval_position_config(
+                    "pointmaze",
+                    variant,
+                    seed=17,
+                    config=hard_config,
+                )
+                second = eval_position.get_eval_position_config(
+                    "pointmaze",
+                    variant,
+                    seed=17,
+                    config=hard_config,
+                )
+
+            self.assertEqual(first, second)
+            self.assertEqual(len(built_maps), 1)
+            self.assertIs(built_maps[0], requested_map)
+        finally:
+            eval_position._hard_sample_eval_position_for_settings.cache_clear()
+            eval_position._eval_pair_space_for_variant.cache_clear()
+
+    def test_hard_sample_without_episode_index_skips_pair_building(self):
+        from unittest.mock import patch
+
+        import crossmaze.eval_position as eval_position
+
+        hard_config = {
+            "eval_start_goal_mode": eval_position.HARD_SAMPLE_MODE,
+            "eval_hard_sample_top_percent": 0.2,
+        }
+        eval_position._hard_sample_eval_position_for_settings.cache_clear()
+        eval_position._eval_pair_space_for_variant.cache_clear()
+        with patch.object(
+            eval_position,
+            "build_eval_start_goal_pair_space",
+            side_effect=AssertionError("hard pair table should not be built"),
+        ):
+            self.assertIsNone(
+                eval_position.select_eval_position(
+                    "pointmaze",
+                    "local-layoutV2-12",
+                    episode_index=None,
+                    seed=17,
+                    config=hard_config,
+                )
+            )
+        with self.assertRaises(ValueError):
+            eval_position.select_eval_position(
+                "pointmaze",
+                "local-layoutV2-12",
+                episode_index=None,
+                seed=17,
+                config={"eval_start_goal_mode": eval_position.HARD_SAMPLE_MODE},
+            )
+
+    def test_path_difficulty_ignores_equivalent_shortest_route_as_distractor(self):
+        from crossmaze.eval_position import build_eval_start_goal_pair_space
+
+        maze_map = [
+            [1, 1, 1, 1],
+            [1, 0, 0, 1],
+            [1, 0, 0, 1],
+            [1, 1, 1, 1],
+        ]
+        cells = [(1, 1), (1, 2), (2, 1), (2, 2)]
+        records, _ = build_eval_start_goal_pair_space(
+            maze_map,
+            cells,
+            hard_sample_alpha=0.0,
+        )
+        diagonal = next(
+            record
+            for record in records
+            if record["start_cell"] == (1, 1)
+            and record["goal_cell"] == (2, 2)
+        )
+
+        self.assertEqual(diagonal["path_len"], 2)
+        self.assertEqual(diagonal["distractor_point_count"], 0)
+        self.assertEqual(diagonal["distractor_exit_count"], 0)
+        self.assertEqual(diagonal["branch_score"], 0.0)
+
+        top_count = max(1, math.ceil(len(records) * 0.1))
+        expected_map_difficulty = sum(
+            record["difficulty"] for record in records[-top_count:]
+        ) / top_count
+        self.assertEqual(diagonal["map_difficulty_path_count"], top_count)
+        self.assertAlmostEqual(
+            diagonal["map_difficulty"],
+            expected_map_difficulty,
+        )
+
+    def test_hard_sample_pool_payload_contains_map_and_path_difficulty(self):
+        from crossmaze.eval_position import (
+            HARD_SAMPLE_MODE,
+            get_eval_position_pool_payload,
+        )
+
+        payload = get_eval_position_pool_payload(
+            "pointmaze",
+            "umaze",
+            seed=17,
+            config={
+                "eval_start_goal_mode": HARD_SAMPLE_MODE,
+                "eval_hard_sample_top_n": 5,
+            },
+        )
+
+        self.assertEqual(payload["difficulty_version"], "v2")
+        self.assertEqual(payload["difficulty_config"]["length_scale"], 20.0)
+        self.assertEqual(payload["map_difficulty_top_fraction"], 0.1)
+        self.assertEqual(payload["selected_pair_count"], 5)
+        self.assertEqual(len(payload["start_goal_list"]), 5)
+        components = payload["start_goal_list"][0]["difficulty_components"]
+        for key in (
+            "length_score",
+            "branch_score",
+            "detour_score",
+            "distractor_point_count",
+            "distractor_exit_count",
+        ):
+            self.assertIn(key, components)
 
     def test_eval_position_selection_is_seeded_permutation_cycle(self):
         from crossmaze.eval_position import (

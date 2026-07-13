@@ -26,6 +26,7 @@ _EVAL_POSITION_EPISODE_KEYS = {
     "start_cell",
     "goal_cell",
     "start_goal_difficulty",
+    "start_goal_difficulty_components",
     "start_goal_source",
     "start_goal_index",
 }

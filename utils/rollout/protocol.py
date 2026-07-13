@@ -57,6 +57,7 @@ class EpisodeResult:
     start_cell: list[int] | None = None
     goal_cell: list[int] | None = None
     start_goal_difficulty: float | None = None
+    start_goal_difficulty_components: dict[str, Any] | None = None
     start_goal_source: str | None = None
     start_goal_index: int | None = None
     worker_failed: bool = False
