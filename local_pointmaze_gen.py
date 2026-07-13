@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import importlib
 import inspect
+import json
 import os
 import shutil
 import sys
@@ -18,8 +19,12 @@ import gymnasium_robotics  # noqa: F401  registers PointMaze envs
 import minari
 import numpy as np
 from minari import DataCollector, MinariDataset, StepDataCallback
+from minari.data_collector.episode_buffer import EpisodeBuffer
 from minari.storage.local import get_dataset_path
 
+from crossmaze.eval_position import (
+    build_hard_start_goal_pair_space as _build_hard_sample_pair_space,
+)
 from data.pointmaze.variants import (
     POINTMAZE_VARIANTS,
     get_pointmaze_variant_type,
@@ -104,6 +109,42 @@ def parse_args():
         default=0.0,
         help="Gaussian action noise std used only during the post-success hold phase.",
     )
+    parser.add_argument(
+        "--hard-sample",
+        action="store_true",
+        help=(
+            "Sample explicit start/goal cell pairs with the legacy data-generation "
+            "difficulty bias and save only successful episodes."
+        ),
+    )
+    parser.add_argument(
+        "--hard-retry",
+        type=int,
+        default=5,
+        help=(
+            "Maximum failed retries for each hard-sampled pair. A pair is tried "
+            "at most 1 + hard_retry times."
+        ),
+    )
+    parser.add_argument(
+        "--hard-sample-alpha",
+        type=float,
+        default=1.0,
+        help=(
+            "Rank-linear difficulty bias for --hard-sample. 0 gives uniform "
+            "pair sampling; alpha=1 makes the hardest pair twice as likely as "
+            "the easiest pair."
+        ),
+    )
+    parser.add_argument(
+        "--hard-sample-top-n",
+        type=int,
+        default=0,
+        help=(
+            "Only sample from the top N hardest reachable start/goal pairs after "
+            "difficulty sorting. 0 keeps all pairs."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -112,6 +153,142 @@ def _existing_episode_count(dataset_root: Path) -> int:
     if not data_path.exists():
         return 0
     return int(MinariDataset(data_path).total_episodes)
+
+
+def _clean_collection_map(maze_map: list[list[object]]) -> list[list[int]]:
+    return [[1 if cell == 1 else 0 for cell in row] for row in maze_map]
+
+
+def _free_cells(maze_map: list[list[object]]) -> list[tuple[int, int]]:
+    return [
+        (row_idx, col_idx)
+        for row_idx, row in enumerate(maze_map)
+        for col_idx, cell in enumerate(row)
+        if cell != 1
+    ]
+
+
+def _hard_pair_probabilities(pair_space: list[dict]) -> np.ndarray:
+    weights = np.asarray(
+        [float(pair["sample_weight"]) for pair in pair_space],
+        dtype=np.float64,
+    )
+    total = float(weights.sum())
+    if not np.isfinite(total) or total <= 0.0:
+        return np.full(len(pair_space), 1.0 / len(pair_space), dtype=np.float64)
+    return weights / total
+
+
+def _hard_pair_probability_summary(pair_space: list[dict]) -> dict:
+    if not pair_space:
+        return {
+            "pair_sample_probability_min": None,
+            "pair_sample_probability_max": None,
+            "pair_sample_probability_max_over_min": None,
+        }
+    probabilities = _hard_pair_probabilities(pair_space)
+    min_probability = float(probabilities.min())
+    max_probability = float(probabilities.max())
+    return {
+        "pair_sample_probability_min": min_probability,
+        "pair_sample_probability_max": max_probability,
+        "pair_sample_probability_max_over_min": (
+            float(max_probability / min_probability)
+            if min_probability > 0.0
+            else None
+        ),
+    }
+
+
+def _stat_triplet(records: list[dict], key: str, prefix: str) -> dict:
+    values = [float(record[key]) for record in records if key in record]
+    if not values:
+        return {
+            f"{prefix}_min": None,
+            f"{prefix}_max": None,
+            f"{prefix}_mean": None,
+        }
+    return {
+        f"{prefix}_min": min(values),
+        f"{prefix}_max": max(values),
+        f"{prefix}_mean": float(sum(values) / len(values)),
+    }
+
+
+def _difficulty_record_for_episode(
+    pair_record: dict,
+    *,
+    episode_index: int,
+    attempts_for_pair: int,
+) -> dict:
+    return {
+        "episode_index": int(episode_index),
+        "start_cell": [
+            int(pair_record["start_cell"][0]),
+            int(pair_record["start_cell"][1]),
+        ],
+        "goal_cell": [
+            int(pair_record["goal_cell"][0]),
+            int(pair_record["goal_cell"][1]),
+        ],
+        "path_len": int(pair_record["path_len"]),
+        "away_steps": int(pair_record["away_steps"]),
+        "away_frac": float(pair_record["away_frac"]),
+        "difficulty": float(pair_record["difficulty"]),
+        "attempts_for_pair": int(attempts_for_pair),
+    }
+
+
+def _episode_data_to_buffer(
+    episode: dict,
+    *,
+    episode_id: int | None = None,
+) -> EpisodeBuffer:
+    return EpisodeBuffer(
+        id=episode_id,
+        seed=episode.get("seed"),
+        options=episode.get("options"),
+        observations=episode["observations"],
+        actions=episode["actions"],
+        rewards=episode["rewards"],
+        terminations=episode["terminations"],
+        truncations=episode["truncations"],
+        infos=episode.get("infos"),
+    )
+
+
+def _read_collected_episode(
+    collector: DataCollector,
+    episode_index: int,
+) -> EpisodeBuffer:
+    episode = next(collector._storage.get_episodes([episode_index]))
+    return _episode_data_to_buffer(episode)
+
+
+def _replace_collector_storage(
+    collector: DataCollector,
+    selected_episodes: list[EpisodeBuffer],
+):
+    collector._reset_storage()
+    collector._buffer = None
+    collector._episode_id = 0
+    collector._storage.update_episodes(
+        _episode_data_to_buffer(
+            {
+                "observations": episode.observations,
+                "actions": episode.actions,
+                "rewards": episode.rewards,
+                "terminations": episode.terminations,
+                "truncations": episode.truncations,
+                "infos": episode.infos,
+                "seed": episode.seed,
+                "options": episode.options,
+            },
+            episode_id=idx,
+        )
+        for idx, episode in enumerate(selected_episodes)
+    )
+    collector._episode_id = len(selected_episodes)
 
 
 def _make_env(env_paras: dict, max_episode_steps: int):
@@ -176,12 +353,16 @@ def _collect_shard(
     max_episode_steps: int,
     post_success_hold_steps: int,
     post_success_hold_noise_std: float,
-) -> tuple[str, str]:
+    hard_sample: bool,
+    hard_retry: int,
+    hard_sample_alpha: float,
+    hard_pair_space: list[dict],
+) -> dict:
     # Keep shard IDs namespace-free so Minari does not recursively scan the
     # shared dataset root while parallel workers create/delete temporary dirs.
     dataset_id = f"pointmaze-{variant}-shard-{uuid.uuid4().hex[:12]}-v0"
     collect_env_paras = dict(env_paras)
-    if post_success_hold_steps > 0:
+    if post_success_hold_steps > 0 or hard_sample:
         collect_env_paras["reset_target"] = False
     env = _make_env(collect_env_paras, max_episode_steps=max_episode_steps)
     collector = DataCollector(
@@ -195,52 +376,154 @@ def _collect_shard(
     )
     np.random.seed(seed)
     controller = WaypointController(maze=env.unwrapped.maze, maze_solver="QIteration")
-    obs, _ = collector.reset(seed=seed)
     steps = 0
-    episodes = 0
+    attempted_episodes = 0
     successful_episodes = 0
-    holding = False
-    hold_steps_remaining = 0
+    hard_pairs_sampled = 0
+    hard_pairs_succeeded = 0
+    hard_pairs_exhausted = 0
+    hard_failed_attempts = 0
+    episode_difficulty: list[dict] = []
 
-    while episodes < target_episodes:
-        action = (
-            _hold_action(obs, post_success_hold_noise_std)
-            if holding
-            else _waypoint_action(controller, obs)
-        )
-        obs, _, terminated, truncated, info = collector.step(action)
-        steps += 1
+    if hard_sample:
+        hard_rng = np.random.default_rng(seed + 31_337)
+        hard_probabilities = _hard_pair_probabilities(hard_pair_space)
+        selected_episodes: list[EpisodeBuffer] = []
+        reset_seed = seed
+        while len(selected_episodes) < target_episodes:
+            pair_index = int(
+                hard_rng.choice(len(hard_pair_space), p=hard_probabilities)
+            )
+            pair_record = hard_pair_space[pair_index]
+            hard_pairs_sampled += 1
+            pair_succeeded = False
 
-        if post_success_hold_steps <= 0:
-            if info.get("success", False):
-                episodes += 1
-                successful_episodes += 1
-            elif terminated or truncated:
-                obs, _ = collector.reset()
-            continue
+            for pair_attempt in range(1 + hard_retry):
+                attempt_seed = reset_seed
+                reset_seed += 1
+                controller.waypoint_targets = None
+                controller.global_target_xy = np.full(2, np.inf)
+                obs, _ = collector.reset(
+                    seed=attempt_seed,
+                    options={
+                        "reset_cell": np.asarray(
+                            pair_record["start_cell"],
+                            dtype=np.int64,
+                        ),
+                        "goal_cell": np.asarray(
+                            pair_record["goal_cell"],
+                            dtype=np.int64,
+                        ),
+                    },
+                )
+                holding = False
+                hold_steps_remaining = 0
+                episode_success = False
 
-        if terminated or truncated:
-            if holding or info.get("success", False):
-                episodes += 1
-                successful_episodes += 1
-            obs, _ = collector.reset()
-            holding = False
-            hold_steps_remaining = 0
-            continue
+                while True:
+                    action = (
+                        _hold_action(obs, post_success_hold_noise_std)
+                        if holding
+                        else _waypoint_action(controller, obs)
+                    )
+                    obs, _, terminated, truncated, info = collector.step(action)
+                    steps += 1
+                    step_success = bool(info.get("success", False))
+                    episode_success = episode_success or step_success
 
-        if holding:
-            hold_steps_remaining -= 1
-            if hold_steps_remaining <= 0:
-                episodes += 1
-                successful_episodes += 1
+                    if post_success_hold_steps <= 0:
+                        if step_success or terminated or truncated:
+                            break
+                        continue
+
+                    if terminated or truncated:
+                        break
+                    if holding:
+                        hold_steps_remaining -= 1
+                        if hold_steps_remaining <= 0:
+                            # A manual reset flushes the successful hold episode
+                            # into the collector storage before the next attempt.
+                            collector.reset(seed=attempt_seed)
+                            break
+                        continue
+                    if step_success:
+                        holding = True
+                        hold_steps_remaining = post_success_hold_steps
+
+                attempted_episodes += 1
+                if episode_success:
+                    successful_episodes += 1
+                    selected_episodes.append(
+                        _read_collected_episode(
+                            collector,
+                            collector._episode_id - 1,
+                        )
+                    )
+                    episode_difficulty.append(
+                        _difficulty_record_for_episode(
+                            pair_record,
+                            episode_index=len(selected_episodes) - 1,
+                            attempts_for_pair=pair_attempt + 1,
+                        )
+                    )
+                    hard_pairs_succeeded += 1
+                    pair_succeeded = True
+                    break
+                hard_failed_attempts += 1
+
+            if not pair_succeeded:
+                hard_pairs_exhausted += 1
+
+        _replace_collector_storage(collector, selected_episodes)
+    else:
+        obs, _ = collector.reset(seed=seed)
+        episodes = 0
+        holding = False
+        hold_steps_remaining = 0
+
+        while episodes < target_episodes:
+            action = (
+                _hold_action(obs, post_success_hold_noise_std)
+                if holding
+                else _waypoint_action(controller, obs)
+            )
+            obs, _, terminated, truncated, info = collector.step(action)
+            steps += 1
+
+            if post_success_hold_steps <= 0:
+                if info.get("success", False):
+                    attempted_episodes += 1
+                    episodes += 1
+                    successful_episodes += 1
+                elif terminated or truncated:
+                    attempted_episodes += 1
+                    obs, _ = collector.reset()
+                continue
+
+            if terminated or truncated:
+                attempted_episodes += 1
+                if holding or info.get("success", False):
+                    episodes += 1
+                    successful_episodes += 1
                 obs, _ = collector.reset()
                 holding = False
                 hold_steps_remaining = 0
-            continue
+                continue
 
-        if info.get("success", False):
-            holding = True
-            hold_steps_remaining = post_success_hold_steps
+            if holding:
+                hold_steps_remaining -= 1
+                if hold_steps_remaining <= 0:
+                    attempted_episodes += 1
+                    episodes += 1
+                    successful_episodes += 1
+                    obs, _ = collector.reset()
+                    holding = False
+                    hold_steps_remaining = 0
+                continue
+
+            if info.get("success", False):
+                holding = True
+                hold_steps_remaining = post_success_hold_steps
 
     eval_env_paras = dict(env_paras)
     eval_env_id = eval_env_paras.pop("id")
@@ -265,7 +548,13 @@ def _collect_shard(
             + f"\n\nLocal wrapper variant={variant}, worker={worker_index}, "
             f"target_episodes={target_episodes}, collected_steps={steps}, seed={seed}, "
             f"post_success_hold_steps={post_success_hold_steps}, "
-            f"post_success_hold_noise_std={post_success_hold_noise_std}."
+            f"post_success_hold_noise_std={post_success_hold_noise_std}, "
+            f"hard_sample={hard_sample}, hard_retry={hard_retry}, "
+            f"hard_sample_alpha={hard_sample_alpha}, "
+            f"hard_pairs_sampled={hard_pairs_sampled}, "
+            f"hard_pairs_succeeded={hard_pairs_succeeded}, "
+            f"hard_pairs_exhausted={hard_pairs_exhausted}, "
+            f"hard_failed_attempts={hard_failed_attempts}."
         ),
         requirements=_official_requirements(),
         minari_version=_minari_version_specifier(),
@@ -277,12 +566,29 @@ def _collect_shard(
         f"target_episodes={target_episodes}, successful_episodes={successful_episodes}, "
         f"collected_steps={steps}, seed={seed}, "
         f"post_success_hold_steps={post_success_hold_steps}, "
-        f"post_success_hold_noise_std={post_success_hold_noise_std}."
+        f"post_success_hold_noise_std={post_success_hold_noise_std}, "
+        f"hard_sample={hard_sample}, hard_pairs_sampled={hard_pairs_sampled}, "
+        f"hard_pairs_succeeded={hard_pairs_succeeded}, "
+        f"hard_pairs_exhausted={hard_pairs_exhausted}, "
+        f"hard_failed_attempts={hard_failed_attempts}."
     )
-    return dataset_id, str(get_dataset_path(dataset_id))
+    return {
+        "dataset_id": dataset_id,
+        "path": str(get_dataset_path(dataset_id)),
+        "target_episodes": int(target_episodes),
+        "saved_episodes": int(target_episodes),
+        "successful_episodes": int(successful_episodes),
+        "attempted_episodes": int(attempted_episodes),
+        "collected_steps": int(steps),
+        "hard_pairs_sampled": int(hard_pairs_sampled),
+        "hard_pairs_succeeded": int(hard_pairs_succeeded),
+        "hard_pairs_exhausted": int(hard_pairs_exhausted),
+        "hard_failed_attempts": int(hard_failed_attempts),
+        "episode_difficulty": episode_difficulty,
+    }
 
 
-def _collect_shard_from_kwargs(kwargs: dict) -> tuple[str, str]:
+def _collect_shard_from_kwargs(kwargs: dict) -> dict:
     return _collect_shard(**kwargs)
 
 
@@ -309,6 +615,90 @@ def _cleanup_dataset_id(dataset_id: str):
         pass
 
 
+def _write_generation_summary(
+    *,
+    dataset_root: Path,
+    variant: str,
+    target_episodes: int,
+    final_episodes: int,
+    seed: int,
+    max_episode_steps: int,
+    post_success_hold_steps: int,
+    post_success_hold_noise_std: float,
+    hard_sample: bool,
+    hard_retry: int,
+    hard_sample_alpha: float,
+    hard_sample_top_n: int,
+    hard_pair_space: list[dict],
+    hard_pair_space_total: int,
+    shard_results: list[dict],
+):
+    attempted_episodes = sum(
+        int(result.get("attempted_episodes", 0)) for result in shard_results
+    )
+    collected_steps = sum(
+        int(result.get("collected_steps", 0)) for result in shard_results
+    )
+    hard_pairs_sampled = sum(
+        int(result.get("hard_pairs_sampled", 0)) for result in shard_results
+    )
+    hard_pairs_succeeded = sum(
+        int(result.get("hard_pairs_succeeded", 0)) for result in shard_results
+    )
+    hard_pairs_exhausted = sum(
+        int(result.get("hard_pairs_exhausted", 0)) for result in shard_results
+    )
+    hard_failed_attempts = sum(
+        int(result.get("hard_failed_attempts", 0)) for result in shard_results
+    )
+    shard_episode_difficulty = [
+        record
+        for result in shard_results
+        for record in result.get("episode_difficulty", [])
+    ]
+    generated_episode_offset = max(0, final_episodes - len(shard_episode_difficulty))
+    episode_difficulty = [
+        {
+            **record,
+            "episode_index": int(generated_episode_offset + index),
+        }
+        for index, record in enumerate(shard_episode_difficulty)
+    ]
+    summary = {
+        "variant": variant,
+        "target_episodes": int(target_episodes),
+        "final_episodes": int(final_episodes),
+        "seed": int(seed),
+        "max_episode_steps": int(max_episode_steps),
+        "post_success_hold_steps": int(post_success_hold_steps),
+        "post_success_hold_noise_std": float(post_success_hold_noise_std),
+        "attempted_episodes": int(attempted_episodes),
+        "collected_steps": int(collected_steps),
+        "hard_sample": bool(hard_sample),
+        "hard_retry": int(hard_retry),
+        "hard_sample_alpha": float(hard_sample_alpha),
+        "hard_sample_top_n": int(hard_sample_top_n),
+        "hard_pair_space_total": int(hard_pair_space_total),
+        "hard_pair_space_used": int(len(hard_pair_space)),
+        "hard_pairs_sampled": int(hard_pairs_sampled),
+        "hard_pairs_succeeded": int(hard_pairs_succeeded),
+        "hard_pairs_exhausted": int(hard_pairs_exhausted),
+        "hard_failed_attempts": int(hard_failed_attempts),
+        "episode_difficulty": episode_difficulty,
+    }
+    summary.update(_stat_triplet(hard_pair_space, "difficulty", "pair_difficulty"))
+    summary.update(_stat_triplet(hard_pair_space, "path_len", "pair_path_len"))
+    summary.update(_stat_triplet(hard_pair_space, "away_steps", "pair_away_steps"))
+    summary.update(_hard_pair_probability_summary(hard_pair_space))
+    summary.update(_stat_triplet(episode_difficulty, "difficulty", "saved_difficulty"))
+    summary.update(_stat_triplet(episode_difficulty, "path_len", "saved_path_len"))
+    summary.update(_stat_triplet(episode_difficulty, "away_steps", "saved_away_steps"))
+    (dataset_root / "generation_summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def generate_variant(
     variant: str,
     *,
@@ -319,12 +709,22 @@ def generate_variant(
     max_episode_steps: int,
     post_success_hold_steps: int,
     post_success_hold_noise_std: float,
+    hard_sample: bool = False,
+    hard_retry: int = 5,
+    hard_sample_alpha: float = 1.0,
+    hard_sample_top_n: int = 0,
 ):
     if variant not in POINTMAZE_VARIANTS:
         raise ValueError(f"Unknown PointMaze variant: {variant!r}")
     meta = POINTMAZE_VARIANTS[variant]
     if get_pointmaze_variant_type(meta) != "local":
         raise ValueError(f"Variant {variant!r} is not local and cannot be generated")
+    if hard_retry < 0:
+        raise ValueError("--hard-retry must be >= 0")
+    if hard_sample_alpha < 0:
+        raise ValueError("--hard-sample-alpha must be >= 0")
+    if hard_sample_top_n < 0:
+        raise ValueError("--hard-sample-top-n must be >= 0")
 
     dataset_root = resolve_local_dataset_path(meta["dataset_path"])
     if post_success_hold_steps > 0 and dataset_root.exists() and not overwrite:
@@ -350,11 +750,26 @@ def generate_variant(
     for idx in range(deficit % worker_count):
         shard_targets[idx] += 1
 
+    clean_map = _clean_collection_map(meta["env_paras"]["maze_map"])
+    hard_pair_space: list[dict] = []
+    hard_pair_space_total = 0
+    if hard_sample:
+        hard_pair_space, hard_pair_space_total = _build_hard_sample_pair_space(
+            clean_map,
+            _free_cells(clean_map),
+            hard_sample_alpha,
+            hard_sample_top_n,
+        )
+
     print(
         f"[local-pointmaze-gen] {variant}: existing_episodes={existing_episodes}, "
         f"target_episodes={target_episodes}, deficit={deficit}, workers={worker_count}, "
         f"post_success_hold_steps={post_success_hold_steps}, "
-        f"post_success_hold_noise_std={post_success_hold_noise_std}"
+        f"post_success_hold_noise_std={post_success_hold_noise_std}, "
+        f"hard_sample={hard_sample}, hard_retry={hard_retry}, "
+        f"hard_sample_alpha={hard_sample_alpha}, "
+        f"hard_sample_top_n={hard_sample_top_n}, "
+        f"hard_pairs={len(hard_pair_space)}/{hard_pair_space_total}"
     )
     shard_specs = []
     variant_seed_offset = int.from_bytes(hashlib.sha256(variant.encode("utf-8")).digest()[:4], "big")
@@ -370,6 +785,10 @@ def generate_variant(
                 "max_episode_steps": max_episode_steps,
                 "post_success_hold_steps": post_success_hold_steps,
                 "post_success_hold_noise_std": post_success_hold_noise_std,
+                "hard_sample": hard_sample,
+                "hard_retry": hard_retry,
+                "hard_sample_alpha": hard_sample_alpha,
+                "hard_pair_space": hard_pair_space,
             }
         )
 
@@ -377,15 +796,33 @@ def generate_variant(
         shard_results = list(executor.map(_collect_shard_from_kwargs, shard_specs))
 
     try:
-        for dataset_id, shard_path in shard_results:
-            shard_root = Path(shard_path)
+        for result in shard_results:
+            dataset_id = str(result["dataset_id"])
+            shard_root = Path(str(result["path"]))
             print(f"[local-pointmaze-gen] {variant}: merging shard {dataset_id}")
             _merge_shard_into_final(shard_root, dataset_root)
     finally:
-        for dataset_id, _ in shard_results:
-            _cleanup_dataset_id(dataset_id)
+        for result in shard_results:
+            _cleanup_dataset_id(str(result["dataset_id"]))
 
     final_episodes = _existing_episode_count(dataset_root)
+    _write_generation_summary(
+        dataset_root=dataset_root,
+        variant=variant,
+        target_episodes=target_episodes,
+        final_episodes=final_episodes,
+        seed=seed,
+        max_episode_steps=max_episode_steps,
+        post_success_hold_steps=post_success_hold_steps,
+        post_success_hold_noise_std=post_success_hold_noise_std,
+        hard_sample=hard_sample,
+        hard_retry=hard_retry,
+        hard_sample_alpha=hard_sample_alpha,
+        hard_sample_top_n=hard_sample_top_n,
+        hard_pair_space=hard_pair_space,
+        hard_pair_space_total=hard_pair_space_total,
+        shard_results=shard_results,
+    )
     print(
         f"[local-pointmaze-gen] {variant}: final_episodes={final_episodes}, "
         f"dataset_path={dataset_root}"
@@ -402,6 +839,12 @@ def main():
         raise ValueError("--post-success-hold-steps must be >= 0")
     if args.post_success_hold_noise_std < 0:
         raise ValueError("--post-success-hold-noise-std must be >= 0")
+    if args.hard_retry < 0:
+        raise ValueError("--hard-retry must be >= 0")
+    if args.hard_sample_alpha < 0:
+        raise ValueError("--hard-sample-alpha must be >= 0")
+    if args.hard_sample_top_n < 0:
+        raise ValueError("--hard-sample-top-n must be >= 0")
     for variant in args.variants:
         generate_variant(
             variant,
@@ -412,6 +855,10 @@ def main():
             max_episode_steps=args.max_episode_steps,
             post_success_hold_steps=args.post_success_hold_steps,
             post_success_hold_noise_std=args.post_success_hold_noise_std,
+            hard_sample=args.hard_sample,
+            hard_retry=args.hard_retry,
+            hard_sample_alpha=args.hard_sample_alpha,
+            hard_sample_top_n=args.hard_sample_top_n,
         )
 
 
