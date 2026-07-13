@@ -126,6 +126,7 @@ lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
 ## Epoch-level and optional step-level environment evaluation
 eval_num_episodes: 20    # rollout episodes per variant per training eval; 0 = disable rollout eval
 eval_seed: 64             # episode reset seeds are eval_seed, eval_seed+1, ... for every eval
+eval_start_goal_mode: fix-start-goal  # AntMaze default fixed pair mode
 eval_step_interval: 50000    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
 step_eval_skip: 1         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
 eval_mode: single           # optional; defaults to following train_mode

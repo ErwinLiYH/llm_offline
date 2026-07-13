@@ -216,6 +216,7 @@ class _RolloutWorker:
                 self.variant,
                 episode_index=int(episode_index),
                 seed=int(eval_seed) if eval_seed is not None else None,
+                config=self.config,
             )
             if eval_position is not None:
                 reset_options = {

@@ -1274,6 +1274,22 @@ def _build_training_eval_config(config: dict) -> dict:
         "env_family": config["env_family"],
         "num_episodes": config["eval_num_episodes"],
         "seed": config.get("eval_seed", 1),
+        "eval_start_goal_mode": config.get(
+            "eval_start_goal_mode",
+            config.get("eval_position_mode"),
+        ),
+        "eval_hard_sample_top_percent": config.get(
+            "eval_hard_sample_top_percent",
+            config.get("eval_position_hard_sample_top_percent"),
+        ),
+        "eval_hard_sample_top_n": config.get(
+            "eval_hard_sample_top_n",
+            config.get("eval_position_hard_sample_top_n"),
+        ),
+        "eval_hard_sample_alpha": config.get(
+            "eval_hard_sample_alpha",
+            config.get("hard_sample_alpha"),
+        ),
         "parse_retry_limit": config.get("parse_retry_limit", 3),
         "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
         "history_num": config.get("history_num", 0),

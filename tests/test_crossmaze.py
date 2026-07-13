@@ -244,18 +244,26 @@ class MapUnificationTest(unittest.TestCase):
 
     def test_pointmaze_eval_position_tables_use_top_hard_pairs(self):
         from crossmaze.eval_position import (
+            HARD_SAMPLE_MODE,
             build_hard_start_goal_pair_space,
             get_eval_position_config,
+            _hard_sample_pool_size,
         )
         from crossmaze.variants import POINTMAZE_ENV_FACTS
 
         seed = 17
+        hard_config = {
+            "eval_start_goal_mode": HARD_SAMPLE_MODE,
+            "eval_hard_sample_top_percent": 0.2,
+            "eval_hard_sample_alpha": 0.0,
+        }
         for variant, facts in POINTMAZE_ENV_FACTS.items():
             with self.subTest(variant=variant):
                 table = get_eval_position_config(
                     "pointmaze",
                     variant,
                     seed=seed,
+                    config=hard_config,
                 )["start_goal_list"]
                 candidate_cells = [
                     (row_idx, col_idx)
@@ -268,7 +276,13 @@ class MapUnificationTest(unittest.TestCase):
                     candidate_cells,
                     hard_sample_alpha=0.0,
                 )
-                hard_pool = pair_space[-min(400, len(pair_space)):]
+                hard_pool = pair_space[
+                    -_hard_sample_pool_size(
+                        len(pair_space),
+                        top_percent=0.2,
+                        top_n=None,
+                    ):
+                ]
                 hard_by_pair = {
                     (record["start_cell"], record["goal_cell"]): record
                     for record in hard_pool
@@ -288,24 +302,42 @@ class MapUnificationTest(unittest.TestCase):
 
     def test_eval_position_selection_is_seeded_permutation_cycle(self):
         from crossmaze.eval_position import (
+            HARD_SAMPLE_MODE,
             get_eval_position_config,
             select_eval_position,
         )
 
         variant = "umaze"
+        hard_config = {
+            "eval_start_goal_mode": HARD_SAMPLE_MODE,
+            "eval_hard_sample_top_percent": 0.2,
+        }
         table = get_eval_position_config(
             "pointmaze",
             variant,
             seed=17,
+            config=hard_config,
         )["start_goal_list"]
         count = len(table)
         seed = 17
         first_cycle = [
-            select_eval_position("pointmaze", variant, idx, seed)["index"]
+            select_eval_position(
+                "pointmaze",
+                variant,
+                idx,
+                seed,
+                config=hard_config,
+            )["index"]
             for idx in range(count)
         ]
         second_read = [
-            select_eval_position("pointmaze", variant, idx, seed)["index"]
+            select_eval_position(
+                "pointmaze",
+                variant,
+                idx,
+                seed,
+                config=hard_config,
+            )["index"]
             for idx in range(count)
         ]
 
@@ -313,7 +345,13 @@ class MapUnificationTest(unittest.TestCase):
         self.assertEqual(len(set(first_cycle)), count)
         for idx in range(count):
             self.assertEqual(
-                select_eval_position("pointmaze", variant, idx + count, seed)["index"],
+                select_eval_position(
+                    "pointmaze",
+                    variant,
+                    idx + count,
+                    seed,
+                    config=hard_config,
+                )["index"],
                 first_cycle[idx],
             )
 
@@ -322,31 +360,107 @@ class MapUnificationTest(unittest.TestCase):
         self.assertEqual(fixed["index"], 0)
 
     def test_pointmaze_eval_seed_controls_hard_pair_table(self):
-        from crossmaze.eval_position import get_eval_position_config
+        from crossmaze.eval_position import HARD_SAMPLE_MODE, get_eval_position_config
         from crossmaze.variants import POINTMAZE_ENV_FACTS
 
+        hard_config = {
+            "eval_start_goal_mode": HARD_SAMPLE_MODE,
+            "eval_hard_sample_top_percent": 0.2,
+        }
         changed_variants = []
         for variant in POINTMAZE_ENV_FACTS:
             table_a = get_eval_position_config(
                 "pointmaze",
                 variant,
                 seed=17,
+                config=hard_config,
             )["start_goal_list"]
             table_b = get_eval_position_config(
                 "pointmaze",
                 variant,
                 seed=17,
+                config=hard_config,
             )["start_goal_list"]
             table_c = get_eval_position_config(
                 "pointmaze",
                 variant,
                 seed=18,
+                config=hard_config,
             )["start_goal_list"]
             self.assertEqual(table_a, table_b, msg=variant)
             if table_a != table_c:
                 changed_variants.append(variant)
 
         self.assertTrue(changed_variants)
+
+    def test_eval_position_modes_and_validation(self):
+        from crossmaze.eval_position import (
+            FIX_START_GOAL_MODE,
+            HARD_SAMPLE_MODE,
+            RANDOM_START_GOAL_MODE,
+            eval_position_count,
+            eval_position_selection_policy,
+            get_eval_position_config,
+            resolve_eval_position_mode,
+            select_eval_position,
+        )
+
+        self.assertEqual(resolve_eval_position_mode("antmaze", {}), FIX_START_GOAL_MODE)
+        self.assertEqual(
+            resolve_eval_position_mode("pointmaze", {}),
+            RANDOM_START_GOAL_MODE,
+        )
+        self.assertIsNone(get_eval_position_config("pointmaze", "umaze"))
+        self.assertIsNone(select_eval_position("pointmaze", "umaze", 0, 1))
+        self.assertEqual(eval_position_count("pointmaze", "umaze"), 0)
+        self.assertEqual(
+            eval_position_selection_policy("pointmaze", "umaze"),
+            "env_default_random",
+        )
+
+        hard_top_n_config = {
+            "eval_start_goal_mode": HARD_SAMPLE_MODE,
+            "eval_hard_sample_top_n": 5,
+            "eval_hard_sample_alpha": 2.0,
+        }
+        table = get_eval_position_config(
+            "pointmaze",
+            "umaze",
+            seed=3,
+            config=hard_top_n_config,
+        )["start_goal_list"]
+        self.assertEqual(len(table), 5)
+        record = select_eval_position(
+            "pointmaze",
+            "umaze",
+            0,
+            3,
+            config=hard_top_n_config,
+        )
+        self.assertEqual(record["source"], "hard_sample")
+
+        with self.assertRaises(ValueError):
+            get_eval_position_config(
+                "pointmaze",
+                "umaze",
+                config={"eval_start_goal_mode": FIX_START_GOAL_MODE},
+            )
+        with self.assertRaises(ValueError):
+            get_eval_position_config(
+                "pointmaze",
+                "umaze",
+                config={"eval_start_goal_mode": HARD_SAMPLE_MODE},
+            )
+        with self.assertRaises(ValueError):
+            get_eval_position_config(
+                "pointmaze",
+                "umaze",
+                config={
+                    "eval_start_goal_mode": HARD_SAMPLE_MODE,
+                    "eval_hard_sample_top_percent": 0.2,
+                    "eval_hard_sample_top_n": 10,
+                },
+            )
 
     def test_antmaze_eval_reset_places_start_and_goal_at_recorded_cells(self):
         import crossmaze
@@ -394,8 +508,11 @@ class MapUnificationTest(unittest.TestCase):
             "assert eval_reset_options('antmaze', 'umaze') == "
             "{'reset_cell': [1, 1], 'goal_cell': [3, 1]}\n"
             "assert eval_reset_options('pointmaze', 'umaze') is None\n"
-            "assert select_eval_position('pointmaze', 'umaze', 0, 1)['source'] == "
-            "'start_goal_list'\n"
+            "assert select_eval_position('pointmaze', 'umaze', 0, 1) is None\n"
+            "hard_config = {'eval_start_goal_mode': 'hard-sample', "
+            "'eval_hard_sample_top_percent': 0.2}\n"
+            "assert select_eval_position('pointmaze', 'umaze', 0, 1, "
+            "config=hard_config)['source'] == 'hard_sample'\n"
             "env = crossmaze.make('pointmaze', 'umaze', mode='eval', config={})\n"
             "obs, _ = env.reset(seed=0)\n"
             "assert crossmaze.CROSSMAZE_OBS_KEY in obs\n"

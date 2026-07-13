@@ -1645,8 +1645,9 @@ type: project
 ## CrossMaze eval start/goal position selection（2026-07-09）
 
 - 新增 `crossmaze.eval_position`，统一维护 PointMaze / AntMaze 普通 eval 的起点、终点和 difficulty 逻辑；AntMaze 固定 eval 起终点从 `crossmaze.variants` 迁移到该表，`data/antmaze/variants.py` 继续派生暴露 `eval_reset_cell` / `eval_goal_cell` 兼容字段
-- PointMaze 普通 `evaluate.py` eval 现在使用 hard start/goal pair list：每个 variant 从 reachable ordered free-cell pairs 中按 shared difficulty 公式选 hard pool，并按 eval config `seed` 稳定抽取最多 100 个 pair
-- PointMaze eval episode 选择按 `variant + seed + episode_index` 可复现；同一 seed 跨 checkpoint 使用相同 pair 表和轮转顺序，换 seed 会改变 hard pair 表和 episode 顺序；AntMaze 仍使用固定 pair
+- 新增 `eval_start_goal_mode`，支持 `fix-start-goal`、`hard-sample` 和 `random-start-goal`：AntMaze 默认固定 pair，PointMaze 默认回到环境原生随机 reset/goal 行为
+- `hard-sample` 模式显式启用 hard start/goal pair list：每个 variant 从 reachable ordered free-cell pairs 中按 shared difficulty 公式选 hard pool，`eval_hard_sample_top_percent` 和 `eval_hard_sample_top_n` 二选一，`eval_hard_sample_alpha` 控制 pool 内 rank-linear 加权，并按 eval config `seed` 稳定抽取最多 100 个 pair
+- hard-sample eval episode 选择按 `variant + seed + episode_index` 可复现；同一 seed 跨 checkpoint 使用相同 pair 表和轮转顺序，换 seed 会改变 hard pair 表和 episode 顺序
 - rollout `EpisodeResult` 和 standalone eval `result.json` 新增 start/goal cell、difficulty、source/index、mean difficulty、selection policy 和 pair count 等字段；`score.py` official PointMaze scoring 不使用该 eval-position override，并在 score episode result 中剥离这些普通 eval 字段
 - `local_antmaze_gen.py` 改用 `crossmaze.eval_position.build_hard_start_goal_pair_space`，保证 AntMaze hard-sample 数据生成和 eval difficulty 计算同源
 - 新增/更新测试覆盖 hard-pair metrics、AntMaze 固定 eval cells、PointMaze hard-pair 表、seed 控制、per-episode cycle、standalone package boundary、rollout dataclass 和 score schema 隔离

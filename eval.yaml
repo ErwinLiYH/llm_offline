@@ -18,6 +18,11 @@ rollout_action_timeout_seconds: 300
 policy_batch_timeout_ms: 10
 eval_distribute_variants: true  # DDP only; assign variants across ranks
 seed: 1                  # episode reset seeds are seed, seed+1, ... for every standalone eval
+eval_start_goal_mode: random-start-goal  # random-start-goal | hard-sample | fix-start-goal; PointMaze defaults to random-start-goal
+# eval_start_goal_mode: hard-sample
+# eval_hard_sample_top_percent: 0.2  # fraction (0,1] or percent (0,100]; mutually exclusive with eval_hard_sample_top_n
+# eval_hard_sample_top_n: 400        # use either top_percent or top_n, not both
+# eval_hard_sample_alpha: 0.0        # rank-linear hard-pair weighting; 0 = uniform within the hard pool
 parse_retry_limit: 3
 record_step_logs: true   # whether to save one txt per eval step under the eval result artifacts directory
 # prompt_templete_index: bin  # optional standalone eval prompt override; default = checkpoint's first training prompt

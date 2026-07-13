@@ -681,7 +681,7 @@ python inspect_antmaze_layouts.py --variants medium-play large-play local-layout
 
 ### Official normalized score
 
-`evaluate.py` 和训练期 eval 保持快速 rollout / success-rate 风格评估，不承担 official normalized score。普通 eval 起终点由 `crossmaze.eval_position` 决定：AntMaze 使用固定 `fix_start_goal`；PointMaze 使用按 difficulty 选出的 hard `start_goal_list`，eval config 的 `seed` 同时控制 hard pair 表抽样和 episode 轮转顺序，使同一 `variant + seed + episode_index` 跨 checkpoint 可复现。PointMaze official-style 分数通过独立入口 `score.py` 计算：
+`evaluate.py` 和训练期 eval 保持快速 rollout / success-rate 风格评估，不承担 official normalized score。普通 eval 起终点由 `crossmaze.eval_position` 决定，并由 `eval_start_goal_mode` 选择：`fix-start-goal` 使用每个 variant 预登记的固定 pair（当前默认用于 AntMaze），`random-start-goal` 不传 `reset(options=...)`、沿用环境原生随机起终点采样（当前默认用于 PointMaze），`hard-sample` 从 reachable ordered free-cell pairs 中按 difficulty 取 hard pool，再按 eval config 的 `seed` 抽样 hard `start_goal_list` 并控制 episode 轮转顺序。hard pool 通过 `eval_hard_sample_top_percent` 或 `eval_hard_sample_top_n` 二选一配置，`eval_hard_sample_alpha` 控制 pool 内 rank-linear 加权；同一配置下 `variant + seed + episode_index` 跨 checkpoint 可复现。PointMaze official-style 分数通过独立入口 `score.py` 计算：
 
 ```bash
 python score.py --config score.yaml

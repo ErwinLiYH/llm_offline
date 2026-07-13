@@ -7,6 +7,7 @@ import numpy as np
 from crossmaze.eval_position import (
     eval_position_count,
     eval_position_selection_policy,
+    resolve_eval_position_mode,
 )
 from data.registry import get_formatter
 from utils.action_bins import uses_action_bins
@@ -121,11 +122,20 @@ def run_evaluate_variant(
             else None
         ),
         "eval_position_source": _eval_position_source(episodes),
+        "eval_position_mode": resolve_eval_position_mode(
+            config["env_family"],
+            config,
+        ),
         "eval_position_selection_policy": eval_position_selection_policy(
             config["env_family"],
             variant,
+            config=config,
         ),
-        "eval_position_count": eval_position_count(config["env_family"], variant),
+        "eval_position_count": eval_position_count(
+            config["env_family"],
+            variant,
+            config=config,
+        ),
         "total_parse_failures": int(sum(episode.parse_failures for episode in episodes)),
         "total_fallbacks": int(sum(episode.fallbacks for episode in episodes)),
         "mean_action_time_ms": round(mean_action_time_ms, 2),

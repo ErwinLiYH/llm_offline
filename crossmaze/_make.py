@@ -80,7 +80,7 @@ def make(
         env_kwargs.update(dict(config.get("env_kwargs") or {}))
         env_kwargs = _apply_video_env_kwargs(config, env_kwargs)
         env = gym.make(env_id, **env_kwargs)
-        reset_options = eval_reset_options(env_family, variant)
+        reset_options = eval_reset_options(env_family, variant, config=config)
         if env_family == "antmaze":
             layout = live_env_layout_overrides(env)
         else:

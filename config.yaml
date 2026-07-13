@@ -130,6 +130,10 @@ lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
 ## Epoch-level and optional step-level environment evaluation
 eval_num_episodes: 20    # rollout episodes per variant per training eval; 0 = disable rollout eval
 eval_seed: 64             # episode reset seeds are eval_seed, eval_seed+1, ... for every eval
+eval_start_goal_mode: random-start-goal  # PointMaze default; use hard-sample for fixed hard eval pairs
+# eval_hard_sample_top_percent: 0.2  # hard-sample only; mutually exclusive with eval_hard_sample_top_n
+# eval_hard_sample_top_n: 400        # hard-sample only; use either top_percent or top_n
+# eval_hard_sample_alpha: 0.0        # hard-sample rank-linear weighting; 0 = uniform
 eval_step_interval: 70000    # global train batch interval for step eval/checkpoints; 0 = prompt interactively after batches are known
 step_eval_skip: 1         # 1 = every step eval is full; n = only every nth per-epoch step eval trigger runs val/rollout
 eval_mode: all           # optional; defaults to following train_mode

@@ -3,9 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import random
 from functools import lru_cache
 from typing import Any
+
+
+FIX_START_GOAL_MODE = "fix-start-goal"
+HARD_SAMPLE_MODE = "hard-sample"
+RANDOM_START_GOAL_MODE = "random-start-goal"
+
+_EVAL_POSITION_MODES = {
+    FIX_START_GOAL_MODE,
+    HARD_SAMPLE_MODE,
+    RANDOM_START_GOAL_MODE,
+}
+
+_DEFAULT_EVAL_POSITION_MODE_BY_FAMILY = {
+    "antmaze": FIX_START_GOAL_MODE,
+    "pointmaze": RANDOM_START_GOAL_MODE,
+}
 
 
 def _clean_collection_map(maze_map: list[list[object]]) -> list[list[int]]:
@@ -243,25 +260,203 @@ def _build_antmaze_eval_positions() -> dict[str, dict[str, Any]]:
     return positions
 
 
-def _build_pointmaze_eval_positions(seed: int | None) -> dict[str, dict[str, Any]]:
-    from crossmaze.variants import POINTMAZE_ENV_FACTS
+def _normalize_eval_position_mode(mode: object) -> str:
+    normalized = str(mode).strip().lower().replace("_", "-")
+    if normalized not in _EVAL_POSITION_MODES:
+        raise ValueError(
+            "eval_start_goal_mode must be one of "
+            f"{sorted(_EVAL_POSITION_MODES)}, got {mode!r}"
+        )
+    return normalized
+
+
+def resolve_eval_position_mode(env_family: str, config: dict | None = None) -> str:
+    config = config or {}
+    raw_mode = config.get("eval_start_goal_mode")
+    alias_mode = config.get("eval_position_mode")
+    if raw_mode is not None and alias_mode is not None:
+        if _normalize_eval_position_mode(raw_mode) != _normalize_eval_position_mode(alias_mode):
+            raise ValueError(
+                "eval_start_goal_mode and eval_position_mode specify different modes: "
+                f"{raw_mode!r} vs {alias_mode!r}"
+            )
+    mode = (
+        _normalize_eval_position_mode(raw_mode if raw_mode is not None else alias_mode)
+        if raw_mode is not None or alias_mode is not None
+        else _DEFAULT_EVAL_POSITION_MODE_BY_FAMILY.get(
+            env_family,
+            RANDOM_START_GOAL_MODE,
+        )
+    )
+    if mode == FIX_START_GOAL_MODE and env_family != "antmaze":
+        raise ValueError("fix-start-goal eval mode currently supports only antmaze")
+    return mode
+
+
+def _config_value(config: dict, *keys: str):
+    for key in keys:
+        if key in config:
+            return config[key]
+    return None
+
+
+def _normalize_top_percent(value: object) -> float:
+    top_percent = float(value)
+    if not math.isfinite(top_percent) or top_percent <= 0.0:
+        raise ValueError("eval_hard_sample_top_percent must be > 0")
+    if top_percent > 1.0:
+        if top_percent > 100.0:
+            raise ValueError("eval_hard_sample_top_percent must be <= 1.0 or <= 100")
+        top_percent = top_percent / 100.0
+    return float(top_percent)
+
+
+def _resolve_hard_sample_options(config: dict | None) -> dict[str, Any]:
+    config = config or {}
+    raw_top_percent = _config_value(
+        config,
+        "eval_hard_sample_top_percent",
+        "eval_position_hard_sample_top_percent",
+    )
+    raw_top_n = _config_value(
+        config,
+        "eval_hard_sample_top_n",
+        "eval_position_hard_sample_top_n",
+    )
+    has_top_percent = raw_top_percent is not None
+    has_top_n = raw_top_n is not None
+    if has_top_percent == has_top_n:
+        raise ValueError(
+            "hard-sample eval mode requires exactly one of "
+            "eval_hard_sample_top_percent or eval_hard_sample_top_n"
+        )
+
+    top_percent = _normalize_top_percent(raw_top_percent) if has_top_percent else None
+    top_n = None
+    if has_top_n:
+        top_n = int(raw_top_n)
+        if top_n <= 0:
+            raise ValueError("eval_hard_sample_top_n must be > 0")
+
+    raw_alpha = _config_value(
+        config,
+        "eval_hard_sample_alpha",
+        "eval_position_hard_sample_alpha",
+        "hard_sample_alpha",
+    )
+    alpha = 0.0 if raw_alpha is None else float(raw_alpha)
+    if not math.isfinite(alpha) or alpha < 0.0:
+        raise ValueError("eval_hard_sample_alpha must be >= 0")
+
+    return {
+        "top_percent": top_percent,
+        "top_n": top_n,
+        "alpha": alpha,
+    }
+
+
+def _hard_sample_cache_key(config: dict | None) -> tuple[float | None, int | None, float]:
+    options = _resolve_hard_sample_options(config)
+    return (
+        options["top_percent"],
+        options["top_n"],
+        options["alpha"],
+    )
+
+
+def _hard_sample_pool_size(
+    total_pairs: int,
+    *,
+    top_percent: float | None,
+    top_n: int | None,
+) -> int:
+    if total_pairs <= 0:
+        return 0
+    if top_n is not None:
+        return min(int(top_n), int(total_pairs))
+    if top_percent is None:
+        raise ValueError("top_percent is required when top_n is not set")
+    return max(1, int(math.ceil(float(total_pairs) * float(top_percent))))
+
+
+def _add_rank_sample_weights(
+    records: list[dict[str, Any]],
+    hard_sample_alpha: float,
+) -> list[dict[str, Any]]:
+    rank_denominator = max(len(records) - 1, 1)
+    weighted_records = []
+    for rank, record in enumerate(records):
+        copied = dict(record)
+        rank_score = float(rank / rank_denominator)
+        copied["rank_score"] = rank_score
+        copied["sample_weight"] = float(1.0 + float(hard_sample_alpha) * rank_score)
+        weighted_records.append(copied)
+    return weighted_records
+
+
+def _weighted_sample_without_replacement(
+    records: list[dict[str, Any]],
+    sample_size: int,
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    pool = list(records)
+    weights = [float(record.get("sample_weight", 1.0)) for record in pool]
+    selected = []
+    for _ in range(min(int(sample_size), len(pool))):
+        total = sum(weight for weight in weights if weight > 0.0)
+        if total <= 0.0 or not math.isfinite(total):
+            index = rng.randrange(len(pool))
+        else:
+            threshold = rng.random() * total
+            cumulative = 0.0
+            index = len(pool) - 1
+            for candidate_idx, weight in enumerate(weights):
+                cumulative += max(float(weight), 0.0)
+                if cumulative >= threshold:
+                    index = candidate_idx
+                    break
+        selected.append(pool.pop(index))
+        weights.pop(index)
+    return selected
+
+
+@lru_cache(maxsize=None)
+def _hard_sample_eval_positions_for_settings(
+    env_family: str,
+    seed: int,
+    top_percent: float | None,
+    top_n: int | None,
+    hard_sample_alpha: float,
+) -> dict[str, dict[str, Any]]:
+    from crossmaze.variants import ENV_FACTS
 
     eval_seed = _normalize_eval_seed(seed)
     positions: dict[str, dict[str, Any]] = {}
-    for variant, facts in POINTMAZE_ENV_FACTS.items():
+    for variant, facts in ENV_FACTS.get(env_family, {}).items():
         maze_map = facts["maze_map"]
         records, _ = build_hard_start_goal_pair_space(
             maze_map,
             _free_cells(_clean_collection_map(maze_map)),
             hard_sample_alpha=0.0,
         )
-        hard_pool_size = min(400, len(records))
-        hard_pool = records[-hard_pool_size:]
+        hard_pool_size = _hard_sample_pool_size(
+            len(records),
+            top_percent=top_percent,
+            top_n=top_n,
+        )
+        hard_pool = _add_rank_sample_weights(
+            records[-hard_pool_size:],
+            hard_sample_alpha,
+        )
         sample_size = min(100, hard_pool_size)
         rng = random.Random(
-            _stable_seed(f"pointmaze-eval-position-v1:{variant}:{eval_seed}")
+            _stable_seed(
+                "eval-position-hard-sample-v1:"
+                f"{env_family}:{variant}:{eval_seed}:{top_percent}:{top_n}:"
+                f"{hard_sample_alpha}"
+            )
         )
-        selected_records = rng.sample(hard_pool, sample_size)
+        selected_records = _weighted_sample_without_replacement(hard_pool, sample_size, rng)
         positions[variant] = {
             "start_goal_list": [
                 _public_pair_record(record)
@@ -270,15 +465,9 @@ def _build_pointmaze_eval_positions(seed: int | None) -> dict[str, dict[str, Any
         }
     return positions
 
-
-@lru_cache(maxsize=None)
-def _pointmaze_eval_positions_for_seed(seed: int) -> dict[str, dict[str, Any]]:
-    return _build_pointmaze_eval_positions(seed)
-
-
 EVAL_POSITIONS: dict[str, dict[str, dict[str, Any]]] = {
     "antmaze": _build_antmaze_eval_positions(),
-    "pointmaze": _pointmaze_eval_positions_for_seed(0),
+    "pointmaze": {},
 }
 
 
@@ -286,31 +475,59 @@ def get_eval_position_config(
     env_family: str,
     variant: str,
     seed: int | None = None,
+    config: dict | None = None,
 ) -> dict[str, Any] | None:
-    if env_family == "pointmaze":
-        return _pointmaze_eval_positions_for_seed(_normalize_eval_seed(seed)).get(variant)
-    return EVAL_POSITIONS.get(env_family, {}).get(variant)
+    mode = resolve_eval_position_mode(env_family, config)
+    if mode == RANDOM_START_GOAL_MODE:
+        return None
+    if mode == FIX_START_GOAL_MODE:
+        return EVAL_POSITIONS.get(env_family, {}).get(variant)
+    if mode == HARD_SAMPLE_MODE:
+        top_percent, top_n, hard_sample_alpha = _hard_sample_cache_key(config)
+        return _hard_sample_eval_positions_for_settings(
+            env_family,
+            _normalize_eval_seed(seed),
+            top_percent,
+            top_n,
+            hard_sample_alpha,
+        ).get(variant)
+    raise ValueError(f"Unsupported eval start/goal mode: {mode!r}")
 
 
-def eval_position_count(env_family: str, variant: str) -> int:
-    config = get_eval_position_config(env_family, variant)
-    if config is None:
+def eval_position_count(
+    env_family: str,
+    variant: str,
+    config: dict | None = None,
+) -> int:
+    position_config = get_eval_position_config(env_family, variant, config=config)
+    if position_config is None:
         return 0
-    if "fix_start_goal" in config:
+    if "fix_start_goal" in position_config:
         return 1
-    if "start_goal_list" in config:
-        return len(config["start_goal_list"])
+    if "start_goal_list" in position_config:
+        return len(position_config["start_goal_list"])
     return 0
 
 
-def eval_position_selection_policy(env_family: str, variant: str) -> str:
-    config = get_eval_position_config(env_family, variant)
-    if config is None:
+def eval_position_selection_policy(
+    env_family: str,
+    variant: str,
+    config: dict | None = None,
+) -> str:
+    mode = resolve_eval_position_mode(env_family, config)
+    if mode == RANDOM_START_GOAL_MODE:
         return "env_default_random"
-    if "fix_start_goal" in config:
+    position_config = get_eval_position_config(env_family, variant, config=config)
+    if position_config is None:
+        return "env_default_random"
+    if "fix_start_goal" in position_config:
         return "fixed"
-    if "start_goal_list" in config:
-        return "seeded_permutation_cycle"
+    if "start_goal_list" in position_config:
+        return (
+            "seeded_weighted_hard_sample_permutation_cycle"
+            if mode == HARD_SAMPLE_MODE
+            else "seeded_permutation_cycle"
+        )
     return "env_default_random"
 
 
@@ -339,22 +556,29 @@ def select_eval_position(
     variant: str,
     episode_index: int | None,
     seed: int | None,
+    config: dict | None = None,
 ) -> dict[str, Any] | None:
     """Select the eval start/goal record for one episode.
 
     For `start_goal_list` variants, `seed` is the run-level eval seed rather
     than the per-episode reset seed.
     """
-    config = get_eval_position_config(env_family, variant, seed=seed)
-    if config is None:
+    mode = resolve_eval_position_mode(env_family, config)
+    position_config = get_eval_position_config(
+        env_family,
+        variant,
+        seed=seed,
+        config=config,
+    )
+    if position_config is None:
         return None
-    if "fix_start_goal" in config:
-        record = dict(config["fix_start_goal"])
+    if "fix_start_goal" in position_config:
+        record = dict(position_config["fix_start_goal"])
         record["source"] = "fix_start_goal"
         record["index"] = 0
         return record
-    if "start_goal_list" in config:
-        records = config["start_goal_list"]
+    if "start_goal_list" in position_config:
+        records = position_config["start_goal_list"]
         if not records:
             return None
         if episode_index is None:
@@ -367,7 +591,7 @@ def select_eval_position(
             seed=seed,
         )
         record = dict(records[index])
-        record["source"] = "start_goal_list"
+        record["source"] = "hard_sample" if mode == HARD_SAMPLE_MODE else "start_goal_list"
         record["index"] = int(index)
         return record
     return None
@@ -378,9 +602,16 @@ def eval_reset_options(
     variant: str,
     episode_index: int | None = None,
     seed: int | None = None,
+    config: dict | None = None,
 ) -> dict[str, list[int]] | None:
     """Return `reset(options=...)` cells for the selected eval position."""
-    record = select_eval_position(env_family, variant, episode_index, seed)
+    record = select_eval_position(
+        env_family,
+        variant,
+        episode_index,
+        seed,
+        config=config,
+    )
     if record is None:
         return None
     return {

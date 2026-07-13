@@ -990,6 +990,7 @@ def eval_reset_options(
     variant: str,
     episode_index: int | None = None,
     seed: int | None = None,
+    config: dict | None = None,
 ) -> dict | None:
     """Eval start/goal cells as `reset(options=...)`, if the variant has them."""
     from crossmaze.eval_position import eval_reset_options as _eval_reset_options
@@ -1000,4 +1001,5 @@ def eval_reset_options(
         variant,
         episode_index=episode_index,
         seed=seed,
+        config=config,
     )

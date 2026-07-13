@@ -15,6 +15,7 @@ rollout_action_timeout_seconds: 300
 policy_batch_timeout_ms: 10
 eval_distribute_variants: false
 seed: 1
+eval_start_goal_mode: fix-start-goal  # AntMaze default; random-start-goal and hard-sample are also accepted
 
 history_num: 0
 history_stride: 1
