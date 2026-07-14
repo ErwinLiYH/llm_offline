@@ -3,6 +3,10 @@
 from crossmaze.sensing import (  # noqa: F401
     CROSSMAZE_OBS_KEY,
     DEFAULT_BOUNDARY_RISK_FRACTION,
+    NEIGHBOR_DIRECTIONS,
+    NEIGHBOR_STATUS_FREE,
+    NEIGHBOR_STATUS_RISK,
+    NEIGHBOR_STATUS_WALL,
     _cell_bounds,
     _cell_center_xy,
     _cell_status,

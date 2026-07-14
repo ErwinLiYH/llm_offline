@@ -22,6 +22,18 @@ DEFAULT_BOUNDARY_RISK_FRACTION = DEFAULT_MAP_SENSING_BOUNDARY_RISK_THRESHOLD
 # Observation key under which CrossMazeEnv attaches structured sensing state.
 CROSSMAZE_OBS_KEY = "crossmaze"
 
+# Fixed observation contract for neighbor_status: [up, down, left, right].
+NEIGHBOR_DIRECTIONS = ("up", "down", "left", "right")
+NEIGHBOR_STATUS_FREE = 0
+NEIGHBOR_STATUS_WALL = 1
+NEIGHBOR_STATUS_RISK = 2
+
+_NEIGHBOR_STATUS_TEXT = {
+    NEIGHBOR_STATUS_FREE: "free",
+    NEIGHBOR_STATUS_WALL: "wall",
+    NEIGHBOR_STATUS_RISK: "risk",
+}
+
 
 def obs_xy_to_row_col(
     x: float,
@@ -117,12 +129,14 @@ def _nearest_free_row_col(
     return best_cell
 
 
-def _cell_status(maze_map: list[list[object]], row: int, col: int) -> str:
+def _cell_status(maze_map: list[list[object]], row: int, col: int) -> int:
     rows = len(maze_map)
     cols = len(maze_map[0]) if maze_map else 0
     if row < 0 or row >= rows or col < 0 or col >= cols:
-        return "wall"
-    return "free" if _is_free_cell(maze_map, row, col) else "wall"
+        return NEIGHBOR_STATUS_WALL
+    if _is_free_cell(maze_map, row, col):
+        return NEIGHBOR_STATUS_FREE
+    return NEIGHBOR_STATUS_WALL
 
 
 def _has_new_corner(
@@ -136,13 +150,14 @@ def _has_new_corner(
 ) -> bool:
     """Return whether a free side closes into a wall at the next cell."""
     return (
-        _cell_status(maze_map, row + side_d_row, col + side_d_col) == "free"
+        _cell_status(maze_map, row + side_d_row, col + side_d_col)
+        == NEIGHBOR_STATUS_FREE
         and _cell_status(
             maze_map,
             row + diagonal_d_row,
             col + diagonal_d_col,
         )
-        == "wall"
+        == NEIGHBOR_STATUS_WALL
     )
 
 
@@ -204,7 +219,7 @@ def _neighbor_status(
     maze_size_scaling: float = 1.0,
     boundary_risk_threshold: float | None = None,
     wall_sensing_version: str | None = None,
-) -> str:
+) -> int:
     version = resolve_wall_sensing_version(wall_sensing_version)
     n_row = row + d_row
     n_col = col + d_col
@@ -226,10 +241,10 @@ def _neighbor_status(
         maze_size_scaling=maze_size_scaling,
         boundary_risk_threshold=boundary_risk_threshold,
     )
-    if direct_status == "wall":
+    if direct_status == NEIGHBOR_STATUS_WALL:
         if version == "v4" and _near_opposite_boundary(d_row, d_col, near):
-            return "free"
-        return "wall"
+            return NEIGHBOR_STATUS_FREE
+        return NEIGHBOR_STATUS_WALL
 
     if d_col:
         side_checks = ((-1, 0, near["top"]), (1, 0, near["bottom"]))
@@ -241,10 +256,10 @@ def _neighbor_status(
             continue
         diagonal_is_wall = (
             _cell_status(maze_map, row + d_row + side_d_row, col + d_col + side_d_col)
-            == "wall"
+            == NEIGHBOR_STATUS_WALL
         )
         if version == "v2" and diagonal_is_wall:
-            return "wall"
+            return NEIGHBOR_STATUS_WALL
         if version in {"v3", "v4", "v5"} and _has_new_corner(
             maze_map,
             row,
@@ -254,8 +269,8 @@ def _neighbor_status(
             d_row + side_d_row,
             d_col + side_d_col,
         ):
-            return "risk" if version == "v5" else "wall"
-    return "free"
+            return NEIGHBOR_STATUS_RISK if version == "v5" else NEIGHBOR_STATUS_WALL
+    return NEIGHBOR_STATUS_FREE
 
 
 def compute_sensing_state(
@@ -266,7 +281,8 @@ def compute_sensing_state(
     """Compute structured location and versioned four-neighbor sensing state.
 
     Returns a JSON-friendly dict with position/goal xy, 0-based position/goal
-    cells, per-direction neighbor status, and the resolved sensing config.
+    cells, neighbor status codes ordered as [up, down, left, right], and the
+    resolved sensing config. Status codes are 0=free, 1=wall, and 2=risk.
     """
     x, y = float(position[0]), float(position[1])
     gx, gy = float(goal[0]), float(goal[1])
@@ -307,26 +323,44 @@ def compute_sensing_state(
         "goal_xy": [gx, gy],
         "position_cell": [row, col],
         "goal_cell": [goal_row, goal_col],
-        "neighbor_status": {
-            "up": up,
-            "down": down,
-            "left": left,
-            "right": right,
-        },
+        "neighbor_status": [up, down, left, right],
         "wall_sensing_version": wall_sensing_version,
         "map_sensing_boundary_risk_threshold": boundary_risk_threshold,
     }
 
 
+def _neighbor_status_text(neighbor_status) -> tuple[str, str, str, str]:
+    try:
+        values = list(neighbor_status)
+    except TypeError as exc:
+        raise ValueError(
+            "neighbor_status must be [up, down, left, right] status codes"
+        ) from exc
+    if len(values) != len(NEIGHBOR_DIRECTIONS):
+        raise ValueError(
+            "neighbor_status must contain four status codes ordered as "
+            "[up, down, left, right]"
+        )
+
+    rendered = []
+    for value in values:
+        if isinstance(value, (bool, np.bool_)):
+            raise ValueError(f"Invalid neighbor status code: {value!r}")
+        try:
+            code = int(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"Invalid neighbor status code: {value!r}") from exc
+        if code != value or code not in _NEIGHBOR_STATUS_TEXT:
+            raise ValueError(f"Invalid neighbor status code: {value!r}")
+        rendered.append(_NEIGHBOR_STATUS_TEXT[code])
+    return tuple(rendered)
+
+
 def render_sensing_text(state: dict) -> dict:
-    """Render prompt sensing text fields from a structured sensing state."""
+    """Render prompt text from the numeric structured sensing state."""
     row, col = state["position_cell"]
     goal_row, goal_col = state["goal_cell"]
-    neighbor_status = state["neighbor_status"]
-    up = neighbor_status["up"]
-    down = neighbor_status["down"]
-    left = neighbor_status["left"]
-    right = neighbor_status["right"]
+    up, down, left, right = _neighbor_status_text(state["neighbor_status"])
 
     row_1 = row + 1
     col_1 = col + 1
@@ -364,6 +398,10 @@ def _state_matches_meta(state: dict, meta: dict) -> bool:
     callers fall back to recomputing sensing from `meta` directly.
     """
     if not isinstance(state, dict):
+        return False
+    try:
+        _neighbor_status_text(state.get("neighbor_status"))
+    except ValueError:
         return False
     try:
         sensing_config = resolve_sensing_config(meta)

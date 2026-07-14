@@ -1665,6 +1665,12 @@ type: project
 - 已通过 `conda run -n llm_offline python -c "import utils.rollout.artifacts; import utils.rollout.worker_main"`
 - 已通过 `git diff --check -- utils/rollout/artifacts.py utils/rollout/worker_main.py tests/test_rollout_artifacts.py`
 
+## CrossMaze numeric neighbor observation（2026-07-14）
+
+- `obs["crossmaze"]["neighbor_status"]` 从方向到文本状态的字典改为固定顺序 `[up, down, left, right]` 的四元素整数列表，状态码统一为 `0=free`、`1=wall`、`2=risk`
+- `crossmaze` 公共 API 和 `utils.maze_sensing` 兼容 shim 导出方向顺序与状态码常量，供非 LLM baseline 直接消费结构化 observation
+- prompt 渲染侧严格校验数值 schema，再映射回原有 `free/wall/risk` 中英文文本；最终 prompt 内容不变，因此 tokenized dataset cache signature 不变
+
 ## AntMaze compact local layouts 10-12（2026-07-15）
 
 - 新增 `local-layout-10..12` 三张 compact AntMaze 地图，尺寸均为 `9x13`，继续保持不超过 `10x13` 的本地地图约束

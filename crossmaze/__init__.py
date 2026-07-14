@@ -6,6 +6,8 @@ Public API:
   sensing, wall sensing). Text rendering stays on the algorithm side via
   `render_sensing_text`.
 - `CrossMazeEnv` / `CROSSMAZE_OBS_KEY`: the wrapper class and the obs key.
+- `NEIGHBOR_DIRECTIONS` / `NEIGHBOR_STATUS_*`: the fixed numeric neighbor
+  observation contract (`[up, down, left, right]`, `0=free, 1=wall, 2=risk`).
 - `compute_sensing_state` / `render_sensing_text`: the sensing compute/render
   split shared with the offline training pipeline.
 - `get_map_difficulty_config` / `path_difficulty_config`: versioned geometric
@@ -18,6 +20,10 @@ Heavy imports (gymnasium, env registries) are deferred until `make` or
 
 from crossmaze.sensing import (  # noqa: F401
     CROSSMAZE_OBS_KEY,
+    NEIGHBOR_DIRECTIONS,
+    NEIGHBOR_STATUS_FREE,
+    NEIGHBOR_STATUS_RISK,
+    NEIGHBOR_STATUS_WALL,
     build_sensing,
     compute_sensing_state,
     render_sensing_text,
@@ -45,6 +51,10 @@ __all__ = [
     "CROSSMAZE_OBS_KEY",
     "CrossMazeEnv",
     "ENV_FACTS",
+    "NEIGHBOR_DIRECTIONS",
+    "NEIGHBOR_STATUS_FREE",
+    "NEIGHBOR_STATUS_RISK",
+    "NEIGHBOR_STATUS_WALL",
     "build_sensing",
     "compute_sensing_state",
     "eval_env_spec",

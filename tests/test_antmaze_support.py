@@ -32,7 +32,12 @@ from data.pointmaze.dataset import (
 from data.pointmaze.variants import POINTMAZE_VARIANTS, get_pointmaze_variant_type
 from data.pointmaze.variants import resolve_local_dataset_path as resolve_pointmaze_local_dataset_path
 from data.registry import get_action_dim, resolve_variant_env_spec
-from utils.maze_sensing import _neighbor_status
+from utils.maze_sensing import (
+    NEIGHBOR_STATUS_FREE,
+    NEIGHBOR_STATUS_RISK,
+    NEIGHBOR_STATUS_WALL,
+    _neighbor_status,
+)
 from utils.prompt_loader import load_template_map, render_template
 from utils.sensing_config import normalize_sensing_config
 from utils.variant_selection import get_available_variants
@@ -879,7 +884,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=y,
                         wall_sensing_version="v1",
                     ),
-                    "free",
+                    NEIGHBOR_STATUS_FREE,
                 )
                 self.assertEqual(
                     _neighbor_status(
@@ -892,7 +897,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=y,
                         wall_sensing_version="v2",
                     ),
-                    "wall",
+                    NEIGHBOR_STATUS_WALL,
                 )
                 self.assertEqual(
                     _neighbor_status(
@@ -904,7 +909,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         x=x,
                         y=y,
                     ),
-                    "wall",
+                    NEIGHBOR_STATUS_WALL,
                 )
                 self.assertEqual(
                     _neighbor_status(
@@ -917,7 +922,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=y,
                         wall_sensing_version="v5",
                     ),
-                    "risk",
+                    NEIGHBOR_STATUS_RISK,
                 )
 
                 maze_map[row + side_d_row][col + side_d_col] = 1
@@ -932,7 +937,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=y,
                         wall_sensing_version="v2",
                     ),
-                    "wall",
+                    NEIGHBOR_STATUS_WALL,
                 )
                 self.assertEqual(
                     _neighbor_status(
@@ -944,7 +949,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         x=x,
                         y=y,
                     ),
-                    "free",
+                    NEIGHBOR_STATUS_FREE,
                 )
                 self.assertEqual(
                     _neighbor_status(
@@ -957,7 +962,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=y,
                         wall_sensing_version="v5",
                     ),
-                    "free",
+                    NEIGHBOR_STATUS_FREE,
                 )
 
                 maze_map[row + side_d_row][col + side_d_col] = 0
@@ -973,7 +978,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=y,
                         wall_sensing_version="v5",
                     ),
-                    "free",
+                    NEIGHBOR_STATUS_FREE,
                 )
 
                 maze_map[row + diagonal_d_row][col + diagonal_d_col] = 1
@@ -988,7 +993,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=0.0,
                         wall_sensing_version="v5",
                     ),
-                    "free",
+                    NEIGHBOR_STATUS_FREE,
                 )
 
     def test_direct_neighbor_wall_still_blocks_all_directions(self):
@@ -1013,7 +1018,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         x=0.0,
                         y=0.0,
                     ),
-                    "wall",
+                    NEIGHBOR_STATUS_WALL,
                 )
 
     def test_opposite_boundary_does_not_delay_direct_wall_reporting(self):
@@ -1042,7 +1047,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=y,
                         wall_sensing_version="v5",
                     ),
-                    "wall",
+                    NEIGHBOR_STATUS_WALL,
                 )
                 self.assertEqual(
                     _neighbor_status(
@@ -1055,7 +1060,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=y,
                         wall_sensing_version="v4",
                     ),
-                    "free",
+                    NEIGHBOR_STATUS_FREE,
                 )
 
                 self.assertEqual(
@@ -1069,7 +1074,7 @@ class AntMazeSupportTest(unittest.TestCase):
                         y=0.0,
                         wall_sensing_version="v4",
                     ),
-                    "wall",
+                    NEIGHBOR_STATUS_WALL,
                 )
 
     def test_registry_contains_official_d4rl_variants(self):

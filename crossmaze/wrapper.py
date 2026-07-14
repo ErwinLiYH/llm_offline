@@ -12,7 +12,7 @@ from crossmaze.sensing import (
 
 
 class CrossMazeEnv(gym.Wrapper):
-    """Adds `obs["crossmaze"]` with structured map layout and sensing state.
+    """Adds `obs["crossmaze"]` with numeric map layout and sensing state.
 
     A plain `gym.Wrapper` (not ObservationWrapper) on purpose: the extra key
     intentionally sits outside the declared observation space, and inner env

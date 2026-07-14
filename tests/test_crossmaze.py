@@ -43,7 +43,19 @@ class CrossMazePackageTest(unittest.TestCase):
             self.assertEqual(state["wall_sensing_version"], "v5")
             self.assertEqual(state["map_sensing_boundary_risk_threshold"], 0.10)
             self.assertEqual(
-                set(state["neighbor_status"]), {"up", "down", "left", "right"}
+                crossmaze.NEIGHBOR_DIRECTIONS,
+                ("up", "down", "left", "right"),
+            )
+            self.assertIsInstance(state["neighbor_status"], list)
+            self.assertEqual(len(state["neighbor_status"]), 4)
+            self.assertTrue(
+                set(state["neighbor_status"]).issubset(
+                    {
+                        crossmaze.NEIGHBOR_STATUS_FREE,
+                        crossmaze.NEIGHBOR_STATUS_WALL,
+                        crossmaze.NEIGHBOR_STATUS_RISK,
+                    }
+                )
             )
             pv = POINTMAZE_VARIANTS["umaze"]["prompt_vars"]
             self.assertEqual(
@@ -82,9 +94,40 @@ class CrossMazePackageTest(unittest.TestCase):
                 state["maze_size_scaling"],
                 float(env.unwrapped.maze.maze_size_scaling),
             )
+            self.assertEqual(
+                state["neighbor_status"],
+                [
+                    crossmaze.NEIGHBOR_STATUS_WALL,
+                    crossmaze.NEIGHBOR_STATUS_WALL,
+                    crossmaze.NEIGHBOR_STATUS_WALL,
+                    crossmaze.NEIGHBOR_STATUS_FREE,
+                ],
+            )
+            self.assertEqual(
+                crossmaze.render_sensing_text(state)["wall_sensing_en"],
+                "Neighboring cells: up=wall, down=wall, left=wall, right=free.",
+            )
             json.dumps(state)
         finally:
             env.close()
+
+    def test_render_sensing_text_rejects_invalid_neighbor_schema(self):
+        import crossmaze
+
+        state = {
+            "position_cell": [1, 1],
+            "goal_cell": [3, 1],
+            "neighbor_status": [1, 1, 1, 0],
+        }
+        rendered = crossmaze.render_sensing_text(state)
+        self.assertEqual(
+            rendered["wall_sensing_en"],
+            "Neighboring cells: up=wall, down=wall, left=wall, right=free.",
+        )
+
+        for invalid in ({"up": 1}, [1, 1, 1], [1, 1, 1, 3]):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                crossmaze.render_sensing_text({**state, "neighbor_status": invalid})
 
     def test_score_mode_uses_static_variant_map_without_goal_marks(self):
         import crossmaze
