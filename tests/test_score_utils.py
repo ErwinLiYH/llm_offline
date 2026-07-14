@@ -108,6 +108,26 @@ class PointMazeScoreUtilsTest(unittest.TestCase):
         )
         self.assertEqual(override_spec.max_episode_steps, 600)
 
+    def test_local_score_reward_type_override_changes_fingerprint(self):
+        base_config = {
+            "local_eval_maps": {
+                "local-layout-07": {"goal_cell": LOCAL_LAYOUT_07_FREE_GOAL_CELL}
+            },
+        }
+        sparse_spec = build_local_pointmaze_score_env_spec(
+            "local-layout-07",
+            base_config,
+        )
+        dense_spec = build_local_pointmaze_score_env_spec(
+            "local-layout-07",
+            {**base_config, "reward_type": "dense"},
+        )
+
+        self.assertEqual(sparse_spec.reward_type, "sparse")
+        self.assertEqual(dense_spec.reward_type, "dense")
+        self.assertEqual(dense_spec.env_kwargs["reward_type"], "dense")
+        self.assertNotEqual(sparse_spec.env_fingerprint, dense_spec.env_fingerprint)
+
     def test_local_reference_missing_and_mismatch_fail(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = {

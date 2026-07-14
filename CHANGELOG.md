@@ -1671,6 +1671,14 @@ type: project
 - `crossmaze` 公共 API 和 `utils.maze_sensing` 兼容 shim 导出方向顺序与状态码常量，供非 LLM baseline 直接消费结构化 observation
 - prompt 渲染侧严格校验数值 schema，再映射回原有 `free/wall/risk` 中英文文本；最终 prompt 内容不变，因此 tokenized dataset cache signature 不变
 
+## Configurable CrossMaze rewards（2026-07-14）
+
+- `crossmaze.make(..., mode="eval")` 新增且只接受顶层 `reward_type: sparse | dense` 配置，`env_kwargs.reward_type` 会明确报错；训练期 eval 透传同一顶层字段，PointMaze rollout prompt 的奖励描述会同步到实际环境
+- local PointMaze official-style score env 支持相同奖励覆盖，并把奖励类型纳入 reference fingerprint；remote official score variant 继续保持注册语义
+- `local_pointmaze_gen.py` / `local_antmaze_gen.py` 新增 `--reward-type sparse|dense`，`generation_summary.json` 记录生效值；非默认奖励自动使用 `*-dense-v0` 等独立 Minari 目录，避免 sparse/dense transition 混写
+- 四个 data-generation Slurm 脚本新增 `REWARD_TYPE`，默认 `sparse`，并透传到生成器
+- local dataset path resolver 支持奖励类型派生目录，也能识别直接指向现有 Minari dataset 的路径，便于 value-based baseline 读取 dense 数据
+
 ## AntMaze compact local layouts 10-12（2026-07-15）
 
 - 新增 `local-layout-10..12` 三张 compact AntMaze 地图，尺寸均为 `9x13`，继续保持不超过 `10x13` 的本地地图约束

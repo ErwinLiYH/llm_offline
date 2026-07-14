@@ -2,11 +2,26 @@ import re
 
 import numpy as np
 
+from crossmaze.reward import normalize_reward_type
 from utils.maze_sensing import (
     build_sensing as _build_sensing,
     obs_xy_to_row_col as _obs_xy_to_row_col,
     sensing_text_from_obs as _sensing_text_from_obs,
 )
+
+
+def prepare_eval_prompt_vars(prompt_vars: dict, env) -> dict:
+    """Synchronize prompt reward copy with the instantiated eval env."""
+    reward_type = normalize_reward_type(env.unwrapped.reward_type)
+    resolved = dict(prompt_vars)
+    resolved.update(
+        {
+            "reward_type": reward_type,
+            "reward_desc_en": f"{reward_type} reward",
+            "reward_desc_zh": "稀疏奖励" if reward_type == "sparse" else "稠密奖励",
+        }
+    )
+    return resolved
 
 
 def _format_cell_and_xy(vec: np.ndarray, meta: dict, *, zh: bool = False) -> str:

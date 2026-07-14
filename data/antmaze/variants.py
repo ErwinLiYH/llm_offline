@@ -10,6 +10,7 @@ from pathlib import Path
 
 from crossmaze.eval_position import eval_reset_options
 from crossmaze.layout import format_visual_map, maze_shape_text
+from crossmaze.reward import reward_typed_dataset_path
 from crossmaze.variants import ANTMAZE_ENV_FACTS
 
 
@@ -221,15 +222,26 @@ def get_antmaze_variant_type(meta: dict) -> str:
 def resolve_local_dataset_path(
     dataset_path: str | Path,
     local_dataset_root: str | Path | None = None,
+    *,
+    reward_type: str | None = None,
+    default_reward_type: str = "sparse",
 ) -> Path:
-    default_path = Path(dataset_path).expanduser()
+    default_path = (
+        reward_typed_dataset_path(
+            dataset_path,
+            reward_type=reward_type,
+            default_reward_type=default_reward_type,
+        )
+        if reward_type is not None
+        else Path(dataset_path).expanduser()
+    )
     if local_dataset_root is None:
         path = default_path
     else:
         root_path = Path(local_dataset_root).expanduser()
         path = (
             root_path
-            if root_path.name == default_path.name
+            if root_path.name == default_path.name or (root_path / "data").is_dir()
             else root_path / default_path.name
         )
     if path.is_absolute():

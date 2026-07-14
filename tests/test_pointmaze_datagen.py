@@ -58,6 +58,7 @@ class PointMazeDataGenerationTest(unittest.TestCase):
             local_pointmaze_gen._write_generation_summary(
                 dataset_root=Path(temp_dir),
                 variant="local-layoutV2-01",
+                reward_type="dense",
                 target_episodes=3,
                 final_episodes=3,
                 seed=42,
@@ -89,6 +90,7 @@ class PointMazeDataGenerationTest(unittest.TestCase):
             )
 
         self.assertTrue(summary["hard_sample"])
+        self.assertEqual(summary["reward_type"], "dense")
         self.assertEqual(summary["hard_pair_space_total"], 10)
         self.assertEqual(summary["hard_pair_space_used"], 1)
         self.assertEqual(summary["hard_failed_attempts"], 1)
@@ -102,6 +104,7 @@ class PointMazeDataGenerationTest(unittest.TestCase):
             "target_episodes": 1,
             "overwrite": False,
             "seed": 42,
+            "reward_type": "dense",
             "max_episode_steps": 100,
             "post_success_hold_steps": 0,
             "post_success_hold_noise_std": 0.0,
@@ -134,6 +137,7 @@ class PointMazeDataGenerationTest(unittest.TestCase):
         self.assertEqual(kwargs["hard_retry"], 5)
         self.assertEqual(kwargs["hard_sample_alpha"], 1.0)
         self.assertEqual(kwargs["hard_sample_top_n"], 400)
+        self.assertEqual(kwargs["reward_type"], "dense")
 
     def test_hard_sample_sbatch_exposes_all_controls(self):
         script = (
@@ -147,6 +151,7 @@ class PointMazeDataGenerationTest(unittest.TestCase):
             "--hard-retry",
             "--hard-sample-alpha",
             "--hard-sample-top-n",
+            "--reward-type",
         ):
             self.assertIn(flag, script)
         self.assertIn("#SBATCH --array=0-11%4", script)

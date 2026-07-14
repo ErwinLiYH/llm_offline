@@ -268,10 +268,26 @@ class AntMazeSupportTest(unittest.TestCase):
                 "local_datasets/antmaze-local-layout-01-v0",
                 local_dataset_root=str(Path(root_dir) / "antmaze-local-layout-01-v0"),
             )
+            dense_ant_root = Path(root_dir) / "antmaze-local-layout-01-dense-v0"
+            (dense_ant_root / "data").mkdir(parents=True)
+            direct_dense_ant_path = resolve_antmaze_local_dataset_path(
+                "local_datasets/antmaze-local-layout-01-v0",
+                local_dataset_root=dense_ant_root,
+            )
+            dense_point_path = resolve_pointmaze_local_dataset_path(
+                "local_datasets/pointmaze-local-layout-01-v0",
+                local_dataset_root=root_dir,
+                reward_type="dense",
+            )
 
         self.assertEqual(ant_path, Path(root_dir) / "antmaze-local-layout-01-v0")
         self.assertEqual(point_path, Path(root_dir) / "pointmaze-local-layout-01-v0")
         self.assertEqual(direct_ant_path, Path(root_dir) / "antmaze-local-layout-01-v0")
+        self.assertEqual(direct_dense_ant_path, dense_ant_root)
+        self.assertEqual(
+            dense_point_path,
+            Path(root_dir) / "pointmaze-local-layout-01-dense-v0",
+        )
 
     def test_pointmaze_local_medium_reuses_official_medium_map(self):
         local_meta, env_id, env_kwargs = resolve_variant_env_spec("pointmaze", "local-medium")
@@ -712,6 +728,7 @@ class AntMazeSupportTest(unittest.TestCase):
             "target_episodes": 1,
             "overwrite": False,
             "seed": 0,
+            "reward_type": "dense",
             "max_episode_steps": None,
             "policy_file": Path("unused.zip"),
             "maze_solver": "QIteration",
@@ -750,6 +767,14 @@ class AntMazeSupportTest(unittest.TestCase):
                 with mock.patch("local_antmaze_gen.parse_args", return_value=args):
                     with self.assertRaisesRegex(ValueError, error):
                         local_antmaze_gen.main()
+
+        with mock.patch(
+            "local_antmaze_gen.parse_args",
+            return_value=SimpleNamespace(**base_args),
+        ), mock.patch("local_antmaze_gen.generate_variant") as generate_variant:
+            local_antmaze_gen.main()
+
+        self.assertEqual(generate_variant.call_args.kwargs["reward_type"], "dense")
 
     def test_antmaze_hard_sample_generation_summary_records_difficulty(self):
         import json
@@ -802,6 +827,7 @@ class AntMazeSupportTest(unittest.TestCase):
             local_antmaze_gen._write_generation_summary(
                 dataset_root=Path(root_dir),
                 variant="local-layout-01",
+                reward_type="dense",
                 target_episodes=3,
                 min_success_rate=0.0,
                 max_episode_attempts=None,
@@ -825,6 +851,7 @@ class AntMazeSupportTest(unittest.TestCase):
             )
 
         self.assertTrue(summary["hard_sample"])
+        self.assertEqual(summary["reward_type"], "dense")
         self.assertEqual(summary["hard_retry"], 1)
         self.assertEqual(summary["hard_sample_top_n"], 0)
         self.assertEqual(summary["hard_pair_space_total"], pair_space_total)

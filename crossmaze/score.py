@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 
 import gymnasium as gym
 
+from crossmaze.reward import resolve_reward_type
 from crossmaze.variants import POINTMAZE_ENV_FACTS
 
 
@@ -233,7 +234,10 @@ def build_local_pointmaze_score_env_spec(variant: str, config: dict) -> PointMaz
 
     env_paras = dict(facts["env_paras"])
     env_id = env_paras.get("id", "PointMaze_UMaze-v3")
-    reward_type = str(env_paras.get("reward_type", facts.get("reward_type", "sparse")))
+    reward_type = resolve_reward_type(
+        config,
+        default=env_paras.get("reward_type", facts["reward_type"]),
+    )
     max_episode_steps = int(
         variant_config.get(
             "max_episode_steps",

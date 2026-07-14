@@ -246,6 +246,7 @@ python local_antmaze_gen.py \
   --variants local-layout-01 \
   --target-episodes 1000 \
   --num-workers 4 \
+  --reward-type dense \
   --mode diverse \
   --diverse-cell-mode all-free \
   --min-success-rate 0.8 \
@@ -279,6 +280,11 @@ to:
 ```text
 local_datasets/antmaze-<variant>-v0
 ```
+
+`--reward-type` accepts `sparse` or `dense` and defaults to the registered
+variant reward. Alternate-reward datasets are isolated by name, for example
+`local_datasets/antmaze-<variant>-dense-v0`; the generation summary records the
+effective type. The Slurm scripts expose the same option as `REWARD_TYPE`.
 
 `--mode diverse` defaults to `--diverse-cell-mode all-free`: the collection map
 does not use `c` markers, so Gymnasium Robotics samples reset and goal from all

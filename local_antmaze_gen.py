@@ -25,6 +25,7 @@ from minari.storage.local import get_dataset_path
 from crossmaze.eval_position import (
     build_hard_start_goal_pair_space as _build_hard_sample_pair_space,
 )
+from crossmaze.reward import REWARD_TYPES, normalize_reward_type
 from data.antmaze.variants import (
     ANTMAZE_VARIANTS,
     get_antmaze_variant_type,
@@ -104,6 +105,15 @@ def parse_args():
     parser.add_argument("--target-episodes", type=int, required=True)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--reward-type",
+        choices=REWARD_TYPES,
+        default=None,
+        help=(
+            "Reward stored in generated transitions. Defaults to the registered "
+            "variant reward type; alternate rewards use a separate dataset path."
+        ),
+    )
     parser.add_argument(
         "--max-episode-steps",
         type=int,
@@ -627,9 +637,18 @@ def _collect_shard(
     hard_sample_alpha: float,
     hard_pair_space: list[dict],
 ) -> dict:
+    reward_type = normalize_reward_type(env_paras.get("reward_type"))
+    collection_reward_type = normalize_reward_type(
+        collection_env_paras.get("reward_type")
+    )
+    if collection_reward_type != reward_type:
+        raise ValueError(
+            "AntMaze collection/eval reward types differ: "
+            f"collection={collection_reward_type!r}, eval={reward_type!r}"
+        )
     # Keep shard IDs namespace-free so Minari does not recursively scan the
     # shared dataset root while parallel workers create/delete temporary dirs.
-    dataset_id = f"antmaze-{variant}-shard-{uuid.uuid4().hex[:12]}-v0"
+    dataset_id = f"antmaze-{variant}-{reward_type}-shard-{uuid.uuid4().hex[:12]}-v0"
     env = _make_env(collection_env_paras, max_episode_steps=max_episode_steps)
     collector = DataCollector(
         env,
@@ -855,6 +874,7 @@ def _collect_shard(
         author_email="",
         description=(
             f"Local AntMaze wrapper variant={variant}, worker={worker_index}, "
+            f"reward_type={reward_type}, "
             f"target_episodes={target_episodes}, saved_episodes={saved_episodes}, "
             f"saved_success_episodes={saved_successful_episodes}, "
             f"saved_success_rate={saved_success_rate:.6f}, "
@@ -886,6 +906,7 @@ def _collect_shard(
     print(
         f"[local-antmaze-gen] {variant} worker={worker_index}: shard={dataset_id}, "
         f"target_episodes={target_episodes}, saved_episodes={saved_episodes}, "
+        f"reward_type={reward_type}, "
         f"saved_successful_episodes={saved_successful_episodes}, "
         f"saved_success_rate={saved_success_rate:.4f}, "
         f"attempted_episodes={attempted_episodes}, "
@@ -905,6 +926,7 @@ def _collect_shard(
     return {
         "dataset_id": dataset_id,
         "path": str(get_dataset_path(dataset_id)),
+        "reward_type": reward_type,
         "target_episodes": target_episodes,
         "saved_episodes": saved_episodes,
         "saved_successful_episodes": saved_successful_episodes,
@@ -955,6 +977,7 @@ def _write_generation_summary(
     *,
     dataset_root: Path,
     variant: str,
+    reward_type: str,
     target_episodes: int,
     min_success_rate: float,
     max_episode_attempts: int | None,
@@ -1022,6 +1045,7 @@ def _write_generation_summary(
     )
     summary = {
         "variant": variant,
+        "reward_type": normalize_reward_type(reward_type),
         "target_episodes": target_episodes,
         "final_episodes": final_episodes,
         "successful_episodes": final_successful_episodes,
@@ -1079,6 +1103,7 @@ def generate_variant(
     target_episodes: int,
     overwrite: bool,
     seed: int,
+    reward_type: str | None,
     max_episode_steps: int | None,
     policy_file: Path,
     maze_solver: str,
@@ -1106,7 +1131,13 @@ def generate_variant(
     if hard_sample_top_n < 0:
         raise ValueError("--hard-sample-top-n must be >= 0")
 
-    dataset_root = resolve_local_dataset_path(meta["dataset_path"])
+    default_reward_type = normalize_reward_type(meta["env_paras"].get("reward_type"))
+    reward_type = normalize_reward_type(reward_type, default=default_reward_type)
+    dataset_root = resolve_local_dataset_path(
+        meta["dataset_path"],
+        reward_type=reward_type,
+        default_reward_type=default_reward_type,
+    )
     if overwrite and dataset_root.exists():
         shutil.rmtree(dataset_root)
 
@@ -1163,12 +1194,14 @@ def generate_variant(
         raise FileNotFoundError(f"AntMaze SAC policy file not found: {policy_file}")
 
     collection_env_paras = dict(meta.get("collection_env_paras") or meta["env_paras"])
+    collection_env_paras["reward_type"] = reward_type
     collection_env_paras, collection_combined_cells = _collection_env_for_mode(
         collection_env_paras,
         mode,
         diverse_cell_mode,
     )
     eval_env_paras = dict(meta["env_paras"])
+    eval_env_paras["reward_type"] = reward_type
     hard_pair_space: list[dict] = []
     hard_pair_space_total = 0
     if hard_sample:
@@ -1193,6 +1226,7 @@ def generate_variant(
     print(
         f"[local-antmaze-gen] {variant}: existing_episodes={existing_episodes}, "
         f"target_episodes={target_episodes}, deficit={deficit}, workers={worker_count}, "
+        f"reward_type={reward_type}, "
         f"min_success_rate={min_success_rate}, max_episode_attempts={attempt_budget}, "
         f"policy_file={policy_file}, maze_solver={maze_solver}, action_noise={action_noise}, "
         f"mode={mode}, diverse_cell_mode={diverse_cell_mode}, "
@@ -1274,6 +1308,7 @@ def generate_variant(
         _write_generation_summary(
             dataset_root=dataset_root,
             variant=variant,
+            reward_type=reward_type,
             target_episodes=target_episodes,
             min_success_rate=min_success_rate,
             max_episode_attempts=attempt_budget,
@@ -1352,6 +1387,7 @@ def main():
             target_episodes=args.target_episodes,
             overwrite=args.overwrite,
             seed=args.seed,
+            reward_type=args.reward_type,
             max_episode_steps=args.max_episode_steps,
             policy_file=args.policy_file,
             maze_solver=args.maze_solver,

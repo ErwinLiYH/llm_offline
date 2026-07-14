@@ -27,15 +27,18 @@ def make(
 ) -> CrossMazeEnv:
     """Build a CrossMaze env for eval or (PointMaze-only) official scoring.
 
-    `config` is the eval/score run config; it supplies `env_kwargs` overrides,
-    `record_video` (forces `render_mode: rgb_array`), and the sensing keys
-    (`wall_sensing_version`, `map_sensing_boundary_risk_threshold`).
+    `config` is the eval/score run config; it supplies `reward_type`,
+    `env_kwargs` overrides, `record_video` (forces `render_mode: rgb_array`),
+    and the sensing keys (`wall_sensing_version`,
+    `map_sensing_boundary_risk_threshold`). `reward_type` accepts `sparse` or
+    `dense` and is configured only at the top level.
 
     Eval envs are built on the same maps the offline data was collected on.
     Variants with fixed evaluation start/goal cells (all AntMaze variants)
     apply them automatically through `reset(options=...)` unless the caller
     passes explicit reset options. Score mode (PointMaze-only) keeps the
-    official goal-marked eval maps and ignores `env_kwargs` overrides; its
+    official goal-marked eval maps; local score envs honor reward overrides,
+    while remote official variants keep their registered reward type. Its
     sensing layout is the plain variant map, not the goal-marked score map.
     """
     import gymnasium as gym
@@ -43,6 +46,7 @@ def make(
 
     from crossmaze.families import SUPPORTED_ENV_FAMILIES
     from crossmaze.layout import live_env_layout_overrides
+    from crossmaze.reward import resolve_reward_type
     from crossmaze.variants import (
         eval_env_spec,
         eval_reset_options,
@@ -78,6 +82,10 @@ def make(
     elif mode == "eval":
         env_id, env_kwargs = eval_env_spec(env_family, variant)
         env_kwargs.update(dict(config.get("env_kwargs") or {}))
+        env_kwargs["reward_type"] = resolve_reward_type(
+            config,
+            default=facts["reward_type"],
+        )
         env_kwargs = _apply_video_env_kwargs(config, env_kwargs)
         env = gym.make(env_id, **env_kwargs)
         reset_options = eval_reset_options(env_family, variant, config=config)

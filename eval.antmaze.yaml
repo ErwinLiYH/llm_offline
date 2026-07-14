@@ -20,6 +20,7 @@ eval_start_goal_mode: fix-start-goal  # AntMaze default; random-start-goal and h
 history_num: 0
 history_stride: 1
 parse_retry_limit: 3
+# reward_type: dense  # sparse | dense; omitted = selected variant default
 record_step_logs: true
 # prompt_templete_index: parallel_full_sensing  # optional; defaults to checkpoint's first training prompt
 action_sampling: false

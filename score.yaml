@@ -26,6 +26,7 @@ action_temperature: 1.0
 action_top_p: 1.0
 action_top_k: 0
 local_reference_root: local_references/pointmaze
+# reward_type: dense  # local score envs only; changes the reference fingerprint
 
 # Optional video recording settings for score rollouts.
 record_video: true

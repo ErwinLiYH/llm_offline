@@ -25,6 +25,7 @@ from minari.storage.local import get_dataset_path
 from crossmaze.eval_position import (
     build_hard_start_goal_pair_space as _build_hard_sample_pair_space,
 )
+from crossmaze.reward import REWARD_TYPES, normalize_reward_type
 from data.pointmaze.variants import (
     POINTMAZE_VARIANTS,
     get_pointmaze_variant_type,
@@ -96,6 +97,15 @@ def parse_args():
     parser.add_argument("--target-episodes", type=int, required=True)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--reward-type",
+        choices=REWARD_TYPES,
+        default=None,
+        help=(
+            "Reward stored in generated transitions. Defaults to the registered "
+            "variant reward type; alternate rewards use a separate dataset path."
+        ),
+    )
     parser.add_argument("--max-episode-steps", type=int, default=1000000)
     parser.add_argument(
         "--post-success-hold-steps",
@@ -358,9 +368,12 @@ def _collect_shard(
     hard_sample_alpha: float,
     hard_pair_space: list[dict],
 ) -> dict:
+    reward_type = normalize_reward_type(env_paras.get("reward_type"))
     # Keep shard IDs namespace-free so Minari does not recursively scan the
     # shared dataset root while parallel workers create/delete temporary dirs.
-    dataset_id = f"pointmaze-{variant}-shard-{uuid.uuid4().hex[:12]}-v0"
+    dataset_id = (
+        f"pointmaze-{variant}-{reward_type}-shard-{uuid.uuid4().hex[:12]}-v0"
+    )
     collect_env_paras = dict(env_paras)
     if post_success_hold_steps > 0 or hard_sample:
         collect_env_paras["reset_target"] = False
@@ -546,6 +559,7 @@ def _collect_shard(
         description=(
             _official_description(eval_env_id)
             + f"\n\nLocal wrapper variant={variant}, worker={worker_index}, "
+            f"reward_type={reward_type}, "
             f"target_episodes={target_episodes}, collected_steps={steps}, seed={seed}, "
             f"post_success_hold_steps={post_success_hold_steps}, "
             f"post_success_hold_noise_std={post_success_hold_noise_std}, "
@@ -564,6 +578,7 @@ def _collect_shard(
     print(
         f"[local-pointmaze-gen] {variant} worker={worker_index}: shard={dataset_id}, "
         f"target_episodes={target_episodes}, successful_episodes={successful_episodes}, "
+        f"reward_type={reward_type}, "
         f"collected_steps={steps}, seed={seed}, "
         f"post_success_hold_steps={post_success_hold_steps}, "
         f"post_success_hold_noise_std={post_success_hold_noise_std}, "
@@ -575,6 +590,7 @@ def _collect_shard(
     return {
         "dataset_id": dataset_id,
         "path": str(get_dataset_path(dataset_id)),
+        "reward_type": reward_type,
         "target_episodes": int(target_episodes),
         "saved_episodes": int(target_episodes),
         "successful_episodes": int(successful_episodes),
@@ -619,6 +635,7 @@ def _write_generation_summary(
     *,
     dataset_root: Path,
     variant: str,
+    reward_type: str,
     target_episodes: int,
     final_episodes: int,
     seed: int,
@@ -666,6 +683,7 @@ def _write_generation_summary(
     ]
     summary = {
         "variant": variant,
+        "reward_type": normalize_reward_type(reward_type),
         "target_episodes": int(target_episodes),
         "final_episodes": int(final_episodes),
         "seed": int(seed),
@@ -706,6 +724,7 @@ def generate_variant(
     target_episodes: int,
     overwrite: bool,
     seed: int,
+    reward_type: str | None,
     max_episode_steps: int,
     post_success_hold_steps: int,
     post_success_hold_noise_std: float,
@@ -726,7 +745,17 @@ def generate_variant(
     if hard_sample_top_n < 0:
         raise ValueError("--hard-sample-top-n must be >= 0")
 
-    dataset_root = resolve_local_dataset_path(meta["dataset_path"])
+    default_reward_type = normalize_reward_type(
+        meta["env_paras"].get("reward_type", meta["prompt_vars"]["reward_type"])
+    )
+    reward_type = normalize_reward_type(reward_type, default=default_reward_type)
+    env_paras = dict(meta["env_paras"])
+    env_paras["reward_type"] = reward_type
+    dataset_root = resolve_local_dataset_path(
+        meta["dataset_path"],
+        reward_type=reward_type,
+        default_reward_type=default_reward_type,
+    )
     if post_success_hold_steps > 0 and dataset_root.exists() and not overwrite:
         raise ValueError(
             f"{variant} already has a local dataset at {dataset_root}. "
@@ -750,7 +779,7 @@ def generate_variant(
     for idx in range(deficit % worker_count):
         shard_targets[idx] += 1
 
-    clean_map = _clean_collection_map(meta["env_paras"]["maze_map"])
+    clean_map = _clean_collection_map(env_paras["maze_map"])
     hard_pair_space: list[dict] = []
     hard_pair_space_total = 0
     if hard_sample:
@@ -764,6 +793,7 @@ def generate_variant(
     print(
         f"[local-pointmaze-gen] {variant}: existing_episodes={existing_episodes}, "
         f"target_episodes={target_episodes}, deficit={deficit}, workers={worker_count}, "
+        f"reward_type={reward_type}, "
         f"post_success_hold_steps={post_success_hold_steps}, "
         f"post_success_hold_noise_std={post_success_hold_noise_std}, "
         f"hard_sample={hard_sample}, hard_retry={hard_retry}, "
@@ -778,7 +808,7 @@ def generate_variant(
         shard_specs.append(
             {
                 "variant": variant,
-                "env_paras": meta["env_paras"],
+                "env_paras": env_paras,
                 "target_episodes": shard_target,
                 "seed": shard_seed,
                 "worker_index": worker_index,
@@ -809,6 +839,7 @@ def generate_variant(
     _write_generation_summary(
         dataset_root=dataset_root,
         variant=variant,
+        reward_type=reward_type,
         target_episodes=target_episodes,
         final_episodes=final_episodes,
         seed=seed,
@@ -852,6 +883,7 @@ def main():
             target_episodes=args.target_episodes,
             overwrite=args.overwrite,
             seed=args.seed,
+            reward_type=args.reward_type,
             max_episode_steps=args.max_episode_steps,
             post_success_hold_steps=args.post_success_hold_steps,
             post_success_hold_noise_std=args.post_success_hold_noise_std,

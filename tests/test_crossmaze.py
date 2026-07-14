@@ -14,6 +14,67 @@ from data.pointmaze.variants import POINTMAZE_VARIANTS
 
 
 class CrossMazePackageTest(unittest.TestCase):
+    def test_reward_type_resolution_and_dataset_paths(self):
+        import crossmaze
+
+        self.assertEqual(
+            crossmaze.resolve_reward_type({}, default="sparse"),
+            "sparse",
+        )
+        self.assertEqual(
+            crossmaze.resolve_reward_type(
+                {"reward_type": "dense"},
+                default="sparse",
+            ),
+            "dense",
+        )
+        self.assertEqual(
+            crossmaze.reward_typed_dataset_path(
+                "local_datasets/pointmaze-local-layout-01-v0",
+                reward_type="dense",
+                default_reward_type="sparse",
+            ).name,
+            "pointmaze-local-layout-01-dense-v0",
+        )
+        with self.assertRaisesRegex(ValueError, "top-level reward_type"):
+            crossmaze.resolve_reward_type(
+                {"env_kwargs": {"reward_type": "dense"}},
+                default="sparse",
+            )
+
+    def test_eval_reward_type_override_updates_env_and_point_prompt(self):
+        import crossmaze
+        from data.pointmaze import formatting
+
+        point_env = crossmaze.make(
+            "pointmaze",
+            "local-layout-01",
+            mode="eval",
+            config={"reward_type": "dense"},
+        )
+        ant_env = crossmaze.make(
+            "antmaze",
+            "local-layout-01",
+            mode="eval",
+            config={"reward_type": "dense"},
+        )
+        try:
+            self.assertEqual(point_env.reward_type, "dense")
+            self.assertEqual(point_env.unwrapped.reward_type, "dense")
+            self.assertEqual(ant_env.reward_type, "dense")
+            self.assertEqual(ant_env.unwrapped.reward_type, "dense")
+
+            prompt_vars = formatting.prepare_eval_prompt_vars(
+                POINTMAZE_VARIANTS["local-layout-01"]["prompt_vars"],
+                point_env,
+            )
+            self.assertEqual(prompt_vars["reward_type"], "dense")
+            self.assertEqual(prompt_vars["reward_desc_en"], "dense reward")
+            point_env.assert_meta_consistent(prompt_vars)
+        finally:
+            point_env.close()
+            ant_env.close()
+
     def test_eval_pointmaze_obs_schema_and_static_layout(self):
         import crossmaze
 

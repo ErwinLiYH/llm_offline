@@ -4,6 +4,7 @@ import gymnasium as gym
 import numpy as np
 
 from crossmaze.families import extract_position_goal
+from crossmaze.reward import normalize_reward_type
 from crossmaze.sensing import (
     CROSSMAZE_OBS_KEY,
     compute_sensing_state,
@@ -31,6 +32,7 @@ class CrossMazeEnv(gym.Wrapper):
     ):
         super().__init__(env)
         self.env_family = str(env_family)
+        self.reward_type = normalize_reward_type(env.unwrapped.reward_type)
         maze_map = [list(row) for row in layout["maze_map"]]
         if not maze_map or not maze_map[0]:
             raise ValueError("CrossMazeEnv layout requires a non-empty maze_map")
@@ -93,6 +95,15 @@ class CrossMazeEnv(gym.Wrapper):
         prompt_map = prompt_vars.get("maze_map")
         if prompt_map is None or [list(row) for row in prompt_map] != self._maze_map:
             problems.append("maze_map: wrapper layout differs from prompt_vars maze_map")
+        prompt_reward_type = prompt_vars.get("reward_type")
+        if (
+            prompt_reward_type is not None
+            and normalize_reward_type(prompt_reward_type) != self.reward_type
+        ):
+            problems.append(
+                f"reward_type: wrapper={self.reward_type!r}, "
+                f"prompt_vars={prompt_reward_type!r}"
+            )
         if problems:
             raise ValueError(
                 "CrossMazeEnv layout/sensing config is inconsistent with rollout prompt_vars:\n  "

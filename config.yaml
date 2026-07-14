@@ -152,6 +152,7 @@ rollout_worker_start_timeout_seconds: 120
 rollout_action_timeout_seconds: 300
 policy_batch_timeout_ms: 10
 eval_distribute_variants: false  # DDP only; assign different eval variants to different ranks
+# reward_type: dense  # sparse | dense; omitted = selected variant default
 eval_env_kwargs:
   continuing_task: false
 

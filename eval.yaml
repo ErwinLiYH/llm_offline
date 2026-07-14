@@ -24,6 +24,7 @@ eval_start_goal_mode: random-start-goal  # random-start-goal | hard-sample | fix
 # eval_hard_sample_top_n: 400        # use either top_percent or top_n, not both
 # eval_hard_sample_alpha: 0.0        # rank-linear hard-pair weighting; 0 = uniform within the hard pool
 parse_retry_limit: 3
+# reward_type: dense  # sparse | dense; omitted = selected variant default
 record_step_logs: true   # whether to save one txt per eval step under the eval result artifacts directory
 # prompt_templete_index: bin  # optional standalone eval prompt override; default = checkpoint's first training prompt
 action_sampling: false    # generation/bin modes: sample vs greedy; parallel_gaussian/parallel_t: sample vs mean action

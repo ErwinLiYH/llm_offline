@@ -47,6 +47,7 @@ micromamba run -n d4rl_datagen python local_pointmaze_gen.py \
   --variants local-layout-01 \
   --num-workers 2 \
   --target-episodes 20 \
+  --reward-type dense \
   --overwrite \
   --seed 42
 ```
@@ -71,5 +72,11 @@ default, so the data teaches the policy to stay near the fixed goal. Use
 during the hold phase. Use `--overwrite` when enabling hold data for an
 existing local dataset to avoid mixing old goal-arrival-only episodes with hold
 episodes.
+
+`--reward-type` accepts `sparse` or `dense` and defaults to the registered
+variant reward type. The default dataset path remains unchanged. Choosing the
+alternate reward writes a separate dataset, for example
+`pointmaze-local-layout-01-dense-v0`, so sparse and dense rewards cannot be
+mixed by append. `generation_summary.json` records the effective reward type.
 
 Generated datasets live under `local_datasets/` and are ignored by Git.

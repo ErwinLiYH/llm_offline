@@ -8,6 +8,8 @@ Public API:
 - `CrossMazeEnv` / `CROSSMAZE_OBS_KEY`: the wrapper class and the obs key.
 - `NEIGHBOR_DIRECTIONS` / `NEIGHBOR_STATUS_*`: the fixed numeric neighbor
   observation contract (`[up, down, left, right]`, `0=free, 1=wall, 2=risk`).
+- `REWARD_TYPES` / `normalize_reward_type` / `resolve_reward_type`: the shared
+  configurable sparse/dense reward contract.
 - `compute_sensing_state` / `render_sensing_text`: the sensing compute/render
   split shared with the offline training pipeline.
 - `get_map_difficulty_config` / `path_difficulty_config`: versioned geometric
@@ -27,6 +29,12 @@ from crossmaze.sensing import (  # noqa: F401
     build_sensing,
     compute_sensing_state,
     render_sensing_text,
+)
+from crossmaze.reward import (  # noqa: F401
+    REWARD_TYPES,
+    normalize_reward_type,
+    resolve_reward_type,
+    reward_typed_dataset_path,
 )
 
 _LAZY_EXPORTS = {
@@ -55,6 +63,7 @@ __all__ = [
     "NEIGHBOR_STATUS_FREE",
     "NEIGHBOR_STATUS_RISK",
     "NEIGHBOR_STATUS_WALL",
+    "REWARD_TYPES",
     "build_sensing",
     "compute_sensing_state",
     "eval_env_spec",
@@ -63,8 +72,11 @@ __all__ = [
     "get_map_difficulty_config",
     "list_variants",
     "make",
+    "normalize_reward_type",
     "path_difficulty_config",
     "render_sensing_text",
+    "resolve_reward_type",
+    "reward_typed_dataset_path",
 ]
 
 

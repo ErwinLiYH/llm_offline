@@ -1291,6 +1291,7 @@ def _build_training_eval_config(config: dict) -> dict:
             config.get("hard_sample_alpha"),
         ),
         "parse_retry_limit": config.get("parse_retry_limit", 3),
+        "reward_type": config.get("reward_type"),
         "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
         "history_num": config.get("history_num", 0),
         "history_stride": config.get("history_stride", 1),

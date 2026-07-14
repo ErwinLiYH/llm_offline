@@ -21,6 +21,7 @@ TARGET_EPISODES=${TARGET_EPISODES:-2000}
 MIN_SUCCESS_RATE=${MIN_SUCCESS_RATE:-0.8}
 NUM_WORKERS=${NUM_WORKERS:-16}
 SEED=${SEED:-42}
+REWARD_TYPE=${REWARD_TYPE:-sparse}
 ACTION_NOISE=${ACTION_NOISE:-0.2}
 MODE=${MODE:-diverse}
 DIVERSE_CELL_MODE=${DIVERSE_CELL_MODE:-all-free}
@@ -64,6 +65,7 @@ echo "Target episodes per variant: ${TARGET_EPISODES}"
 echo "Minimum saved success rate: ${MIN_SUCCESS_RATE}"
 echo "Workers per variant: ${NUM_WORKERS}"
 echo "Seed: ${SEED}"
+echo "Reward type: ${REWARD_TYPE}"
 echo "Action noise: ${ACTION_NOISE}"
 echo "Diverse cell mode: ${DIVERSE_CELL_MODE}"
 if [[ -n "${MAX_EPISODE_ATTEMPTS}" ]]; then
@@ -77,6 +79,7 @@ fi
     --variants "${VARIANT}" \
     --num-workers "${NUM_WORKERS}" \
     --target-episodes "${TARGET_EPISODES}" \
+    --reward-type "${REWARD_TYPE}" \
     --min-success-rate "${MIN_SUCCESS_RATE}" \
     --seed "${SEED}" \
     --action-noise "${ACTION_NOISE}" \

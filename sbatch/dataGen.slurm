@@ -20,6 +20,7 @@ ENV_NAME=d4rl_datagen
 TARGET_EPISODES=${TARGET_EPISODES:-5000}
 NUM_WORKERS=${NUM_WORKERS:-10}
 SEED=${SEED:-42}
+REWARD_TYPE=${REWARD_TYPE:-sparse}
 MAX_EPISODE_STEPS=${MAX_EPISODE_STEPS:-}
 POST_SUCCESS_HOLD_STEPS=${POST_SUCCESS_HOLD_STEPS:-100}
 POST_SUCCESS_HOLD_NOISE_STD=${POST_SUCCESS_HOLD_NOISE_STD:-}
@@ -71,6 +72,7 @@ echo "Variant: ${VARIANT}"
 echo "Target episodes per variant: ${TARGET_EPISODES}"
 echo "Workers per variant: ${NUM_WORKERS}"
 echo "Seed: ${SEED}"
+echo "Reward type: ${REWARD_TYPE}"
 if [[ -n "${MAX_EPISODE_STEPS}" ]]; then
     echo "Max episode steps: ${MAX_EPISODE_STEPS}"
 else
@@ -89,6 +91,7 @@ echo "Overwrite existing dataset: ${OVERWRITE}"
     --variants "${VARIANT}" \
     --num-workers "${NUM_WORKERS}" \
     --target-episodes "${TARGET_EPISODES}" \
+    --reward-type "${REWARD_TYPE}" \
     --post-success-hold-steps "${POST_SUCCESS_HOLD_STEPS}" \
     --seed "${SEED}" \
     "${EXTRA_ARGS[@]}"

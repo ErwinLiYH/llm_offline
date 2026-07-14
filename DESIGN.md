@@ -617,12 +617,15 @@ eval_distribute_variants: true  # DDP 下把 variants 轮转分配给不同 rank
 seed: 1                  # episode reset seeds 为 seed, seed+1, ...
 parse_retry_limit: 3
 # prompt_templete_index: bin_full_sensing  # 可选；standalone eval 只允许一个 prompt 覆盖值
+reward_type: dense        # 可选：sparse | dense；省略时使用 variant 注册默认值
 env_kwargs:
   continuing_task: false # false = 每 episode 一个目标，到达即结束
   # max_episode_steps: 300  # 可选，覆盖环境默认值
 ```
 
-`model_path` 可填 checkpoint 路径或 HuggingFace model ID（如 `Qwen/Qwen3-0.6B`），后者用于评估未微调的基座模型。`evaluate.py --model_path <path>` 和 `evaluate.py --seed <integer>` 会在多个 eval YAML 合并完成后分别覆盖配置中的 `model_path` 与 `seed`；`model_path` 支持一个末尾 `*` 通配，例如 `.../ep7*`，并且必须恰好匹配一个路径，否则直接报错。命令行里建议给通配路径加引号，避免 shell 先展开成多个参数。`sbatch/evaluate.isb.slurm` 也支持同名 `--model_path` / `--model-path` 和 `--seed` 参数，并把多文件 `--config` 原样传给 `evaluate.py`。checkpoint 评估默认使用 checkpoint `config.yaml` 中记录的第一个训练 prompt；`eval.yaml` 可用单个 `prompt_templete_index` 覆盖，覆盖值若不在训练 prompt 列表中需要强确认。
+奖励类型只使用顶层 `reward_type`；不要写入 `env_kwargs.reward_type`。训练期隔离 eval 也从训练配置的同名顶层字段透传，省略时每个 variant 使用各自注册的默认奖励类型。
+
+`model_path` 可填 checkpoint 路径或 HuggingFace model ID（如 `Qwen/Qwen3-0.6B`），后者用于评估未微调的基座模型。`evaluate.py --model_path <path>` 会在多个 eval YAML 合并完成后覆盖配置中的 `model_path`；`model_path` 支持一个末尾 `*` 通配，例如 `.../ep7*`，并且必须恰好匹配一个路径，否则直接报错。命令行里建议给通配路径加引号，避免 shell 先展开成多个参数。`sbatch/evaluate.isb.slurm` 也支持同名 `--model_path` / `--model-path` 参数，并把多文件 `--config` 原样传给 `evaluate.py`。checkpoint 评估默认使用 checkpoint `config.yaml` 中记录的第一个训练 prompt；`eval.yaml` 可用单个 `prompt_templete_index` 覆盖，覆盖值若不在训练 prompt 列表中需要强确认。
 
 普通独立评估不需要设置 `eval_output_mode`，默认值为 `standalone`，输出仍写入 `standalone_<eval_uuid>`。`eval_output_mode: training` 是训练进程隔离 rollout 使用的内部模式，必须同时提供完整 `training_eval_context`；该模式直接写入 checkpoint 对应 run 的 `ep<n>(step<m>)` 或 `step<n>` 目录，并把训练上下文字段补进每个 `result.json`。
 
@@ -636,6 +639,8 @@ env_kwargs:
 
 本地 PointMaze offline 数据由 `local_pointmaze_gen.py` 生成，数据默认写入 `local_datasets/`，训练数据读取逻辑只消费最终 Minari/HDF5 数据，不在训练阶段重新生成轨迹。训练配置可用 `local_dataset_root` 覆盖 PointMaze/AntMaze local dataset 根目录，用于在不同 worktree 或 scratch 目录间复用同一份 local 数据；`local_dataset_path` 是兼容别名。生成脚本复用 Farama 官方 `WaypointController` / `QIteration`，但 Minari step callback 在本仓库实现，用于控制 episode 边界并记录 `qpos`、`qvel`、`goal`。
 
+PointMaze 和 AntMaze 的 local 生成入口都接受 `--reward-type sparse|dense`，省略时使用 variant 注册的默认值。默认奖励的数据路径保持不变；选择非默认奖励时自动在 Minari dataset 名称的 `-v0` 前加入奖励类型，例如 `pointmaze-local-layout-01-dense-v0` 和 `antmaze-local-layout-01-dense-v0`，因此 sparse/dense transition 不会追加到同一个数据集。`generation_summary.json` 同时记录实际奖励类型。四个 data-generation Slurm 脚本使用 `REWARD_TYPE` 透传该参数。
+
 `local-medium` 是复用官方 PointMaze medium 8x8 地图的 local variant，数据路径为 `local_datasets/pointmaze-local-medium-v0`，用于在相同地图上重采样本地 medium 数据并与官方 `D4RL/pointmaze/medium-v2` 数据隔离。
 
 默认生成逻辑保持 D4RL/Minari PointMaze 风格：`continuing_task=True`、`reset_target=True`，每次 first success 时把该 step 标记为 episode truncation。为补充“到达后保持”数据，可以使用：
@@ -645,6 +650,7 @@ micromamba run -n d4rl_datagen python local_pointmaze_gen.py \
   --variants local-layout-07 \
   --num-workers 4 \
   --target-episodes 1000 \
+  --reward-type dense \
   --post-success-hold-steps 100 \
   --post-success-hold-noise-std 0.0 \
   --overwrite \
@@ -674,7 +680,7 @@ python generate_antmaze_layouts.py \
 python inspect_antmaze_layouts.py --variants medium-play large-play local-layout-01
 ```
 
-本地 AntMaze offline 数据由 `local_antmaze_gen.py` 生成。普通 diverse 生成可通过 `sbatch/dataGen.ant.slurm` 提交；hard-sample 生成可通过 `sbatch/dataGen.ant.hard.slurm` 提交，后者显式传入 `--hard-sample --hard-retry <N> --hard-sample-alpha <A>`，按 start/goal pair 难度加权采样并只保存成功 episode。hard-sample 启用前的初版 `local-layout-01..09` 数据备份在 `local_dataset_backups/antmaze_pre_hard_sample_initial_2026-07-01/`，该备份目录被 `.gitignore` 忽略。
+本地 AntMaze offline 数据由 `local_antmaze_gen.py` 生成，也支持同一 `--reward-type sparse|dense` 接口。普通 diverse 生成可通过 `sbatch/dataGen.ant.slurm` 提交；hard-sample 生成可通过 `sbatch/dataGen.ant.hard.slurm` 提交，后者显式传入 `--hard-sample --hard-retry <N> --hard-sample-alpha <A>`，按 start/goal pair 难度加权采样并只保存成功 episode。hard-sample 启用前的初版 `local-layout-01..09` 数据备份在 `local_dataset_backups/antmaze_pre_hard_sample_initial_2026-07-01/`，该备份目录被 `.gitignore` 忽略。
 
 详细说明见 `docs/maze_generation_topology.md` 和 `docs/official_maze_dataset_semantics.md`。
 
