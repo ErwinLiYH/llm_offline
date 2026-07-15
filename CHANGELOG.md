@@ -1664,3 +1664,11 @@ type: project
 - 已通过 `conda run -n llm_offline python -m py_compile utils/rollout/artifacts.py utils/rollout/worker_main.py tests/test_rollout_artifacts.py`
 - 已通过 `conda run -n llm_offline python -c "import utils.rollout.artifacts; import utils.rollout.worker_main"`
 - 已通过 `git diff --check -- utils/rollout/artifacts.py utils/rollout/worker_main.py tests/test_rollout_artifacts.py`
+
+## AntMaze compact local layouts 10-12（2026-07-15）
+
+- 新增 `local-layout-10..12` 三张 compact AntMaze 地图，尺寸均为 `9x13`，继续保持不超过 `10x13` 的本地地图约束
+- 在 `crossmaze.maps` / `crossmaze.variants` 中注册 plain 0/1 地图、默认本地 Minari dataset path、AntMaze v4 环境参数和 1000-step horizon；`data/antmaze/variants.py` 同步增加 prompt metadata
+- 在 `crossmaze.eval_position` 中登记三张地图的固定 eval start/goal pair，`eval_reset_cell` / `eval_goal_cell` 继续由 CrossMaze 位置表派生
+- 三个 variant 均已通过拓扑检查、Python 编译、CrossMaze/AntMaze 注册表一致性测试和 AntMaze 环境构造/reset 检查，观测契约保持 27 维 proprioception、2 维 achieved goal 和 2 维 desired goal
+- 当前只完成地图与 variant 注册，尚未生成 `antmaze-local-layout-10-v0`、`11-v0`、`12-v0` 对应的 Minari 离线数据；训练前仍需通过 `local_antmaze_gen.py` 单独生成

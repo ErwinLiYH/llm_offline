@@ -37,7 +37,8 @@ workflow in a simpler engineering form suitable for AntMaze:
 - `local_antmaze_gen.py`: offline dataset generator for registered local AntMaze
   variants, using the official Farama AntMaze waypoint-controller stack.
 - `generated_antmaze_layouts_seed42.json` and
-  `generated_antmaze_layouts_seed42.py`: current generated layout record.
+  `generated_antmaze_layouts_seed42.py`: historical seed-42 generated layout
+  record.
 
 ## Layout Profiles
 
@@ -52,12 +53,16 @@ dead ends, more junctions, and no `2x2` open blocks. The hard profile preserves
 long straight corridors when they appear, but rejects room-like open areas such
 as `2x2`, `2x3`, and `3x2` contiguous free-space windows.
 
-Current suite layout split:
+Historical seed-42 suite profile split:
 
 - `local-layout-01..05`: `large-like`
 - `local-layout-06..09`: `hard`
 - `test-layout-01..02`: held-out `large-like`
 - `test-layout-03..04`: held-out `hard`
+
+The current registry additionally includes compact `local-layout-10..12` maps.
+They were selected under a `10x13` maximum-size constraint, with one layout in
+the approximate 45 static-difficulty band and two in the approximate 50 band.
 
 ## Generation Algorithm
 
@@ -83,7 +88,7 @@ The open-space penalty is intentionally separate from straight-corridor length.
 Long corridors are allowed; room-like open blocks are not desired for the hard
 held-out layouts.
 
-Generate the full registered suite:
+Regenerate the historical seed-42 candidate suite:
 
 ```bash
 python generate_antmaze_layouts.py \
@@ -126,9 +131,11 @@ Core metrics:
 - `corridor_count`, `mean_corridor_len`, `max_corridor_len`
 - `static_difficulty`
 
-For AntMaze local/test variants, `metrics_for_variant(...)` uses the registered
-eval map and the fixed `r/g` cells. For maps without markers, `compute_maze_metrics`
-chooses the graph diameter endpoints as start and goal.
+For AntMaze local/test variants, `metrics_for_variant(...)` reads the registered
+plain 0/1 map. Current maps contain no `r/g` markers, so topology scoring chooses
+the graph-diameter endpoints as start and goal. The fixed rollout eval pair is
+owned by `crossmaze.eval_position` and its v2 path difficulty is a separate
+metric.
 
 Inspect registered AntMaze layouts:
 
@@ -201,29 +208,33 @@ The current registered AntMaze local/test/experimental layouts have these static
 scores:
 
 ```text
-local-layout-01  57.07
-local-layout-02  52.62
-local-layout-03  48.21
-local-layout-04  47.55
-local-layout-05  54.13
-local-layout-06  66.68
-local-layout-07  68.85
-local-layout-08  61.49
-local-layout-09  73.47
+local-layout-01  42.09
+local-layout-02  47.26
+local-layout-03  46.52
+local-layout-04  46.86
+local-layout-05  45.08
+local-layout-06  50.12
+local-layout-07  49.87
+local-layout-08  49.93
+local-layout-09  48.01
+local-layout-10  44.98
+local-layout-11  50.04
+local-layout-12  50.35
 
-test-layout-01   57.71
-test-layout-02   51.52
-test-layout-03   70.45
-test-layout-04   63.59
+test-layout-01   44.99
+test-layout-02   33.61
+test-layout-03   49.30
+test-layout-04   49.92
 
-ultra            46.06
+ultra            50.30
 ```
 
-For comparison under the same fixed eval-map scoring:
+For comparison under the same topology scoring:
 
 ```text
-medium-play      64.91
-large-play       63.01
+umaze             60.57
+medium-play       65.85
+large-play        63.85
 ```
 
 ## Offline Data Generation
@@ -364,7 +375,8 @@ trajectories automatically.
   guarantees.
 - `static_difficulty` is useful for sorting and sanity checks, but it is not a
   substitute for empirical Ant rollout success rate.
-- The score depends on the start/goal pair. AntMaze local/test variants use
-  fixed registered `r/g` cells; unmarked maps use graph diameter endpoints.
+- The score depends on the start/goal pair. Current registered AntMaze maps are
+  unmarked plain 0/1 grids, so topology scoring uses graph-diameter endpoints.
+  Fixed rollout eval pairs and their v2 path difficulty remain separate.
 - Official PointMaze normalized score remains separate and is implemented in
   `score.py`.

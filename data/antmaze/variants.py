@@ -166,6 +166,18 @@ ANTMAZE_VARIANTS = {
         index=9,
         structure_desc_en="A compact generated AntMaze layout in the 45 static-difficulty band, with open corridor choices and light bottlenecks.",
     ),
+    "local-layout-10": _build_local_variant(
+        index=10,
+        structure_desc_en="A compact generated AntMaze layout in the 45 static-difficulty band, with open corridor choices and light bottlenecks.",
+    ),
+    "local-layout-11": _build_local_variant(
+        index=11,
+        structure_desc_en="A compact generated AntMaze layout in the 50 static-difficulty band, with longer turns and moderate bottlenecks.",
+    ),
+    "local-layout-12": _build_local_variant(
+        index=12,
+        structure_desc_en="A compact generated AntMaze layout in the 50 static-difficulty band, with longer turns and moderate bottlenecks.",
+    ),
     "test-layout-01": _build_local_variant(
         variant_name="test-layout-01",
         env_name="AntMaze Test Layout 01",
