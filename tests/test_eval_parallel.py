@@ -140,6 +140,23 @@ class DummyEnv:
 
 
 class EvalParallelTest(unittest.TestCase):
+    def test_eval_cli_seed_overrides_merged_config(self):
+        args = evaluate.parse_args(
+            ["--config", "base.yaml", "override.yaml", "--seed", "42"]
+        )
+
+        config = evaluate.apply_eval_cli_overrides({"seed": 64}, args)
+
+        self.assertEqual(args.config, ["base.yaml", "override.yaml"])
+        self.assertEqual(config["seed"], 42)
+
+    def test_eval_cli_without_seed_preserves_merged_config(self):
+        args = evaluate.parse_args(["--config", "eval.yaml"])
+
+        config = evaluate.apply_eval_cli_overrides({"seed": 64}, args)
+
+        self.assertEqual(config["seed"], 64)
+
     def test_checkpoint_sensing_config_is_inherited_for_eval(self):
         with tempfile.TemporaryDirectory() as checkpoint_dir:
             (Path(checkpoint_dir) / "config.yaml").write_text(

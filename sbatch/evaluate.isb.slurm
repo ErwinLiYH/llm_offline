@@ -19,6 +19,7 @@ ENV_BIN=/home/u6mx/yl1118.u6mx/miniforge3/envs/llm_offline/bin
 
 CONFIG_PATHS=()
 MODEL_PATH=""
+SEED=""
 PARALLEL_BACKEND=""
 NPROC_PER_NODE=1
 ASSUME_YES=false
@@ -31,6 +32,7 @@ Usage:
   sbatch $0 --config <base.yaml> <override.yaml> [options]
   sbatch $0 --config <eval.yaml> --model_path <checkpoint_dir>
   sbatch $0 --config <eval.yaml> --model_path '<checkpoint_prefix>*'
+  sbatch $0 --config <eval.yaml> --seed 42
   sbatch $0 --config <eval.yaml> --yes
   sbatch --gpus=4 --cpus-per-task=128 sbatch/evaluate.isb.slurm --config <eval.yaml> --parallel_backend ddp --nproc-per-node 4
   sbatch $0 --config <eval.yaml> -- --future-evaluate-arg value
@@ -39,6 +41,7 @@ Options:
   --config <path> [path ...]         Evaluation config(s) passed to evaluate.py.
   --model_path, --model-path <path>  Override model_path from the merged eval config.
                                      A single trailing '*' wildcard is supported; quote it in shells.
+  --seed <integer>                   Override seed from the merged eval config.
   --parallel_backend, --parallel-backend <single|ddp>
                                      Override config parallel_backend. Default: use eval config.
   --nproc-per-node <n>               torchrun processes for ddp. Default: ${NPROC_PER_NODE}.
@@ -85,6 +88,15 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi
             MODEL_PATH="${MODEL_PATH_VALUES[0]}"
+            ;;
+        --seed)
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: --seed requires an integer" >&2
+                usage >&2
+                exit 2
+            fi
+            SEED="$2"
+            shift 2
             ;;
         --parallel_backend|--parallel-backend)
             if [[ $# -lt 2 ]]; then
@@ -140,6 +152,10 @@ if [[ -n "${PARALLEL_BACKEND}" && "${PARALLEL_BACKEND}" != "single" && "${PARALL
     echo "ERROR: --parallel_backend must be single or ddp, got: ${PARALLEL_BACKEND}" >&2
     exit 2
 fi
+if [[ -n "${SEED}" ]] && ! [[ "${SEED}" =~ ^-?[0-9]+$ ]]; then
+    echo "ERROR: --seed must be an integer, got: ${SEED}" >&2
+    exit 2
+fi
 if ! [[ "${NPROC_PER_NODE}" =~ ^[0-9]+$ ]] || [[ "${NPROC_PER_NODE}" -lt 1 ]]; then
     echo "ERROR: --nproc-per-node must be a positive integer, got: ${NPROC_PER_NODE}" >&2
     exit 2
@@ -173,6 +189,11 @@ if [[ -n "${MODEL_PATH}" ]]; then
 else
     echo "Model path override: config default"
 fi
+if [[ -n "${SEED}" ]]; then
+    echo "Seed override: ${SEED}"
+else
+    echo "Seed override: config default"
+fi
 if [[ -n "${PARALLEL_BACKEND}" ]]; then
     echo "Parallel backend override: ${PARALLEL_BACKEND}"
 else
@@ -188,6 +209,9 @@ fi
 EVAL_ARGS=(--config "${CONFIG_PATHS[@]}")
 if [[ -n "${MODEL_PATH}" ]]; then
     EVAL_ARGS+=(--model_path "${MODEL_PATH}")
+fi
+if [[ -n "${SEED}" ]]; then
+    EVAL_ARGS+=(--seed "${SEED}")
 fi
 if [[ -n "${PARALLEL_BACKEND}" ]]; then
     EVAL_ARGS+=(--parallel_backend "${PARALLEL_BACKEND}")

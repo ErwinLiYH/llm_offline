@@ -592,9 +592,10 @@ eval 和 score rollout 统一走 `utils/rollout/` 的进程隔离框架。每个
 python evaluate.py --config eval.yaml
 python evaluate.py --config eval.yaml --model_path checkpoints/.../final
 python evaluate.py --config eval.yaml --model_path 'checkpoints/.../ep7*'
+python evaluate.py --config eval.yaml --seed 42
 # 多 GPU：每个 rank 处理不同 variants
 torchrun --standalone --nproc_per_node=<num_gpus> evaluate.py --config eval.yaml --parallel_backend ddp
-sbatch sbatch/evaluate.isb.slurm --config eval.base.yaml eval.override.yaml --model_path 'checkpoints/.../ep7*'
+sbatch sbatch/evaluate.isb.slurm --config eval.base.yaml eval.override.yaml --model_path 'checkpoints/.../ep7*' --seed 42
 ```
 
 通过 `eval.yaml` 控制所有评估配置；也可以用 `--config eval.base.yaml eval.override.yaml` 先合并多个 YAML，再按同一套规则解析：
@@ -621,7 +622,7 @@ env_kwargs:
   # max_episode_steps: 300  # 可选，覆盖环境默认值
 ```
 
-`model_path` 可填 checkpoint 路径或 HuggingFace model ID（如 `Qwen/Qwen3-0.6B`），后者用于评估未微调的基座模型。`evaluate.py --model_path <path>` 会在多个 eval YAML 合并完成后覆盖配置中的 `model_path`；`model_path` 支持一个末尾 `*` 通配，例如 `.../ep7*`，并且必须恰好匹配一个路径，否则直接报错。命令行里建议给通配路径加引号，避免 shell 先展开成多个参数。`sbatch/evaluate.isb.slurm` 也支持同名 `--model_path` / `--model-path` 参数，并把多文件 `--config` 原样传给 `evaluate.py`。checkpoint 评估默认使用 checkpoint `config.yaml` 中记录的第一个训练 prompt；`eval.yaml` 可用单个 `prompt_templete_index` 覆盖，覆盖值若不在训练 prompt 列表中需要强确认。
+`model_path` 可填 checkpoint 路径或 HuggingFace model ID（如 `Qwen/Qwen3-0.6B`），后者用于评估未微调的基座模型。`evaluate.py --model_path <path>` 和 `evaluate.py --seed <integer>` 会在多个 eval YAML 合并完成后分别覆盖配置中的 `model_path` 与 `seed`；`model_path` 支持一个末尾 `*` 通配，例如 `.../ep7*`，并且必须恰好匹配一个路径，否则直接报错。命令行里建议给通配路径加引号，避免 shell 先展开成多个参数。`sbatch/evaluate.isb.slurm` 也支持同名 `--model_path` / `--model-path` 和 `--seed` 参数，并把多文件 `--config` 原样传给 `evaluate.py`。checkpoint 评估默认使用 checkpoint `config.yaml` 中记录的第一个训练 prompt；`eval.yaml` 可用单个 `prompt_templete_index` 覆盖，覆盖值若不在训练 prompt 列表中需要强确认。
 
 普通独立评估不需要设置 `eval_output_mode`，默认值为 `standalone`，输出仍写入 `standalone_<eval_uuid>`。`eval_output_mode: training` 是训练进程隔离 rollout 使用的内部模式，必须同时提供完整 `training_eval_context`；该模式直接写入 checkpoint 对应 run 的 `ep<n>(step<m>)` 或 `step<n>` 目录，并把训练上下文字段补进每个 `result.json`。
 
