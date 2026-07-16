@@ -1,0 +1,34 @@
+# Override relative to config.isb.ant.0.0.0.yaml.
+# Merge with: --config configs/train/config.isb.ant.0.0.0.yaml configs/train/config.isb.ant.1.0.1.yaml
+# 1.0.2 using data with hard sampling
+
+dataset_cache_dir: /scratch/u6mx/yl1118.u6mx/dataset_cache_scale2
+
+train_varients:
+- local-layout-02
+- local-layout-08
+
+dataset_load_partitions: 8
+antmaze_data_config:
+  filter_success: true
+  truncate: true
+  truncate_holding: 50
+episode_keep_num: 2400
+min_lr_ratio: 0.1
+lr_scheduler_type: cosine
+lr_decay_ref_epochs: 8.0
+warmup_ratio: 0.1
+warmup_ratio_ref_epoch: 1.0
+lora_r: 128
+lora_alpha: 128
+num_epochs: 8
+eval_num_episodes: 0
+eval_step_interval: 0
+step_eval_skip: 1
+eval_mode: all
+eval_variants:
+- test-layout-01
+- test-layout-02
+- test-layout-03
+- local-layout-02
+- local-layout-08

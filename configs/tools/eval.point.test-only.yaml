@@ -1,0 +1,9 @@
+# override the default evaluation mode to run all test varients only
+eval_mode: all
+variants:
+- test-layoutV2-01
+- test-layoutV2-02
+- test-layoutV2-03
+- test-layoutV2-04
+- test-layoutV2-05
+- test-layoutV2-06

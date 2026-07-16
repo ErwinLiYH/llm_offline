@@ -1,0 +1,16 @@
+# close video recording, run 100 episodes
+
+num_episodes: 100
+
+seed: 200
+
+config_delete_keys:
+- video_episode_index
+- video_fps
+- video_format
+- video_save_workers
+- video_save_max_pending
+- mujoco_gl
+
+record_video: false
+record_all: false

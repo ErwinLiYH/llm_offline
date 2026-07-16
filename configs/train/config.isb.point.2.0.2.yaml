@@ -1,0 +1,66 @@
+# Override relative to config.isb.point.0.0.0.yaml.
+# Merge with: --config configs/train/config.isb.point.0.0.0.yaml configs/train/config.isb.point.2.0.0.yaml
+wandb_project: pointmazeV2layout
+wall_sensing_version: v5
+map_sensing_boundary_risk_threshold: 0.10
+
+train_varients:
+- open
+- umaze
+- medium
+- large
+- local-layoutV2-01
+- local-layoutV2-02
+- local-layoutV2-03
+- local-layoutV2-04
+- local-layoutV2-05
+- local-layoutV2-06
+- local-layoutV2-07
+- local-layoutV2-08
+- local-layoutV2-09
+- local-layoutV2-10
+- local-layoutV2-11
+- local-layoutV2-12
+
+eval_variants:
+- test-layoutV2-01
+- test-layoutV2-02
+- test-layoutV2-03
+- test-layoutV2-04
+- test-layoutV2-05
+- test-layoutV2-06
+- open
+- umaze
+- medium
+- large
+- local-layoutV2-01
+- local-layoutV2-02
+- local-layoutV2-03
+- local-layoutV2-04
+- local-layoutV2-05
+- local-layoutV2-06
+- local-layoutV2-07
+- local-layoutV2-08
+- local-layoutV2-09
+- local-layoutV2-10
+- local-layoutV2-11
+- local-layoutV2-12
+
+dataset_load_partitions: 8
+episode_keep_num: 800
+episode_keep_per_varient:
+  medium: 1200
+
+eval_num_episodes: 0
+eval_step_interval: 0
+
+pointmaze_data_config:
+  truncate: true              # true = cut each episode after first success before tokenization
+  truncate_holding: 20        # extra action samples kept after the success transition; must be an integer >= 0
+
+min_lr_ratio: 0.1
+lr_scheduler_type: cosine
+lr_decay_ref_epochs: 4.0
+warmup_ratio: 0.05
+warmup_ratio_ref_epoch: 1.0
+num_epochs: 5

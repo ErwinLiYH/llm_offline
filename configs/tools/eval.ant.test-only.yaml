@@ -1,0 +1,6 @@
+# override the default evaluation mode and variants to test-only mode
+eval_mode: all
+variants:
+  - test-layout-01
+  - test-layout-02
+  - test-layout-03

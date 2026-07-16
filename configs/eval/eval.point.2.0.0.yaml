@@ -1,0 +1,65 @@
+# Standalone eval config for configs/train/config.isb.point.2.0.1.wall_exp.yaml.
+# Replace <experiment_id> and checkpoint tag, or override model_path with a second config.
+model_path: /scratch/u6mx/yl1118.u6mx/checkpoints/pointmaze/Qwen3-0.6B/all-16v-e86b7b3a575d/5507552/ep6(step22452)
+load_in_4bit: false
+parallel_backend: single
+result_root: /scratch/u6mx/yl1118.u6mx/resultsV2
+env_family: pointmaze
+
+eval_mode: all
+variants:
+- test-layoutV2-01
+- test-layoutV2-02
+- test-layoutV2-03
+- test-layoutV2-04
+- test-layoutV2-05
+- test-layoutV2-06
+- open
+- umaze
+- medium
+- large
+- local-layoutV2-01
+- local-layoutV2-02
+- local-layoutV2-03
+- local-layoutV2-04
+- local-layoutV2-05
+- local-layoutV2-06
+- local-layoutV2-07
+- local-layoutV2-08
+- local-layoutV2-09
+- local-layoutV2-10
+- local-layoutV2-11
+- local-layoutV2-12
+num_episodes: 20
+seed: 64
+
+history_num: 0
+history_stride: 1
+prompt_templete_index: ["parallel_full_sensing"]
+
+rollout_worker_num: 5
+rollout_worker_lifetime: slot
+rollout_worker_retries: 2
+rollout_worker_start_timeout_seconds: 120
+rollout_action_timeout_seconds: 300
+policy_batch_timeout_ms: 10
+eval_distribute_variants: false
+
+parse_retry_limit: 3
+record_step_logs: true
+action_sampling: false
+action_temperature: 0.7
+action_top_p: 0.9
+action_top_k: 0
+
+record_video: true
+record_all: true
+video_episode_index: 0
+video_fps: 30
+video_format: mp4
+video_save_workers: 5
+video_save_max_pending: 10
+mujoco_gl: egl
+
+env_kwargs:
+  continuing_task: false

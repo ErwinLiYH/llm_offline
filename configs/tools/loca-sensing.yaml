@@ -1,0 +1,2 @@
+# override the prompt to loca-sensing. It can be used for both pointmaze and antmaze
+prompt_templete_index: ["parallel_loca_sensing"]

@@ -1,0 +1,2 @@
+# override the prompt to no-sensing. It can be used for both pointmaze and antmaze
+prompt_templete_index: ["parallel_no_sensing"]
