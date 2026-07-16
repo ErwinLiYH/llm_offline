@@ -1,0 +1,13 @@
+algorithm: iql
+algorithm_config:
+  batch_size: 256
+  gamma: 0.99
+  actor_learning_rate: 0.0003
+  critic_learning_rate: 0.0003
+  tau: 0.005
+  n_critics: 2
+  expectile: 0.7
+  weight_temp: 3.0
+  max_weight: 100.0
+  reward_scaler: null
+  compile_graph: false

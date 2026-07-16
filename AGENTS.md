@@ -42,6 +42,11 @@ Official normalized scoring:
 - `micromamba run -n llm_offline python score.py --config score.yaml`
 - `score.py` reads all run settings from YAML; the only supported CLI override is `--config`, which may name one or more files using the same merge semantics.
 
+Conventional offline RL baselines:
+- Create/update the isolated environment with `bash baselines/setup_env.sh`.
+- Train with layered configs, for example `micromamba run -n llm_offline_baselines python baseline_train.py --config baselines/configs/base.pointmaze.yaml baselines/configs/td3_bc.yaml`.
+- `n_steps` is the number of minibatch updates; `n_steps_per_epoch` is only the d3rlpy logging/checkpoint/evaluation grouping.
+
 Prefer `micromamba run -n llm_offline` for Python commands in this repo.
 
 ## Architecture
@@ -51,6 +56,7 @@ Key files:
 - `evaluate.py`: entry point; reads one or more eval config YAML files
 - `score.py`: official-style PointMaze normalized score entry point; reads one or more score config YAML files
 - `estimate_dataset.py`: tokenizer-only dataset size estimator; reads one or more training config YAML files and reports selected steps, one-epoch batches, estimated tokenized `.pkl` GB, and estimated tokenized-sample Python memory GB
+- `baseline_train.py` / `baselines/`: isolated d3rlpy 2.8.1 MLP-BC, TD3+BC, and IQL baselines. Baseline code owns numeric observation adaptation, Minari-to-d3rlpy transition preservation, deterministic episode sampling, rollout metrics, and artifacts; algorithm update implementations and the fit loop remain d3rlpy-owned.
 - `crossmaze/`: standalone environment package (installable via the repo-root `pyproject.toml`, deps: numpy/gymnasium/gymnasium-robotics only). It owns all environment facts and construction: `crossmaze.maps` (plain 0/1 maze layouts), `crossmaze.variants` (per-variant env facts: env id/kwargs, dataset id/path, horizons), `crossmaze.eval_position` (ordinary eval start/goal selection and difficulty metadata), `crossmaze.sensing` + `crossmaze.sensing_config` (canonical location/wall sensing), `crossmaze.layout` (visual map/raw matrix/shape rendering), `crossmaze.score` (official PointMaze score env specs/fingerprints/env construction), `crossmaze.make(env_family, variant, mode="eval|score", config=...)`, and `CrossMazeEnv` (gym wrapper attaching structured `obs["crossmaze"]` and applying default eval reset options). `obs["crossmaze"]["neighbor_status"]` is the fixed four-int list `[up, down, left, right]`, using `0=free`, `1=wall`, and `2=risk`; prompt rendering maps these codes to language-side text. The rest of the repo only builds envs through `crossmaze.make`, renders prompts, and interacts.
 - `data/registry.py`: routes `env_family` to dataset, formatter, variants, and eval env specs
 - `data/base_dataset.py`: abstract dataset interface
@@ -93,6 +99,8 @@ To add a new environment family:
 ## Implementation Notes
 
 - Observation/action formatting remains per environment family; common maze geometry and sensing live in `crossmaze.sensing` (re-exported through `utils/maze_sensing.py`).
+- Baselines do not use prompts or sensing text. PointMaze state is `[observation, desired_goal]` (6D); AntMaze state is `[achieved_goal, observation, desired_goal]` (31D). The custom d3rlpy episode adapter preserves all T transitions from Minari's T+1 observations and bootstraps timeout transitions from the recorded final observation.
+- Baseline local datasets use top-level `reward_type`; remote datasets reject incompatible reward overrides. Mixed reward-type training is rejected unless `allow_mixed_reward_types: true` is explicit. MLP-BC ignores rewards in its objective, while TD3+BC and IQL consume them.
 - AntMaze supports the six official Minari D4RL datasets: `umaze`, `umaze-diverse`, `medium-play`, `medium-diverse`, `large-play`, and `large-diverse`. Local/custom AntMaze maps are not implemented.
 - AntMaze intentionally uses the Minari metadata's Gymnasium Robotics v4 env specs. The offline contract is a 27-dimensional proprioceptive `observation`, 2D `achieved_goal`, 2D `desired_goal`, and 8-dimensional torque action. Do not silently switch rollout to v5 defaults, which include contact-force observations and change the input shape.
 - AntMaze keeps `0` for text actions. Its action-bin prompts are `bin_full_sensing`, `bin_loca_sensing`, `bin_wall_sensing`, and `bin_no_sensing`, shared by `bin` / `gaussian_bin` / `mtp_bin` / `simple_mtp_bin`; continuous prompts are `parallel_full_sensing`, `parallel_loca_sensing`, `parallel_wall_sensing`, and `parallel_no_sensing`, shared by `parallel_l1` / `parallel_gaussian` / `parallel_t`.

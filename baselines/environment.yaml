@@ -1,0 +1,24 @@
+name: llm_offline_baselines
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - torch==2.10.0
+      - numpy==2.2.6
+      - gym==0.26.2
+      - gymnasium==1.2.3
+      - gymnasium-robotics==1.4.2
+      - minari==0.5.3
+      - mujoco==3.6.0
+      - h5py==3.16.0
+      - scikit-learn==1.7.2
+      - tqdm==4.67.3
+      - click==8.3.1
+      - colorama==0.4.6
+      - dataclasses-json==0.6.7
+      - structlog==25.5.0
+      - typing-extensions==4.15.0
+      - pyyaml==6.0.3
+      - wandb==0.27.0

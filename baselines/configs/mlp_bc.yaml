@@ -1,0 +1,6 @@
+algorithm: mlp_bc
+algorithm_config:
+  batch_size: 100
+  learning_rate: 0.001
+  policy_type: deterministic
+  compile_graph: false
