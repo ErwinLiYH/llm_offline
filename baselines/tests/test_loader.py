@@ -66,6 +66,7 @@ class LoaderTest(unittest.TestCase):
         self.assertEqual(first.manifest["validation_episode_count"], 2)
         self.assertEqual(first.train_buffer.transition_count, 24)
         self.assertEqual(first.validation_buffer.transition_count, 6)
+        self.assertEqual(first.manifest["observation_schema"]["dimension"], 6)
         self.assertEqual(
             first.manifest["variants"]["local-layout-01"]["train_episode_indices"],
             second.manifest["variants"]["local-layout-01"]["train_episode_indices"],

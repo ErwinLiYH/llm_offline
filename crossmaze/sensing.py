@@ -6,6 +6,7 @@ names, so dataset cache signatures and prompt text stay unchanged.
 """
 
 import math
+from functools import lru_cache
 
 import numpy as np
 
@@ -207,6 +208,62 @@ def _near_opposite_boundary(
     return False
 
 
+def _neighbor_status_from_near(
+    maze_map: list[list[object]],
+    row: int,
+    col: int,
+    d_row: int,
+    d_col: int,
+    *,
+    near: dict[str, bool],
+    wall_sensing_version: str,
+) -> int:
+    """Resolve one neighbor from a precomputed set of boundary flags."""
+    direct_status = _cell_status(maze_map, row + d_row, col + d_col)
+    if wall_sensing_version == "v1":
+        return direct_status
+    if direct_status == NEIGHBOR_STATUS_WALL:
+        if wall_sensing_version == "v4" and _near_opposite_boundary(
+            d_row, d_col, near
+        ):
+            return NEIGHBOR_STATUS_FREE
+        return NEIGHBOR_STATUS_WALL
+
+    if d_col:
+        side_checks = ((-1, 0, near["top"]), (1, 0, near["bottom"]))
+    else:
+        side_checks = ((0, -1, near["left"]), (0, 1, near["right"]))
+
+    for side_d_row, side_d_col, near_side in side_checks:
+        if not near_side:
+            continue
+        diagonal_is_wall = (
+            _cell_status(
+                maze_map,
+                row + d_row + side_d_row,
+                col + d_col + side_d_col,
+            )
+            == NEIGHBOR_STATUS_WALL
+        )
+        if wall_sensing_version == "v2" and diagonal_is_wall:
+            return NEIGHBOR_STATUS_WALL
+        if wall_sensing_version in {"v3", "v4", "v5"} and _has_new_corner(
+            maze_map,
+            row,
+            col,
+            side_d_row,
+            side_d_col,
+            d_row + side_d_row,
+            d_col + side_d_col,
+        ):
+            return (
+                NEIGHBOR_STATUS_RISK
+                if wall_sensing_version == "v5"
+                else NEIGHBOR_STATUS_WALL
+            )
+    return NEIGHBOR_STATUS_FREE
+
+
 def _neighbor_status(
     maze_map: list[list[object]],
     row: int,
@@ -241,36 +298,178 @@ def _neighbor_status(
         maze_size_scaling=maze_size_scaling,
         boundary_risk_threshold=boundary_risk_threshold,
     )
-    if direct_status == NEIGHBOR_STATUS_WALL:
-        if version == "v4" and _near_opposite_boundary(d_row, d_col, near):
-            return NEIGHBOR_STATUS_FREE
-        return NEIGHBOR_STATUS_WALL
+    return _neighbor_status_from_near(
+        maze_map,
+        row,
+        col,
+        d_row,
+        d_col,
+        near=near,
+        wall_sensing_version=version,
+    )
 
-    if d_col:
-        side_checks = ((-1, 0, near["top"]), (1, 0, near["bottom"]))
-    else:
-        side_checks = ((0, -1, near["left"]), (0, 1, near["right"]))
 
-    for side_d_row, side_d_col, near_side in side_checks:
-        if not near_side:
-            continue
-        diagonal_is_wall = (
-            _cell_status(maze_map, row + d_row + side_d_row, col + d_col + side_d_col)
-            == NEIGHBOR_STATUS_WALL
-        )
-        if version == "v2" and diagonal_is_wall:
-            return NEIGHBOR_STATUS_WALL
-        if version in {"v3", "v4", "v5"} and _has_new_corner(
-            maze_map,
-            row,
-            col,
-            side_d_row,
-            side_d_col,
-            d_row + side_d_row,
-            d_col + side_d_col,
-        ):
-            return NEIGHBOR_STATUS_RISK if version == "v5" else NEIGHBOR_STATUS_WALL
-    return NEIGHBOR_STATUS_FREE
+def _batch_row_col(
+    x: np.ndarray,
+    y: np.ndarray,
+    maze_map: list[list[object]],
+    *,
+    maze_size_scaling: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized coordinate conversion with scalar-compatible wall snapping."""
+    rows = len(maze_map)
+    cols = len(maze_map[0]) if maze_map else 0
+    if rows == 0 or cols == 0:
+        raise ValueError("maze_map must be non-empty")
+    if any(len(values) != cols for values in maze_map):
+        raise ValueError("maze_map rows must have equal length")
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        raise ValueError("position and goal coordinates must be finite")
+
+    x_map_center = cols / 2 * maze_size_scaling
+    y_map_center = rows / 2 * maze_size_scaling
+    row = np.floor((y_map_center - y) / maze_size_scaling).astype(np.int64)
+    col = np.floor((x + x_map_center) / maze_size_scaling).astype(np.int64)
+    row = np.clip(row, 0, rows - 1)
+    col = np.clip(col, 0, cols - 1)
+
+    wall_array = np.asarray(
+        [[cell == 1 for cell in values] for values in maze_map],
+        dtype=bool,
+    )
+    free = ~wall_array[row, col]
+    if not np.all(free):
+        flat_x = np.asarray(x).reshape(-1)
+        flat_y = np.asarray(y).reshape(-1)
+        flat_row = row.reshape(-1)
+        flat_col = col.reshape(-1)
+        for index in np.flatnonzero(~np.asarray(free).reshape(-1)):
+            snapped_row, snapped_col = obs_xy_to_row_col(
+                float(flat_x[index]),
+                float(flat_y[index]),
+                maze_map,
+                maze_size_scaling=maze_size_scaling,
+            )
+            flat_row[index] = snapped_row
+            flat_col[index] = snapped_col
+    return row, col
+
+
+@lru_cache(maxsize=128)
+def _neighbor_status_table(
+    maze_key: tuple[tuple[object, ...], ...],
+    wall_sensing_version: str,
+) -> np.ndarray:
+    """Cache statuses for every cell and boundary-nearness bit mask."""
+    maze_map = [list(row) for row in maze_key]
+    rows = len(maze_map)
+    cols = len(maze_map[0])
+    table = np.empty((rows, cols, 16, len(NEIGHBOR_DIRECTIONS)), dtype=np.int8)
+    directions = ((-1, 0), (1, 0), (0, -1), (0, 1))
+    for row in range(rows):
+        for col in range(cols):
+            for mask in range(16):
+                near = {
+                    "left": bool(mask & 1),
+                    "right": bool(mask & 2),
+                    "bottom": bool(mask & 4),
+                    "top": bool(mask & 8),
+                }
+                table[row, col, mask] = [
+                    _neighbor_status_from_near(
+                        maze_map,
+                        row,
+                        col,
+                        d_row,
+                        d_col,
+                        near=near,
+                        wall_sensing_version=wall_sensing_version,
+                    )
+                    for d_row, d_col in directions
+                ]
+    table.setflags(write=False)
+    return table
+
+
+def compute_sensing_arrays(
+    position: np.ndarray,
+    goal: np.ndarray,
+    meta: dict,
+) -> dict:
+    """Vectorized numeric sensing for arrays with matching leading dimensions.
+
+    The returned ``position_cell`` and ``goal_cell`` arrays have trailing
+    dimension two. ``neighbor_status`` has trailing dimension four ordered as
+    ``[up, down, left, right]``. This is the batched equivalent of
+    :func:`compute_sensing_state` and is intended for offline dataset adapters.
+    """
+    position = np.asarray(position)
+    goal = np.asarray(goal)
+    if position.ndim < 1 or position.shape[-1] < 2:
+        raise ValueError("position must have a trailing xy dimension")
+    if goal.ndim < 1 or goal.shape[-1] < 2:
+        raise ValueError("goal must have a trailing xy dimension")
+    if position.shape[:-1] != goal.shape[:-1]:
+        raise ValueError("position and goal must have matching leading dimensions")
+
+    maze_map = [list(row) for row in meta["maze_map"]]
+    maze_size_scaling = float(meta.get("maze_size_scaling", 1.0))
+    if not math.isfinite(maze_size_scaling) or maze_size_scaling <= 0:
+        raise ValueError("maze_size_scaling must be a finite value > 0")
+    sensing_config = resolve_sensing_config(meta)
+    wall_sensing_version = sensing_config["wall_sensing_version"]
+    boundary_risk_threshold = sensing_config[
+        "map_sensing_boundary_risk_threshold"
+    ]
+
+    x = np.asarray(position[..., 0], dtype=np.float64)
+    y = np.asarray(position[..., 1], dtype=np.float64)
+    gx = np.asarray(goal[..., 0], dtype=np.float64)
+    gy = np.asarray(goal[..., 1], dtype=np.float64)
+    row, col = _batch_row_col(
+        x,
+        y,
+        maze_map,
+        maze_size_scaling=maze_size_scaling,
+    )
+    goal_row, goal_col = _batch_row_col(
+        gx,
+        gy,
+        maze_map,
+        maze_size_scaling=maze_size_scaling,
+    )
+
+    rows = len(maze_map)
+    cols = len(maze_map[0])
+    near = _near_cell_boundaries(
+        x=x,
+        y=y,
+        row=row,
+        col=col,
+        rows=rows,
+        cols=cols,
+        maze_size_scaling=maze_size_scaling,
+        boundary_risk_threshold=boundary_risk_threshold,
+    )
+    near_mask = (
+        np.asarray(near["left"], dtype=np.int8)
+        + 2 * np.asarray(near["right"], dtype=np.int8)
+        + 4 * np.asarray(near["bottom"], dtype=np.int8)
+        + 8 * np.asarray(near["top"], dtype=np.int8)
+    )
+    maze_key = tuple(tuple(values) for values in maze_map)
+    neighbor_status = _neighbor_status_table(
+        maze_key,
+        wall_sensing_version,
+    )[row, col, near_mask]
+
+    return {
+        "position_cell": np.stack((row, col), axis=-1),
+        "goal_cell": np.stack((goal_row, goal_col), axis=-1),
+        "neighbor_status": neighbor_status,
+        "wall_sensing_version": wall_sensing_version,
+        "map_sensing_boundary_risk_threshold": boundary_risk_threshold,
+    }
 
 
 def compute_sensing_state(

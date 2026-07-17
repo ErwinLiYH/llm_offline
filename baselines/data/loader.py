@@ -17,7 +17,7 @@ from minari import MinariDataset
 from crossmaze import get_env_facts, list_variants
 from crossmaze.reward import normalize_reward_type, reward_typed_dataset_path
 
-from baselines.data.observation import vectorize_observation
+from baselines.data.observation import observation_schema, vectorize_observation
 
 
 @dataclass(frozen=True)
@@ -220,7 +220,13 @@ def _episode_field(episode, name: str, default=None):
     return getattr(episode, name, default)
 
 
-def _convert_episode(episode, *, env_family: str, variant: str):
+def _convert_episode(
+    episode,
+    *,
+    env_family: str,
+    variant: str,
+    observation_config: dict,
+):
     from baselines.data.transitions import MinariTransitionEpisode
 
     observations = _episode_field(episode, "observations")
@@ -228,7 +234,12 @@ def _convert_episode(episode, *, env_family: str, variant: str):
         raise ValueError(
             f"{env_family} baseline requires dict observations, got {type(observations).__name__}"
         )
-    vector_observations = vectorize_observation(dict(observations), env_family)
+    vector_observations = vectorize_observation(
+        dict(observations),
+        env_family,
+        observation_config=observation_config,
+        variant=variant,
+    )
     actions = np.asarray(_episode_field(episode, "actions"), dtype=np.float32)
     if actions.ndim == 1:
         actions = actions.reshape(-1, 1)
@@ -356,11 +367,21 @@ def prepare_datasets(
             )
 
         converted_train = [
-            _convert_episode(result.episodes[index], env_family=config["env_family"], variant=variant)
+            _convert_episode(
+                result.episodes[index],
+                env_family=config["env_family"],
+                variant=variant,
+                observation_config=config["observation"],
+            )
             for index in train_indices
         ]
         converted_validation = [
-            _convert_episode(result.episodes[index], env_family=config["env_family"], variant=variant)
+            _convert_episode(
+                result.episodes[index],
+                env_family=config["env_family"],
+                variant=variant,
+                observation_config=config["observation"],
+            )
             for index in validation_indices
         ]
         train_episodes.extend(converted_train)
@@ -386,10 +407,10 @@ def prepare_datasets(
     validation_buffer = build_replay_buffer(validation_episodes)
     manifest = {
         "env_family": config["env_family"],
-        "observation_schema": (
-            "observation+desired_goal"
-            if config["env_family"] == "pointmaze"
-            else "achieved_goal+observation+desired_goal"
+        "observation_config": dict(config["observation"]),
+        "observation_schema": observation_schema(
+            config["env_family"],
+            config["observation"],
         ),
         "sampling_seed": config["sampling_seed"],
         "train_data_ratio": config["train_data_ratio"],

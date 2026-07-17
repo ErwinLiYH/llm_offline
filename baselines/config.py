@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping
 
 from crossmaze.reward import normalize_reward_type
+from crossmaze.sensing_config import resolve_sensing_config
 
 from baselines import SUPPORTED_ALGORITHMS
 
@@ -33,6 +34,7 @@ _TOP_LEVEL_KEYS = {
     "show_progress",
     "output_root",
     "experiment_id",
+    "observation",
     "network",
     "algorithm_config",
     "evaluation",
@@ -75,6 +77,14 @@ _NETWORK_DEFAULTS = {
     "use_batch_norm": False,
     "use_layer_norm": False,
     "dropout_rate": None,
+}
+
+_OBSERVATION_DEFAULTS = {
+    "include_map": False,
+    "include_location_sensing": False,
+    "include_wall_sensing": False,
+    "wall_sensing_version": None,
+    "map_sensing_boundary_risk_threshold": None,
 }
 
 _EVALUATION_DEFAULTS = {
@@ -173,6 +183,23 @@ def _normalize_network(value) -> dict:
             raise ValueError("network.dropout_rate must be in [0, 1)")
         network["dropout_rate"] = dropout_rate
     return network
+
+
+def _normalize_observation(value) -> dict:
+    raw = _mapping(value, "observation")
+    unknown = sorted(set(raw) - set(_OBSERVATION_DEFAULTS))
+    if unknown:
+        raise ValueError(f"Unknown observation keys: {unknown}")
+    config = copy.deepcopy(_OBSERVATION_DEFAULTS)
+    config.update(raw)
+    for field in (
+        "include_map",
+        "include_location_sensing",
+        "include_wall_sensing",
+    ):
+        config[field] = _bool(config[field], f"observation.{field}")
+    config.update(resolve_sensing_config(config))
+    return config
 
 
 def _normalize_reward_scaler(value) -> dict | None:
@@ -293,6 +320,16 @@ def _normalize_evaluation(value) -> dict:
         raise ValueError(
             "Configure reward_type at the baseline top level, not "
             "evaluation.env_config.env_kwargs"
+        )
+    sensing_keys = {
+        "wall_sensing_version",
+        "map_sensing_boundary_risk_threshold",
+    }
+    misplaced_sensing = sorted(sensing_keys & set(env_config))
+    if misplaced_sensing:
+        raise ValueError(
+            "Configure baseline sensing under observation, not "
+            f"evaluation.env_config: {misplaced_sensing}"
         )
     config["env_config"] = env_config
     return config
@@ -430,6 +467,7 @@ def normalize_baseline_config(raw_config: dict) -> dict:
         "show_progress": _bool(raw.get("show_progress", True), "show_progress"),
         "output_root": os.fspath(output_root),
         "experiment_id": experiment_id.strip() if experiment_id else None,
+        "observation": _normalize_observation(raw.get("observation")),
         "network": _normalize_network(raw.get("network")),
         "algorithm_config": _normalize_algorithm_config(
             algorithm, raw.get("algorithm_config")

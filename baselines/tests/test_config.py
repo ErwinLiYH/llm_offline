@@ -17,6 +17,10 @@ class BaselineConfigTest(unittest.TestCase):
         self.assertEqual(config["env_family"], "pointmaze")
         self.assertEqual(config["n_steps"], 1_000_000)
         self.assertEqual(config["evaluation"]["every_epochs"], 10)
+        self.assertFalse(config["observation"]["include_map"])
+        self.assertFalse(config["observation"]["include_location_sensing"])
+        self.assertFalse(config["observation"]["include_wall_sensing"])
+        self.assertEqual(config["observation"]["wall_sensing_version"], "v3")
 
     def test_rejects_unknown_keys(self):
         with self.assertRaisesRegex(ValueError, "Unknown baseline config keys"):
@@ -64,6 +68,40 @@ class BaselineConfigTest(unittest.TestCase):
                     "algorithm": "mlp_bc",
                     "train_variants": ["umaze"],
                     "algorithm_config": {"gamma": 0.99},
+                }
+            )
+
+    def test_observation_components_are_independent(self):
+        config = normalize_baseline_config(
+            {
+                "algorithm": "mlp_bc",
+                "train_variants": ["umaze"],
+                "observation": {
+                    "include_map": True,
+                    "include_location_sensing": False,
+                    "include_wall_sensing": True,
+                    "wall_sensing_version": "v5",
+                    "map_sensing_boundary_risk_threshold": 0.2,
+                },
+            }
+        )
+        self.assertTrue(config["observation"]["include_map"])
+        self.assertFalse(config["observation"]["include_location_sensing"])
+        self.assertTrue(config["observation"]["include_wall_sensing"])
+        self.assertEqual(config["observation"]["wall_sensing_version"], "v5")
+        self.assertEqual(
+            config["observation"]["map_sensing_boundary_risk_threshold"], 0.2
+        )
+
+    def test_sensing_must_not_be_configured_only_for_eval(self):
+        with self.assertRaisesRegex(ValueError, "under observation"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "mlp_bc",
+                    "train_variants": ["umaze"],
+                    "evaluation": {
+                        "env_config": {"wall_sensing_version": "v5"}
+                    },
                 }
             )
 

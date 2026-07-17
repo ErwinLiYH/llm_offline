@@ -1,0 +1,6 @@
+observation:
+  include_map: true
+  include_location_sensing: true
+  include_wall_sensing: true
+  wall_sensing_version: v3
+  map_sensing_boundary_risk_threshold: 0.10

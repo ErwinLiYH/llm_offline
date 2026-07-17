@@ -21,6 +21,7 @@ def evaluate_rollouts(
     variants: list[str],
     reward_types: dict[str, str],
     evaluation_config: dict,
+    observation_config: dict,
 ) -> dict:
     variant_metrics = {}
     all_successes = []
@@ -31,6 +32,12 @@ def evaluate_rollouts(
         env_config = dict(evaluation_config["env_config"])
         env_config["reward_type"] = reward_types[variant]
         env_config["seed"] = base_seed
+        env_config["wall_sensing_version"] = observation_config[
+            "wall_sensing_version"
+        ]
+        env_config["map_sensing_boundary_risk_threshold"] = observation_config[
+            "map_sensing_boundary_risk_threshold"
+        ]
         env = BaselineObservationWrapper(
             crossmaze.make(
                 env_family,
@@ -39,6 +46,7 @@ def evaluate_rollouts(
                 config=env_config,
             ),
             env_family=env_family,
+            observation_config=observation_config,
         )
         successes = []
         returns = []
@@ -146,6 +154,7 @@ class BaselineEpochCallback:
             variants=self._selections.eval.selected_variants,
             reward_types=self._selections.eval_reward_types,
             evaluation_config=evaluation,
+            observation_config=self._config["observation"],
         )
         result = {
             "epoch": epoch,

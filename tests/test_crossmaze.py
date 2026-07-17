@@ -190,6 +190,45 @@ class CrossMazePackageTest(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 crossmaze.render_sensing_text({**state, "neighbor_status": invalid})
 
+    def test_batched_sensing_matches_scalar_contract_for_every_version(self):
+        import crossmaze
+
+        maze_map = POINTMAZE_VARIANTS["local-layoutV2-01"]["prompt_vars"][
+            "maze_map"
+        ]
+        rng = np.random.default_rng(29)
+        positions = rng.uniform(-7.5, 7.5, size=(128, 2)).astype(np.float32)
+        goals = rng.uniform(-7.5, 7.5, size=(128, 2)).astype(np.float32)
+        for version in ("v1", "v2", "v3", "v4", "v5"):
+            with self.subTest(version=version):
+                meta = {
+                    "maze_map": maze_map,
+                    "maze_size_scaling": 1.0,
+                    "wall_sensing_version": version,
+                    "map_sensing_boundary_risk_threshold": 0.1,
+                }
+                batched = crossmaze.compute_sensing_arrays(
+                    positions,
+                    goals,
+                    meta,
+                )
+                scalar = [
+                    crossmaze.compute_sensing_state(position, goal, meta)
+                    for position, goal in zip(positions, goals, strict=True)
+                ]
+                np.testing.assert_array_equal(
+                    batched["position_cell"],
+                    [state["position_cell"] for state in scalar],
+                )
+                np.testing.assert_array_equal(
+                    batched["goal_cell"],
+                    [state["goal_cell"] for state in scalar],
+                )
+                np.testing.assert_array_equal(
+                    batched["neighbor_status"],
+                    [state["neighbor_status"] for state in scalar],
+                )
+
     def test_score_mode_uses_static_variant_map_without_goal_marks(self):
         import crossmaze
 

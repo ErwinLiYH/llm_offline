@@ -27,6 +27,7 @@ from crossmaze.sensing import (  # noqa: F401
     NEIGHBOR_STATUS_RISK,
     NEIGHBOR_STATUS_WALL,
     build_sensing,
+    compute_sensing_arrays,
     compute_sensing_state,
     render_sensing_text,
 )
@@ -65,6 +66,7 @@ __all__ = [
     "NEIGHBOR_STATUS_WALL",
     "REWARD_TYPES",
     "build_sensing",
+    "compute_sensing_arrays",
     "compute_sensing_state",
     "eval_env_spec",
     "eval_reset_options",

@@ -24,6 +24,16 @@ show_progress: true
 output_root: baseline_runs
 experiment_id: null
 
+# Optional numeric map/sensing components are concatenated after the legacy
+# state. Each component can be enabled independently. Defaults preserve the
+# original 6-dimensional PointMaze observation.
+observation:
+  include_map: false
+  include_location_sensing: false
+  include_wall_sensing: false
+  wall_sensing_version: v3
+  map_sensing_boundary_risk_threshold: 0.10
+
 network:
   hidden_units: [256, 256]
   activation: relu

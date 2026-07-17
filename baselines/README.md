@@ -51,9 +51,31 @@ full pass through the offline dataset. The defaults perform 1,000,000 updates,
 group 10,000 updates as one logical epoch, and run rollout evaluation every 10
 epochs (100,000 updates), plus the final epoch.
 
-PointMaze observations are `[observation, desired_goal]` (6 values). AntMaze
-observations are `[achieved_goal, observation, desired_goal]` (31 values). This
-numeric state construction does not use prompts or CrossMaze sensing text.
+PointMaze base observations are `[observation, desired_goal]` (6 values).
+AntMaze base observations are `[achieved_goal, observation, desired_goal]` (31
+values). Optional numeric map, location-sensing, and wall-sensing components
+can be concatenated through independent `observation` switches:
+
+```yaml
+observation:
+  include_map: true
+  include_location_sensing: true
+  include_wall_sensing: true
+  wall_sensing_version: v3
+  map_sensing_boundary_risk_threshold: 0.10
+```
+
+The defaults keep all three components disabled for backward compatibility.
+Map matrices use `0=free`, `1=wall`, row-major flattening, and `-1` padding to
+the family-wide maximum shape (PointMaze `15x15`, AntMaze `12x16`). Location
+sensing is the 0-based numeric vector
+`[position_row, position_col, goal_row, goal_col]`; wall sensing is
+`[up, down, left, right]` with `0=free`, `1=wall`, and `2=risk`. With all three
+enabled, the final dimensions are 239 for PointMaze and 231 for AntMaze. The
+offline adapter recomputes sensing from each variant's recorded coordinates
+and map, while rollout uses the live CrossMaze layout. The complete vector is
+then handled by the same training-fitted `StandardObservationScaler` as the
+legacy observation. No prompt or sensing text enters these MLP baselines.
 
 Local variants honor top-level `reward_type: sparse | dense` and select the
 corresponding reward-typed dataset directory. Remote Minari variants have fixed
