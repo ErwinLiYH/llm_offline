@@ -86,3 +86,11 @@ not optimize rewards, while TD3+BC and IQL do.
 Each run is written under `baseline_runs/<experiment_id>/` with the resolved
 config, dataset split manifest, native d3rlpy logs, periodic evaluation JSONL,
 checkpoints, final `model.d3`, and `summary.json`.
+
+Rollout output keeps aggregate and per-variant success/return/length metrics
+plus one record per episode. Each episode record contains its reset seed,
+actual sampled start/goal cells and continuous coordinates, sampling mode,
+success, one-based first-success step (`null` on failure), return, length, and
+final termination flags. PointMaze uses the CrossMaze default random
+start/goal reset; AntMaze uses its registered fixed pair unless an explicit
+supported eval mode is configured.

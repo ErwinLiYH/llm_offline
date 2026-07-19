@@ -274,6 +274,10 @@ class BaselineObservationWrapper(gym.ObservationWrapper):
             raise ValueError(f"Unsupported env_family: {env_family!r}")
         self.env_family = env_family
         self.observation_config = dict(observation_config or {})
+        # Updated before every vectorization. Rollout evaluation reads this
+        # immediately after reset so the recorded pair is the one actually
+        # sampled by the environment.
+        self.last_crossmaze_state: Mapping | None = None
         self.observation_space = gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -282,6 +286,12 @@ class BaselineObservationWrapper(gym.ObservationWrapper):
         )
 
     def observation(self, observation):
+        attached = (
+            observation.get(CROSSMAZE_OBS_KEY)
+            if isinstance(observation, Mapping)
+            else None
+        )
+        self.last_crossmaze_state = attached if isinstance(attached, Mapping) else None
         return vectorize_observation(
             observation,
             self.env_family,
