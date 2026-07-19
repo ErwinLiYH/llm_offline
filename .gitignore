@@ -23,9 +23,11 @@ env/
 checkpoints/
 results/
 resultsV2/
+/reports/
 
 # Datasets / caches
 local_datasets/
+local_datasets_noholding/
 local_dataset_backups/
 local_datasets_backups2/
 *.hdf5
