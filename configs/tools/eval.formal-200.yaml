@@ -4,6 +4,11 @@ num_episodes: 100
 
 seed: 200
 
+result_root: /scratch/u6mx/yl1118.u6mx/formal_results
+
+rollout_worker_num: 20
+rollout_worker_start_timeout_seconds: 300
+
 config_delete_keys:
 - video_episode_index
 - video_fps

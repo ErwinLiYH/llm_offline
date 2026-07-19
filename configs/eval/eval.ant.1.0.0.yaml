@@ -13,6 +13,7 @@ variants:
 - umaze-diverse
 - medium-diverse
 - large-diverse
+- ultra
 - local-layout-01
 - local-layout-02
 - local-layout-03
@@ -22,6 +23,9 @@ variants:
 - local-layout-07
 - local-layout-08
 - local-layout-09
+- local-layout-10
+- local-layout-11
+- local-layout-12
 num_episodes: 20
 seed: 64
 

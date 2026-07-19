@@ -35,7 +35,7 @@ warmup_ratio: 0.1
 warmup_ratio_ref_epoch: 1.0
 lora_r: 128
 lora_alpha: 128
-num_epochs: 8
+num_epochs: 3
 eval_num_episodes: 0
 eval_step_interval: 0
 step_eval_skip: 1

@@ -63,4 +63,4 @@ lr_scheduler_type: cosine
 lr_decay_ref_epochs: 4.0
 warmup_ratio: 0.05
 warmup_ratio_ref_epoch: 1.0
-num_epochs: 5
+num_epochs: 4
