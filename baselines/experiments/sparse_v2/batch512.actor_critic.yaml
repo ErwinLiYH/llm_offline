@@ -1,0 +1,2 @@
+algorithm_config:
+  batch_size: 512

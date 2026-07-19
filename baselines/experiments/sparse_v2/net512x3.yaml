@@ -1,0 +1,2 @@
+network:
+  hidden_units: [512, 512, 512]

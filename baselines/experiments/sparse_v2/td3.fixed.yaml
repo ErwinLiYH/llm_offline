@@ -1,0 +1,3 @@
+algorithm_config:
+  alpha: 2.5
+  reward_scaler: null

@@ -1,0 +1,6 @@
+algorithm_config:
+  expectile: 0.9
+  weight_temp: 3.0
+  reward_scaler:
+    type: constant_shift
+    shift: -1.0

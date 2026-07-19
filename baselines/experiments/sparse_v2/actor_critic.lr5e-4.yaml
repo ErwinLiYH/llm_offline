@@ -1,0 +1,3 @@
+algorithm_config:
+  actor_learning_rate: 0.0005
+  critic_learning_rate: 0.0005
