@@ -1,0 +1,28 @@
+eval_mode: all
+eval_variants:
+  - umaze
+  - medium-diverse
+  - large-diverse
+  - ultra
+  - local-layout-01
+  - local-layout-02
+  - local-layout-03
+  - local-layout-04
+  - local-layout-05
+  - local-layout-06
+  - local-layout-07
+  - local-layout-08
+  - local-layout-09
+  - local-layout-10
+  - local-layout-11
+  - local-layout-12
+  - test-layout-01
+  - test-layout-02
+  - test-layout-03
+  - test-layout-04
+
+evaluation:
+  enabled: true
+  every_epochs: 1000
+  num_episodes: 3
+  seed: 20260716

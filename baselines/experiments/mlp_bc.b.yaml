@@ -1,0 +1,6 @@
+network:
+  hidden_units: [512, 512, 512]
+
+algorithm_config:
+  batch_size: 512
+  learning_rate: 0.0003

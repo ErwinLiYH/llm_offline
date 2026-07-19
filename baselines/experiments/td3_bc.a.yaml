@@ -1,0 +1,9 @@
+network:
+  hidden_units: [256, 256]
+
+algorithm_config:
+  batch_size: 256
+  actor_learning_rate: 0.0003
+  critic_learning_rate: 0.0003
+  alpha: 2.5
+  reward_scaler: null

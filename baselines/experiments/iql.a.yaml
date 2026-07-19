@@ -1,0 +1,10 @@
+network:
+  hidden_units: [256, 256]
+
+algorithm_config:
+  batch_size: 256
+  actor_learning_rate: 0.0003
+  critic_learning_rate: 0.0003
+  expectile: 0.7
+  weight_temp: 3.0
+  reward_scaler: null
