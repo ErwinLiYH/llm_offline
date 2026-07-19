@@ -1,0 +1,20 @@
+network:
+  hidden_units: [512, 512, 512]
+  activation: relu
+  use_batch_norm: false
+  use_layer_norm: false
+  dropout_rate: null
+
+algorithm_config:
+  batch_size: 512
+  gamma: 0.99
+  actor_learning_rate: 0.0003
+  critic_learning_rate: 0.0003
+  tau: 0.005
+  n_critics: 2
+  target_smoothing_sigma: 0.2
+  target_smoothing_clip: 0.5
+  alpha: 2.5
+  update_actor_interval: 2
+  reward_scaler: null
+  compile_graph: false

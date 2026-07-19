@@ -1,0 +1,12 @@
+network:
+  hidden_units: [1024, 1024, 1024]
+  activation: relu
+  use_batch_norm: false
+  use_layer_norm: false
+  dropout_rate: null
+
+algorithm_config:
+  batch_size: 512
+  learning_rate: 0.0003
+  policy_type: deterministic
+  compile_graph: false

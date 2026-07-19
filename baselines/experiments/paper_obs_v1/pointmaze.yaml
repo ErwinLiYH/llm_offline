@@ -1,0 +1,50 @@
+train_mode: all
+train_variants:
+  - open
+  - umaze
+  - medium
+  - large
+  - local-layoutV2-01
+  - local-layoutV2-02
+  - local-layoutV2-03
+  - local-layoutV2-04
+  - local-layoutV2-05
+  - local-layoutV2-06
+  - local-layoutV2-07
+  - local-layoutV2-08
+  - local-layoutV2-09
+  - local-layoutV2-10
+  - local-layoutV2-11
+  - local-layoutV2-12
+
+eval_mode: all
+eval_variants:
+  - open
+  - umaze
+  - medium
+  - large
+  - local-layoutV2-01
+  - local-layoutV2-02
+  - local-layoutV2-03
+  - local-layoutV2-04
+  - local-layoutV2-05
+  - local-layoutV2-06
+  - local-layoutV2-07
+  - local-layoutV2-08
+  - local-layoutV2-09
+  - local-layoutV2-10
+  - local-layoutV2-11
+  - local-layoutV2-12
+  - test-layoutV2-01
+  - test-layoutV2-02
+  - test-layoutV2-03
+  - test-layoutV2-04
+  - test-layoutV2-05
+  - test-layoutV2-06
+
+reward_type: sparse
+allow_mixed_reward_types: false
+
+evaluation:
+  env_config:
+    eval_start_goal_mode: random-start-goal

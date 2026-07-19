@@ -1,0 +1,4 @@
+# Extend the frozen paper_obs_v1 protocol from 500k to one clean 1M run.
+# This file is layered last so every data, model, seed, and evaluation setting
+# remains identical to the 500k formal experiment.
+n_steps: 1000000
