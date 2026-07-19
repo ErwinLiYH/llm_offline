@@ -1,0 +1,18 @@
+# Single-layout control experiment for isolating multi-layout interference.
+train_mode: single
+train_variants:
+  - umaze
+
+eval_mode: single
+eval_variants:
+  - umaze
+
+reward_type: sparse
+allow_mixed_reward_types: false
+
+# Keep the repository's default AntMaze pair for the training-time OOD
+# comparison.  evaluate_same_direction.py separately evaluates the pair that
+# is actually represented in D4RL/antmaze/umaze-v1: (3, 1) -> (1, 1).
+evaluation:
+  env_config:
+    eval_start_goal_mode: fix-start-goal
