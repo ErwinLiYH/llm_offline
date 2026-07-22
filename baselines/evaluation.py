@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
-from d3rlpy.metrics import ContinuousActionDiffEvaluator, TDErrorEvaluator
 
 import crossmaze
 from crossmaze.eval_position import (
@@ -12,7 +11,10 @@ from crossmaze.eval_position import (
     resolve_eval_position_mode,
 )
 from baselines.artifacts import append_jsonl
-from baselines.data.observation import BaselineObservationWrapper
+from baselines.data.observation import (
+    BaselineObservationWrapper,
+    GoalConditionedObservationWrapper,
+)
 
 
 def _mean(values: list[float]) -> float:
@@ -67,6 +69,7 @@ def evaluate_rollouts(
     reward_types: dict[str, str],
     evaluation_config: dict,
     observation_config: dict,
+    goal_conditioned: bool = False,
 ) -> dict:
     variant_metrics = {}
     all_successes = []
@@ -84,7 +87,12 @@ def evaluate_rollouts(
         env_config["map_sensing_boundary_risk_threshold"] = observation_config[
             "map_sensing_boundary_risk_threshold"
         ]
-        env = BaselineObservationWrapper(
+        wrapper_class = (
+            GoalConditionedObservationWrapper
+            if goal_conditioned
+            else BaselineObservationWrapper
+        )
+        env = wrapper_class(
             crossmaze.make(
                 env_family,
                 variant,
@@ -117,7 +125,14 @@ def evaluate_rollouts(
                 terminated = False
                 truncated = False
                 while not (terminated or truncated):
-                    action = np.asarray(algo.predict(observation[None])[0])
+                    if isinstance(observation, Mapping):
+                        policy_observation = {
+                            key: np.asarray(value)[None]
+                            for key, value in observation.items()
+                        }
+                    else:
+                        policy_observation = observation[None]
+                    action = np.asarray(algo.predict(policy_observation)[0])
                     if action.shape != env.action_space.shape:
                         raise ValueError(
                             f"Policy action shape mismatch for {variant!r}: "
@@ -205,6 +220,8 @@ def evaluate_rollouts(
 
 
 def evaluate_validation(algo, validation_buffer, *, algorithm: str) -> dict:
+    from d3rlpy.metrics import ContinuousActionDiffEvaluator, TDErrorEvaluator
+
     metrics = {
         "action_mse_sum": ContinuousActionDiffEvaluator()(algo, validation_buffer)
     }

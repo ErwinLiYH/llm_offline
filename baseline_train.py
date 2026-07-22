@@ -8,7 +8,7 @@ from utils.config_loader import load_merged_config
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train d3rlpy-based CrossMaze offline RL baselines."
+        description="Train CrossMaze offline RL baselines."
     )
     parser.add_argument(
         "--config",
@@ -31,9 +31,12 @@ def main() -> None:
         raw_config["experiment_id"] = args.experiment_id
     config = normalize_baseline_config(raw_config)
 
-    # Importing the runner performs the d3rlpy import and is intentionally
-    # delayed so --help and config errors work outside the baseline env.
-    from baselines.runner import train_baseline
+    # Backend imports are delayed so config handling works in either isolated
+    # environment without importing the other backend's framework.
+    if config["algorithm"] in {"crl", "hiql"}:
+        from baselines.gcrl.runner import train_gcrl_baseline as train_baseline
+    else:
+        from baselines.runner import train_baseline
 
     train_baseline(config)
 

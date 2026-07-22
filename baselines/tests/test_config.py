@@ -105,6 +105,48 @@ class BaselineConfigTest(unittest.TestCase):
                 }
             )
 
+    def test_crl_defaults_and_network_are_normalized(self):
+        config = normalize_baseline_config(
+            {
+                "algorithm": "crl",
+                "train_variants": ["umaze"],
+                "network": {
+                    "hidden_units": [32, 32],
+                    "activation": "gelu",
+                    "use_layer_norm": True,
+                },
+            }
+        )
+        self.assertEqual(config["algorithm_config"]["batch_size"], 1024)
+        self.assertEqual(config["algorithm_config"]["latent_dim"], 512)
+        self.assertEqual(config["algorithm_config"]["discount"], 0.99)
+        self.assertTrue(config["algorithm_config"]["value_geom_sample"])
+        self.assertTrue(config["network"]["use_layer_norm"])
+
+    def test_gcrl_goal_probabilities_must_sum_to_one(self):
+        with self.assertRaisesRegex(ValueError, "probabilities must sum to 1"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "hiql",
+                    "train_variants": ["umaze"],
+                    "algorithm_config": {
+                        "value_p_curgoal": 0.2,
+                        "value_p_trajgoal": 0.2,
+                        "value_p_randomgoal": 0.2,
+                    },
+                }
+            )
+
+    def test_crl_rejects_singleton_contrastive_batch(self):
+        with self.assertRaisesRegex(ValueError, "batch_size >= 2"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "crl",
+                    "train_variants": ["umaze"],
+                    "algorithm_config": {"batch_size": 1},
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

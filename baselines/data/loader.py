@@ -39,6 +39,22 @@ class PreparedDatasets:
     manifest: dict
 
 
+@dataclass(frozen=True)
+class VariantEpisodeSplit:
+    loaded: LoadedVariant
+    initial_sampled_target: int
+    sampled_target: int
+    train_indices: list[int]
+    validation_indices: list[int]
+
+
+@dataclass(frozen=True)
+class SelectedEpisodeSplits:
+    variants: dict[str, VariantEpisodeSplit]
+    balanced_episode_target: int | None
+    warnings: list[str]
+
+
 def _read_hdf5_tree(node):
     if isinstance(node, h5py.Dataset):
         return node[()]
@@ -214,10 +230,14 @@ def load_variant_episodes(
     )
 
 
-def _episode_field(episode, name: str, default=None):
+def episode_field(episode, name: str, default=None):
     if isinstance(episode, Mapping):
         return episode.get(name, default)
     return getattr(episode, name, default)
+
+
+# Compatibility alias for the original d3rlpy conversion path.
+_episode_field = episode_field
 
 
 def _convert_episode(
@@ -295,13 +315,12 @@ def _sampled_target(total_episodes: int, keep: int | None) -> int:
     return total_episodes if keep is None else min(total_episodes, keep)
 
 
-def prepare_datasets(
+def select_episode_splits(
     config: dict,
     selected_variants: list[str],
     reward_types: dict[str, str],
-) -> PreparedDatasets:
-    from baselines.data.transitions import build_replay_buffer
-
+) -> SelectedEpisodeSplits:
+    """Load and deterministically split raw episodes for any baseline backend."""
     available = set(list_variants(config["env_family"]))
     unknown_keep_variants = sorted(
         set(config["episode_keep_per_variant"]) - available
@@ -340,9 +359,7 @@ def prepare_datasets(
     else:
         balanced_target = None
 
-    train_episodes = []
-    validation_episodes = []
-    manifest_variants = {}
+    splits = {}
     for variant in selected_variants:
         result = loaded[variant]
         sampled_target = (
@@ -365,6 +382,35 @@ def prepare_datasets(
             raise ValueError(
                 f"train_data_ratio selected zero validation episodes for variant={variant!r}"
             )
+        splits[variant] = VariantEpisodeSplit(
+            loaded=result,
+            initial_sampled_target=initial_targets[variant],
+            sampled_target=sampled_target,
+            train_indices=train_indices,
+            validation_indices=validation_indices,
+        )
+    return SelectedEpisodeSplits(
+        variants=splits,
+        balanced_episode_target=balanced_target,
+        warnings=warnings,
+    )
+
+
+def prepare_datasets(
+    config: dict,
+    selected_variants: list[str],
+    reward_types: dict[str, str],
+) -> PreparedDatasets:
+    from baselines.data.transitions import build_replay_buffer
+
+    selected = select_episode_splits(config, selected_variants, reward_types)
+
+    train_episodes = []
+    validation_episodes = []
+    manifest_variants = {}
+    for variant in selected_variants:
+        split = selected.variants[variant]
+        result = split.loaded
 
         converted_train = [
             _convert_episode(
@@ -373,7 +419,7 @@ def prepare_datasets(
                 variant=variant,
                 observation_config=config["observation"],
             )
-            for index in train_indices
+            for index in split.train_indices
         ]
         converted_validation = [
             _convert_episode(
@@ -382,7 +428,7 @@ def prepare_datasets(
                 variant=variant,
                 observation_config=config["observation"],
             )
-            for index in validation_indices
+            for index in split.validation_indices
         ]
         train_episodes.extend(converted_train)
         validation_episodes.extend(converted_validation)
@@ -391,16 +437,16 @@ def prepare_datasets(
             "dataset_path": result.dataset_path,
             "reward_type": result.reward_type,
             "total_episodes": len(result.episodes),
-            "initial_sampled_episode_target": initial_targets[variant],
-            "sampled_episode_count": sampled_target,
+            "initial_sampled_episode_target": split.initial_sampled_target,
+            "sampled_episode_count": split.sampled_target,
             "train_episode_count": len(converted_train),
             "validation_episode_count": len(converted_validation),
             "train_transition_count": sum(ep.transition_count for ep in converted_train),
             "validation_transition_count": sum(
                 ep.transition_count for ep in converted_validation
             ),
-            "train_episode_indices": train_indices,
-            "validation_episode_indices": validation_indices,
+            "train_episode_indices": split.train_indices,
+            "validation_episode_indices": split.validation_indices,
         }
 
     train_buffer = build_replay_buffer(train_episodes)
@@ -414,14 +460,16 @@ def prepare_datasets(
         ),
         "sampling_seed": config["sampling_seed"],
         "train_data_ratio": config["train_data_ratio"],
-        "balance_variant_episode_count": bool(balanced_target is not None),
-        "balanced_episode_target": balanced_target,
+        "balance_variant_episode_count": bool(
+            selected.balanced_episode_target is not None
+        ),
+        "balanced_episode_target": selected.balanced_episode_target,
         "train_episode_count": len(train_episodes),
         "validation_episode_count": len(validation_episodes),
         "train_transition_count": train_buffer.transition_count,
         "validation_transition_count": validation_buffer.transition_count,
         "variants": manifest_variants,
-        "warnings": warnings,
+        "warnings": selected.warnings,
     }
     return PreparedDatasets(
         train_buffer=train_buffer,

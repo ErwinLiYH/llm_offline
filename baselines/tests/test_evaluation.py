@@ -14,6 +14,14 @@ class _PredictZero:
         return np.zeros((len(observations), 2), dtype=np.float32)
 
 
+class _PredictGoalConditionedZero:
+    def predict(self, observations):
+        assert set(observations) == {"state", "goal"}
+        assert observations["state"].ndim == 2
+        assert observations["goal"].ndim == 2
+        return np.zeros((len(observations["state"]), 2), dtype=np.float32)
+
+
 class _EpisodeRecordEnv(gym.Env):
     action_space = gym.spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
     observation_space = gym.spaces.Dict(
@@ -154,6 +162,25 @@ class EvaluationRecordTest(unittest.TestCase):
             self.assertEqual(episode["start_goal"]["selection_policy"], "fixed")
             self.assertEqual(episode["start_goal"]["start_cell"], [1, 1])
             self.assertEqual(episode["start_goal"]["goal_cell"], [3, 1])
+
+    @patch("baselines.evaluation.crossmaze.make", return_value=_EpisodeRecordEnv())
+    def test_goal_conditioned_policy_receives_separate_batched_arrays(self, _make):
+        result = evaluate_rollouts(
+            _PredictGoalConditionedZero(),
+            env_family="pointmaze",
+            variants=["umaze"],
+            reward_types={"umaze": "sparse"},
+            evaluation_config={"seed": 10, "num_episodes": 1, "env_config": {}},
+            observation_config={
+                "include_map": False,
+                "include_location_sensing": False,
+                "include_wall_sensing": False,
+                "wall_sensing_version": "v3",
+                "map_sensing_boundary_risk_threshold": 0.1,
+            },
+            goal_conditioned=True,
+        )
+        self.assertEqual(result["aggregate"]["num_episodes"], 1)
 
 
 if __name__ == "__main__":

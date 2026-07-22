@@ -1687,6 +1687,15 @@ type: project
 - 三个 variant 均已通过拓扑检查、Python 编译、CrossMaze/AntMaze 注册表一致性测试和 AntMaze 环境构造/reset 检查，观测契约保持 27 维 proprioception、2 维 achieved goal 和 2 维 desired goal
 - 当前只完成地图与 variant 注册，尚未生成 `antmaze-local-layout-10-v0`、`11-v0`、`12-v0` 对应的 Minari 离线数据；训练前仍需通过 `local_antmaze_gen.py` 单独生成
 
+## CRL / HIQL baseline smoke backend（2026-07-22）
+
+- `baseline_train.py` 新增 `crl` / `hiql` 后端分流；原有 MLP-BC、TD3+BC、IQL 继续只加载 pinned d3rlpy/PyTorch，两个 goal-conditioned 算法使用独立的 `llm_offline_gcrl` JAX/Flax 环境
+- CRL 和 HIQL 的损失、网络与 goal sampler 适配自 OGBench 1.2.1 的 MIT reference implementation；`baselines/gcrl/UPSTREAM.md` 固定上游 commit 和本地改动，目录内保留上游 license
+- 新增 episode-aware GCRL 数据路径：PointMaze / AntMaze 都把 state 与 compact xy goal 分开，future/random goal 只在同 variant 内采样，并让整批样本保持 variant-homogeneous，避免 CRL in-batch negatives 跨地图
+- HIQL 显式区分 high-level target 的完整 state 与 compact goal 表示，支持本项目 state/goal 不同维度；训练和 rollout 共享独立 state/goal normalizer
+- 新增 `.msgpack` checkpoint、training/validation JSONL、最终 CrossMaze rollout eval 与现有 baseline summary/artifact 集成；当前 JAX 路径不接 W&B，也未扩展旧 d3rlpy checkpoint-sweep 脚本
+- 已在 RTX 5090 上用 CUDA 12 JAX wheel 跑通 CRL 和 HIQL 各 1 次真实本地 PointMaze update、checkpoint 保存和 1 episode rollout eval；这些仅为运行链路 smoke check，不是正式算法结果
+
 ## Standalone eval run identity（2026-07-23）
 
 - `evaluate.py` 新增 `--experiment_id`，优先覆盖 YAML 中的 standalone eval ID；缺失、`null` 或空值时仍生成八位 UUID

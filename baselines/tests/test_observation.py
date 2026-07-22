@@ -8,7 +8,9 @@ import numpy as np
 from baselines.data.observation import (
     MAP_PADDING_VALUE,
     family_map_shape,
+    goal_conditioned_observation_dims,
     observation_dim,
+    vectorize_goal_conditioned_observation,
     vectorize_observation,
 )
 from crossmaze import compute_sensing_state, get_env_facts
@@ -46,6 +48,30 @@ class ObservationTest(unittest.TestCase):
         }
         result = vectorize_observation(observation, "antmaze")
         np.testing.assert_array_equal(result, np.arange(1, 32))
+
+    def test_goal_conditioned_state_and_goal_are_separate(self):
+        point_observation = {
+            "observation": np.array([1, 2, 3, 4], dtype=np.float32),
+            "desired_goal": np.array([5, 6], dtype=np.float32),
+        }
+        state, goal = vectorize_goal_conditioned_observation(
+            point_observation, "pointmaze"
+        )
+        np.testing.assert_array_equal(state, [1, 2, 3, 4])
+        np.testing.assert_array_equal(goal, [5, 6])
+        self.assertEqual(goal_conditioned_observation_dims("pointmaze"), (4, 2))
+
+        ant_observation = {
+            "achieved_goal": np.array([1, 2], dtype=np.float32),
+            "observation": np.arange(3, 30, dtype=np.float32),
+            "desired_goal": np.array([30, 31], dtype=np.float32),
+        }
+        state, goal = vectorize_goal_conditioned_observation(
+            ant_observation, "antmaze"
+        )
+        np.testing.assert_array_equal(state, np.arange(1, 30))
+        np.testing.assert_array_equal(goal, [30, 31])
+        self.assertEqual(goal_conditioned_observation_dims("antmaze"), (29, 2))
 
     def test_rejects_wrong_shape(self):
         with self.assertRaisesRegex(ValueError, "expected 6"):
@@ -140,6 +166,24 @@ class ObservationTest(unittest.TestCase):
         np.testing.assert_array_equal(
             result[235:239], expected_sensing["neighbor_status"]
         )
+
+        state, goal = vectorize_goal_conditioned_observation(
+            observation,
+            "pointmaze",
+            observation_config=config,
+            variant="umaze",
+        )
+        self.assertEqual(state.shape, (235,))
+        self.assertEqual(goal.shape, (4,))
+        np.testing.assert_array_equal(state[:4], [0, 1, 0.25, -0.5])
+        np.testing.assert_array_equal(
+            state[229:231], expected_sensing["position_cell"]
+        )
+        np.testing.assert_array_equal(
+            state[231:235], expected_sensing["neighbor_status"]
+        )
+        np.testing.assert_array_equal(goal[:2], [1, -1])
+        np.testing.assert_array_equal(goal[2:4], expected_sensing["goal_cell"])
 
     def test_batched_offline_and_attached_online_layouts_match(self):
         facts = get_env_facts("pointmaze", "umaze")

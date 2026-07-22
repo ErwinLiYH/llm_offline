@@ -1,0 +1,17 @@
+name: llm_offline_gcrl
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - "jax[cuda12]==0.6.2"
+      - flax==0.10.7
+      - optax==0.2.5
+      - numpy==2.2.6
+      - gymnasium==1.2.3
+      - gymnasium-robotics==1.4.2
+      - minari==0.5.3
+      - mujoco==3.6.0
+      - h5py==3.16.0
+      - pyyaml==6.0.3

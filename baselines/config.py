@@ -69,6 +69,87 @@ _ALGORITHM_FIELDS = {
         "max_weight",
         "reward_scaler",
     },
+    "crl": {
+        "batch_size",
+        "learning_rate",
+        "discount",
+        "latent_dim",
+        "alpha",
+        "const_std",
+        "normalize_observations",
+        "value_p_curgoal",
+        "value_p_trajgoal",
+        "value_p_randomgoal",
+        "value_geom_sample",
+        "actor_p_curgoal",
+        "actor_p_trajgoal",
+        "actor_p_randomgoal",
+        "actor_geom_sample",
+    },
+    "hiql": {
+        "batch_size",
+        "learning_rate",
+        "discount",
+        "tau",
+        "expectile",
+        "low_alpha",
+        "high_alpha",
+        "subgoal_steps",
+        "rep_dim",
+        "low_actor_rep_grad",
+        "const_std",
+        "normalize_observations",
+        "value_p_curgoal",
+        "value_p_trajgoal",
+        "value_p_randomgoal",
+        "value_geom_sample",
+        "actor_p_curgoal",
+        "actor_p_trajgoal",
+        "actor_p_randomgoal",
+        "actor_geom_sample",
+    },
+}
+
+_GCRL_DEFAULTS = {
+    "crl": {
+        "batch_size": 1024,
+        "learning_rate": 3e-4,
+        "discount": 0.99,
+        "latent_dim": 512,
+        "alpha": 0.1,
+        "const_std": True,
+        "normalize_observations": True,
+        "value_p_curgoal": 0.0,
+        "value_p_trajgoal": 1.0,
+        "value_p_randomgoal": 0.0,
+        "value_geom_sample": True,
+        "actor_p_curgoal": 0.0,
+        "actor_p_trajgoal": 1.0,
+        "actor_p_randomgoal": 0.0,
+        "actor_geom_sample": False,
+    },
+    "hiql": {
+        "batch_size": 1024,
+        "learning_rate": 3e-4,
+        "discount": 0.99,
+        "tau": 0.005,
+        "expectile": 0.7,
+        "low_alpha": 3.0,
+        "high_alpha": 3.0,
+        "subgoal_steps": 25,
+        "rep_dim": 10,
+        "low_actor_rep_grad": False,
+        "const_std": True,
+        "normalize_observations": True,
+        "value_p_curgoal": 0.2,
+        "value_p_trajgoal": 0.5,
+        "value_p_randomgoal": 0.3,
+        "value_geom_sample": True,
+        "actor_p_curgoal": 0.0,
+        "actor_p_trajgoal": 1.0,
+        "actor_p_randomgoal": 0.0,
+        "actor_geom_sample": False,
+    },
 }
 
 _NETWORK_DEFAULTS = {
@@ -254,6 +335,8 @@ def _normalize_algorithm_config(algorithm: str, value) -> dict:
     unknown = sorted(set(config) - _ALGORITHM_FIELDS[algorithm])
     if unknown:
         raise ValueError(f"Unknown algorithm_config keys for {algorithm}: {unknown}")
+    if algorithm in _GCRL_DEFAULTS:
+        config = {**copy.deepcopy(_GCRL_DEFAULTS[algorithm]), **config}
     if "batch_size" in config:
         config["batch_size"] = _positive_int(config["batch_size"], "algorithm_config.batch_size")
     if "n_critics" in config:
@@ -262,6 +345,11 @@ def _normalize_algorithm_config(algorithm: str, value) -> dict:
         config["update_actor_interval"] = _positive_int(
             config["update_actor_interval"], "algorithm_config.update_actor_interval"
         )
+    for field in ("latent_dim", "subgoal_steps", "rep_dim"):
+        if field in config:
+            config[field] = _positive_int(
+                config[field], f"algorithm_config.{field}"
+            )
     if "compile_graph" in config:
         config["compile_graph"] = _bool(config["compile_graph"], "algorithm_config.compile_graph")
     positive_fields = {
@@ -271,6 +359,8 @@ def _normalize_algorithm_config(algorithm: str, value) -> dict:
         "alpha",
         "weight_temp",
         "max_weight",
+        "low_alpha",
+        "high_alpha",
     }
     nonnegative_fields = {"target_smoothing_sigma", "target_smoothing_clip"}
     unit_interval_fields = {"gamma", "tau"}
@@ -292,6 +382,45 @@ def _normalize_algorithm_config(algorithm: str, value) -> dict:
         )
         if not 0.0 < config["expectile"] < 1.0:
             raise ValueError("algorithm_config.expectile must satisfy 0 < value < 1")
+    if "discount" in config:
+        config["discount"] = _float(
+            config["discount"], "algorithm_config.discount"
+        )
+        if not 0.0 < config["discount"] < 1.0:
+            raise ValueError("algorithm_config.discount must satisfy 0 < value < 1")
+    for field in (
+        "const_std",
+        "normalize_observations",
+        "value_geom_sample",
+        "actor_geom_sample",
+        "low_actor_rep_grad",
+    ):
+        if field in config:
+            config[field] = _bool(config[field], f"algorithm_config.{field}")
+    if algorithm in _GCRL_DEFAULTS:
+        for prefix in ("value", "actor"):
+            probability_fields = [
+                f"{prefix}_p_curgoal",
+                f"{prefix}_p_trajgoal",
+                f"{prefix}_p_randomgoal",
+            ]
+            probabilities = []
+            for field in probability_fields:
+                probability = _float(config[field], f"algorithm_config.{field}")
+                if not 0.0 <= probability <= 1.0:
+                    raise ValueError(
+                        f"algorithm_config.{field} must satisfy 0 <= value <= 1"
+                    )
+                config[field] = probability
+                probabilities.append(probability)
+            if not math.isclose(sum(probabilities), 1.0, abs_tol=1e-8):
+                raise ValueError(
+                    f"algorithm_config {prefix} goal probabilities must sum to 1"
+                )
+        if algorithm == "hiql" and config["actor_p_curgoal"] != 0.0:
+            raise ValueError("hiql requires algorithm_config.actor_p_curgoal=0")
+        if algorithm == "crl" and config["batch_size"] < 2:
+            raise ValueError("crl requires algorithm_config.batch_size >= 2")
     if algorithm == "mlp_bc" and config.get("policy_type", "deterministic") != "deterministic":
         raise ValueError("mlp_bc only supports policy_type='deterministic' in this baseline")
     if "reward_scaler" in config:
@@ -431,9 +560,25 @@ def normalize_baseline_config(raw_config: dict) -> dict:
 
     device = raw.get("device", "cuda:0")
     if not isinstance(device, (str, bool, int)):
-        raise ValueError("device must be a torch device string, bool, or integer GPU index")
+        raise ValueError("device must be a device string, bool, or integer GPU index")
     if isinstance(device, str) and not device.strip():
         raise ValueError("device must not be an empty string")
+
+    normalized_network = _normalize_network(raw.get("network"))
+    if algorithm in _GCRL_DEFAULTS:
+        if normalized_network["use_batch_norm"]:
+            raise ValueError("CRL/HIQL do not support network.use_batch_norm")
+        if normalized_network["dropout_rate"] is not None:
+            raise ValueError("CRL/HIQL do not support network.dropout_rate")
+        if normalized_network["activation"] not in {
+            "relu",
+            "gelu",
+            "tanh",
+            "swish",
+        }:
+            raise ValueError(
+                "CRL/HIQL network.activation must be relu, gelu, tanh, or swish"
+            )
 
     return {
         "algorithm": algorithm,
@@ -468,7 +613,7 @@ def normalize_baseline_config(raw_config: dict) -> dict:
         "output_root": os.fspath(output_root),
         "experiment_id": experiment_id.strip() if experiment_id else None,
         "observation": _normalize_observation(raw.get("observation")),
-        "network": _normalize_network(raw.get("network")),
+        "network": normalized_network,
         "algorithm_config": _normalize_algorithm_config(
             algorithm, raw.get("algorithm_config")
         ),
