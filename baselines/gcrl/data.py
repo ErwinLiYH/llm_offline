@@ -7,6 +7,8 @@ import numpy as np
 
 from baselines.data.loader import episode_field, select_episode_splits
 from baselines.data.observation import (
+    GOAL_CONDITIONED_STATE_DIMS,
+    family_map_shape,
     goal_conditioned_observation_schema,
     vectorize_goal_conditioned_observation,
 )
@@ -18,6 +20,12 @@ class GCRLEpisode:
     states: np.ndarray
     goals: np.ndarray
     actions: np.ndarray
+    # The map is invariant for every time step of one variant.  Keep it once
+    # instead of repeating it in every offline state (especially important for
+    # the 65M-transition multi-map AntMaze suite), then restore the original
+    # vector order only when a minibatch is sampled.
+    map_features: np.ndarray | None = None
+    map_insert_index: int | None = None
 
     @property
     def transition_count(self) -> int:
@@ -31,6 +39,8 @@ class _VariantArrays:
     actions: np.ndarray
     anchor_state_indices: np.ndarray
     final_state_indices: np.ndarray
+    map_features: np.ndarray | None
+    map_insert_index: int | None
 
     @property
     def transition_count(self) -> int:
@@ -62,11 +72,18 @@ class GCRLNormalizer:
         for arrays in dataset.variants.values():
             states = np.asarray(arrays.states, dtype=np.float64)
             goals = np.asarray(arrays.goals, dtype=np.float64)
-            state_sum = states.sum(axis=0) if state_sum is None else state_sum + states.sum(axis=0)
+            current_state_sum, current_state_square_sum = dataset.state_statistics(
+                arrays
+            )
+            state_sum = (
+                current_state_sum
+                if state_sum is None
+                else state_sum + current_state_sum
+            )
             state_square_sum = (
-                np.square(states).sum(axis=0)
+                current_state_square_sum
                 if state_square_sum is None
-                else state_square_sum + np.square(states).sum(axis=0)
+                else state_square_sum + current_state_square_sum
             )
             goal_sum = goals.sum(axis=0) if goal_sum is None else goal_sum + goals.sum(axis=0)
             goal_square_sum = (
@@ -171,8 +188,30 @@ class GCRLDataset:
         actions = []
         anchor_indices = []
         final_indices = []
+        map_features = None
+        map_insert_index = None
         state_offset = 0
         for episode in episodes:
+            if (episode.map_features is None) != (episode.map_insert_index is None):
+                raise ValueError("GCRL episode map metadata is incomplete")
+            if episode.map_features is not None:
+                candidate = np.asarray(episode.map_features, dtype=np.float32)
+                if candidate.ndim != 1:
+                    raise ValueError("GCRL episode map features must be one-dimensional")
+                if map_features is None:
+                    map_features = candidate
+                    map_insert_index = episode.map_insert_index
+                elif (
+                    map_insert_index != episode.map_insert_index
+                    or not np.array_equal(map_features, candidate)
+                ):
+                    raise ValueError(
+                        "All GCRL episodes for one variant must share one map feature vector"
+                    )
+            elif map_features is not None:
+                raise ValueError(
+                    "All GCRL episodes for one variant must agree on map feature usage"
+                )
             step_count = episode.transition_count
             states.append(episode.states)
             goals.append(episode.goals)
@@ -188,6 +227,8 @@ class GCRLDataset:
             actions=np.concatenate(actions, axis=0),
             anchor_state_indices=np.concatenate(anchor_indices, axis=0),
             final_state_indices=np.concatenate(final_indices, axis=0),
+            map_features=map_features,
+            map_insert_index=map_insert_index,
         )
 
     @property
@@ -203,7 +244,11 @@ class GCRLDataset:
 
     @property
     def state_dim(self) -> int:
-        return int(next(iter(self.variants.values())).states.shape[-1])
+        arrays = next(iter(self.variants.values()))
+        return int(
+            arrays.states.shape[-1]
+            + (0 if arrays.map_features is None else arrays.map_features.shape[-1])
+        )
 
     @property
     def goal_dim(self) -> int:
@@ -212,6 +257,64 @@ class GCRLDataset:
     @property
     def action_dim(self) -> int:
         return int(next(iter(self.variants.values())).actions.shape[-1])
+
+    @staticmethod
+    def _restore_map_features(
+        arrays: _VariantArrays,
+        values: np.ndarray,
+    ) -> np.ndarray:
+        """Insert one variant-static map into sampled state rows.
+
+        Map slots intentionally remain at their original position (after the
+        base state and before location/wall features), so offline batches and
+        online rollout observations have byte-for-byte compatible schemas.
+        """
+        values = np.asarray(values, dtype=np.float32)
+        if arrays.map_features is None:
+            return values
+        if arrays.map_insert_index is None:
+            raise ValueError("GCRL variant map metadata is incomplete")
+        insert_index = arrays.map_insert_index
+        if insert_index < 0 or insert_index > values.shape[-1]:
+            raise ValueError("GCRL variant map insertion index is invalid")
+        map_values = np.broadcast_to(
+            arrays.map_features,
+            values.shape[:-1] + arrays.map_features.shape,
+        )
+        return np.concatenate(
+            [values[..., :insert_index], map_values, values[..., insert_index:]],
+            axis=-1,
+        )
+
+    @classmethod
+    def state_statistics(cls, arrays: _VariantArrays) -> tuple[np.ndarray, np.ndarray]:
+        """Return exact full-state moments without materializing repeated maps."""
+        states = np.asarray(arrays.states, dtype=np.float64)
+        state_sum = states.sum(axis=0)
+        state_square_sum = np.square(states).sum(axis=0)
+        if arrays.map_features is None:
+            return state_sum, state_square_sum
+        if arrays.map_insert_index is None:
+            raise ValueError("GCRL variant map metadata is incomplete")
+        count = len(states)
+        map_features = np.asarray(arrays.map_features, dtype=np.float64)
+        insert_index = arrays.map_insert_index
+        return (
+            np.concatenate(
+                [
+                    state_sum[:insert_index],
+                    map_features * count,
+                    state_sum[insert_index:],
+                ]
+            ),
+            np.concatenate(
+                [
+                    state_square_sum[:insert_index],
+                    np.square(map_features) * count,
+                    state_square_sum[insert_index:],
+                ]
+            ),
+        )
 
     def _sample_goal_indices(
         self,
@@ -265,8 +368,10 @@ class GCRLDataset:
         )
         successes = (anchors == value_goal_indices).astype(np.float32)
         batch = {
-            "observations": arrays.states[anchors],
-            "next_observations": arrays.states[anchors + 1],
+            "observations": self._restore_map_features(arrays, arrays.states[anchors]),
+            "next_observations": self._restore_map_features(
+                arrays, arrays.states[anchors + 1]
+            ),
             "actions": arrays.actions[transition_indices],
             "value_goals": arrays.goals[value_goal_indices],
             "masks": 1.0 - successes,
@@ -318,7 +423,9 @@ class GCRLDataset:
                 {
                     "low_actor_goals": arrays.goals[low_goal_indices],
                     "high_actor_goals": arrays.goals[high_goal_indices],
-                    "high_actor_target_states": arrays.states[high_target_indices],
+                    "high_actor_target_states": self._restore_map_features(
+                        arrays, arrays.states[high_target_indices]
+                    ),
                     "high_actor_target_goals": arrays.goals[high_target_indices],
                 }
             )
@@ -359,6 +466,25 @@ def _convert_episode(
         variant=variant,
         goal_xy=achieved_xy,
     )
+    map_features = None
+    map_insert_index = None
+    if observation_config["include_map"]:
+        map_insert_index = GOAL_CONDITIONED_STATE_DIMS[env_family]
+        rows, cols = family_map_shape(env_family)
+        map_dim = rows * cols
+        map_features = np.asarray(
+            states[0, map_insert_index : map_insert_index + map_dim],
+            dtype=np.float32,
+        ).copy()
+        repeated_map = states[:, map_insert_index : map_insert_index + map_dim]
+        if not np.all(repeated_map == map_features[None, :]):
+            raise ValueError(
+                f"GCRL map features unexpectedly vary within variant={variant!r}"
+            )
+        states = np.concatenate(
+            [states[:, :map_insert_index], states[:, map_insert_index + map_dim :]],
+            axis=-1,
+        )
     actions = np.asarray(episode_field(episode, "actions"), dtype=np.float32)
     if actions.ndim == 1:
         actions = actions.reshape(-1, 1)
@@ -382,6 +508,8 @@ def _convert_episode(
         states=np.asarray(states, dtype=np.float32),
         goals=np.asarray(goals, dtype=np.float32),
         actions=np.clip(actions, -1.0, 1.0).astype(np.float32),
+        map_features=map_features,
+        map_insert_index=map_insert_index,
     )
 
 

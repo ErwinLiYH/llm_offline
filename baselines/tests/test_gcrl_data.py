@@ -82,6 +82,33 @@ class GCRLDatasetTest(unittest.TestCase):
         self.assertTrue(np.all(normalizer.state_std > 0))
         self.assertTrue(np.all(np.isfinite(normalizer.goal_std)))
 
+    def test_static_map_is_compact_but_restored_in_original_state_order(self):
+        episode = _episode("map", 0.2, length=4)
+        # Stored states omit the two map values between base state (two dims)
+        # and the location-like tail (one dim).  Samples restore the exact
+        # [base, map, tail] order expected by online vectorization.
+        compact_episode = GCRLEpisode(
+            variant=episode.variant,
+            states=episode.states,
+            goals=episode.goals,
+            actions=episode.actions,
+            map_features=np.asarray([7.0, 8.0], dtype=np.float32),
+            map_insert_index=2,
+        )
+        dataset = GCRLDataset([compact_episode], seed=3)
+        self.assertEqual(dataset.state_dim, 5)
+        batch = dataset.sample(8, algorithm="hiql", config=_sampling_config())
+        np.testing.assert_array_equal(batch["observations"][:, 2:4], [[7.0, 8.0]] * 8)
+        np.testing.assert_array_equal(
+            batch["next_observations"][:, 2:4], [[7.0, 8.0]] * 8
+        )
+        np.testing.assert_array_equal(
+            batch["high_actor_target_states"][:, 2:4], [[7.0, 8.0]] * 8
+        )
+        normalizer = GCRLNormalizer.fit(dataset)
+        np.testing.assert_array_equal(normalizer.state_mean[2:4], [7.0, 8.0])
+        np.testing.assert_array_equal(normalizer.state_std[2:4], [1.0, 1.0])
+
 
 if __name__ == "__main__":
     unittest.main()
