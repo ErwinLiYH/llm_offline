@@ -153,7 +153,14 @@ _GCRL_DEFAULTS = {
 }
 
 _NETWORK_DEFAULTS = {
+    # legacy_mlp preserves the existing d3rlpy VectorEncoderFactory path.
+    # The two scaling bodies use the paper-style Dense -> LayerNorm -> Swish
+    # encoder defined in baselines.algorithms.scaling_mlp.
+    "architecture": "legacy_mlp",
     "hidden_units": [256, 256],
+    "width": None,
+    "body_depth": None,
+    "block_size": 4,
     "activation": "relu",
     "use_batch_norm": False,
     "use_layer_norm": False,
@@ -238,13 +245,43 @@ def _normalize_network(value) -> dict:
     unknown = sorted(set(network) - set(_NETWORK_DEFAULTS))
     if unknown:
         raise ValueError(f"Unknown network keys: {unknown}")
+    architecture = network["architecture"]
+    if not isinstance(architecture, str) or not architecture.strip():
+        raise ValueError("network.architecture must be a non-empty string")
+    architecture = architecture.strip()
+    if architecture not in {"legacy_mlp", "plain_mlp", "residual_mlp"}:
+        raise ValueError(
+            "network.architecture must be one of legacy_mlp, plain_mlp, or residual_mlp"
+        )
+    network["architecture"] = architecture
+
     hidden_units = network["hidden_units"]
-    if (
-        not isinstance(hidden_units, list)
-        or not hidden_units
-        or any(isinstance(item, bool) or not isinstance(item, int) or item < 1 for item in hidden_units)
-    ):
-        raise ValueError("network.hidden_units must be a non-empty list of positive integers")
+    if architecture == "legacy_mlp":
+        if (
+            not isinstance(hidden_units, list)
+            or not hidden_units
+            or any(
+                isinstance(item, bool) or not isinstance(item, int) or item < 1
+                for item in hidden_units
+            )
+        ):
+            raise ValueError(
+                "network.hidden_units must be a non-empty list of positive integers"
+            )
+        if network["width"] is not None or network["body_depth"] is not None:
+            raise ValueError(
+                "network.width and network.body_depth require a scaling architecture"
+            )
+    else:
+        network["width"] = _positive_int(network["width"], "network.width")
+        network["body_depth"] = _positive_int(
+            network["body_depth"], "network.body_depth"
+        )
+        # A layered scaling config commonly inherits hidden_units from a base
+        # baseline YAML. It has no effect on this architecture, so clear it in
+        # the resolved config rather than presenting a misleading second body.
+        network["hidden_units"] = None
+    network["block_size"] = _positive_int(network["block_size"], "network.block_size")
     activation = network["activation"]
     if not isinstance(activation, str) or not activation.strip():
         raise ValueError("network.activation must be a non-empty string")
@@ -263,6 +300,26 @@ def _normalize_network(value) -> dict:
         if not 0.0 <= dropout_rate < 1.0:
             raise ValueError("network.dropout_rate must be in [0, 1)")
         network["dropout_rate"] = dropout_rate
+    if architecture != "legacy_mlp":
+        if network["block_size"] != 4:
+            raise ValueError("paper scaling MLP requires network.block_size=4")
+        if (
+            network["activation"] != "swish"
+            or not network["use_layer_norm"]
+            or network["use_batch_norm"]
+            or network["dropout_rate"] is not None
+        ):
+            raise ValueError(
+                "plain_mlp/residual_mlp require activation=swish, "
+                "use_layer_norm=true, use_batch_norm=false, and dropout_rate=null"
+            )
+        if (
+            architecture == "residual_mlp"
+            and network["body_depth"] % network["block_size"] != 0
+        ):
+            raise ValueError(
+                "residual_mlp network.body_depth must be divisible by network.block_size"
+            )
     return network
 
 
@@ -565,6 +622,13 @@ def normalize_baseline_config(raw_config: dict) -> dict:
         raise ValueError("device must not be an empty string")
 
     normalized_network = _normalize_network(raw.get("network"))
+    if (
+        normalized_network["architecture"] != "legacy_mlp"
+        and algorithm != "mlp_bc"
+    ):
+        raise ValueError(
+            "plain_mlp/residual_mlp are currently supported only by algorithm=mlp_bc"
+        )
     if algorithm in _GCRL_DEFAULTS:
         if normalized_network["use_batch_norm"]:
             raise ValueError("CRL/HIQL do not support network.use_batch_norm")

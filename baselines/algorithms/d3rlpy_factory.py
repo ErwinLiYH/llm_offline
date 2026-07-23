@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from d3rlpy.algos import BCConfig, IQLConfig, TD3PlusBCConfig
+import d3rlpy
 from d3rlpy.models import VectorEncoderFactory
+from d3rlpy.models.encoders import EncoderFactory
 from d3rlpy.preprocessing import (
     ClipRewardScaler,
     ConstantShiftRewardScaler,
@@ -9,8 +11,17 @@ from d3rlpy.preprocessing import (
     StandardObservationScaler,
 )
 
+from baselines.algorithms.scaling_mlp import ScalingMLPEncoderFactory
 
-def _encoder(network: dict) -> VectorEncoderFactory:
+
+def _encoder(network: dict) -> EncoderFactory:
+    if network["architecture"] != "legacy_mlp":
+        return ScalingMLPEncoderFactory(
+            body_type=network["architecture"],
+            width=network["width"],
+            body_depth=network["body_depth"],
+            block_size=network["block_size"],
+        )
     return VectorEncoderFactory(
         hidden_units=list(network["hidden_units"]),
         activation=network["activation"],
@@ -67,3 +78,9 @@ def create_algorithm(config: dict):
     else:
         raise ValueError(f"Unsupported baseline algorithm: {algorithm!r}")
     return algo_config.create(device=config["device"])
+
+
+def load_algorithm(path: str, *, device):
+    """Load a d3rlpy baseline after registering repository encoder factories."""
+
+    return d3rlpy.load_learnable(path, device=device)

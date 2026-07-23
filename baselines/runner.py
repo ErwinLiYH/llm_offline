@@ -14,6 +14,7 @@ from d3rlpy.logging import (
 )
 
 from baselines.algorithms import create_algorithm
+from baselines.algorithms.scaling_mlp import ScalingMLPEncoder
 from baselines.artifacts import create_run_dir, write_json, write_yaml
 from baselines.data.loader import prepare_datasets
 from baselines.evaluation import BaselineEpochCallback
@@ -65,6 +66,32 @@ def _logger_factory(config: dict, run_dir: Path):
     if wandb_config["enabled"]:
         factories.append(WanDBAdapterFactory(project=wandb_config["project"]))
     return factories[0] if len(factories) == 1 else CombineAdapterFactory(factories)
+
+
+def model_metadata(algo, config: dict) -> dict | None:
+    """Return instantiated-model facts that cannot be inferred from YAML alone."""
+
+    if config["algorithm"] != "mlp_bc" or algo.impl is None:
+        return None
+    policy = algo.impl.policy
+    trainable_parameters = [
+        parameter for parameter in policy.parameters() if parameter.requires_grad
+    ]
+    metadata = {
+        "policy_class": type(policy).__name__,
+        "trainable_parameter_count": int(
+            sum(parameter.numel() for parameter in trainable_parameters)
+        ),
+        "trainable_parameter_tensor_count": len(trainable_parameters),
+        "network_config": config["network"],
+    }
+    encoder = policy._encoder
+    if isinstance(encoder, ScalingMLPEncoder):
+        structure = encoder.structure()
+        structure["policy_action_head_dense_count"] = 1
+        structure["total_dense_count"] = structure["encoder_dense_count"] + 1
+        metadata["scaling_encoder"] = structure
+    return metadata
 
 
 def train_baseline(config: dict) -> Path:
@@ -121,6 +148,9 @@ def train_baseline(config: dict) -> Path:
         epoch_callback=epoch_callback,
     )
     algo.save(run_dir / "model.d3")
+    instantiated_model = model_metadata(algo, config)
+    if instantiated_model is not None:
+        write_json(run_dir / "model_metadata.json", instantiated_model)
     summary = {
         "experiment_id": experiment_id,
         "algorithm": config["algorithm"],
@@ -151,6 +181,7 @@ def train_baseline(config: dict) -> Path:
             epoch_callback.history[-1] if epoch_callback.history else None
         ),
         "model_path": str(run_dir / "model.d3"),
+        "model": instantiated_model,
     }
     write_json(run_dir / "summary.json", summary)
     print(f"[baseline] run complete: {run_dir}")

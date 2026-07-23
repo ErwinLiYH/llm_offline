@@ -10,11 +10,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import d3rlpy
 import numpy as np
 import yaml
 
 import crossmaze
+from baselines.algorithms import load_algorithm
 from baselines.data.observation import BaselineObservationWrapper
 
 
@@ -51,7 +51,7 @@ def run_dir(runs_root: Path, algorithm: str, run_template: str) -> Path:
 
 def evaluate_algorithm(path: Path, *, device: str) -> dict:
     config = yaml.safe_load((path / "config.yaml").read_text(encoding="utf-8"))
-    algo = d3rlpy.load_learnable(str(path / "model.d3"), device=device)
+    algo = load_algorithm(str(path / "model.d3"), device=device)
     env = BaselineObservationWrapper(
         crossmaze.make(
             "antmaze",

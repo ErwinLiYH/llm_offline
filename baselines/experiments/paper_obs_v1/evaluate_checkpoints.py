@@ -11,10 +11,10 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import d3rlpy
 import torch
 import yaml
 
+from baselines.algorithms import load_algorithm
 from baselines.artifacts import write_json
 from baselines.evaluation import evaluate_rollouts
 
@@ -107,7 +107,7 @@ def main() -> None:
             continue
 
         print(f"[checkpoint rollout] start {args.experiment_id} step={step}")
-        algo = d3rlpy.load_learnable(str(checkpoint), device=args.device)
+        algo = load_algorithm(str(checkpoint), device=args.device)
         rollout = evaluate_rollouts(
             algo,
             env_family=config["env_family"],

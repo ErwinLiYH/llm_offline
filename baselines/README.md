@@ -104,6 +104,37 @@ legacy observation. CRL/HIQL instead fit separate state and goal normalizers;
 map/current-cell/wall features belong to state, while goal-cell features belong
 to goal. No prompt or sensing text enters these baselines.
 
+### BC scaling encoder
+
+`mlp_bc` also supports the paper-style scaling encoders used by Wang et al.,
+*1000 Layer Networks for Self-Supervised RL*. They retain d3rlpy's
+deterministic tanh action head and standard observation scaler, but replace its
+vector encoder with an activated input projection followed by either a plain
+or residual body. Each body unit is exactly `Dense -> LayerNorm -> Swish` with
+LeCun-uniform weights and zero bias. A residual block contains four units and
+adds its identity after the fourth Swish.
+
+```yaml
+network:
+  architecture: residual_mlp  # or plain_mlp; legacy_mlp preserves old configs
+  width: 256
+  body_depth: 64              # residual_mlp must be divisible by 4
+  block_size: 4
+  activation: swish
+  use_batch_norm: false
+  use_layer_norm: true
+  dropout_rate: null
+```
+
+`plain_mlp` and `residual_mlp` are intentionally BC-only. They require the
+four settings shown above so a depth/width comparison cannot silently vary
+normalization, activation, or dropout. Existing `hidden_units` configurations
+continue to select `legacy_mlp`; if inherited by a layered scaling config,
+they are ignored and written as `null` in the resolved config. Each BC run
+also writes `model_metadata.json` with the instantiated trainable parameter
+count, body depth, residual block count, and total Dense-layer count including
+the action head.
+
 CRL/HIQL load complete episodes because their goals are relabeled from future
 or random achieved states. Relabeling never crosses a maze variant. Each
 minibatch is also variant-homogeneous, so CRL's in-batch negatives cannot mix
