@@ -1,0 +1,12 @@
+# Non-result-bearing integration check.  It uses the full train/eval sets but
+# makes one update and one seeded rollout per variant before each formal run.
+n_steps: 1
+n_steps_per_epoch: 1
+save_interval_epochs: 1
+show_progress: true
+evaluation:
+  enabled: true
+  every_epochs: 1
+  num_episodes: 1
+  seed: 0
+  env_config: {}

@@ -1,0 +1,11 @@
+# Controlled observation-conditioning ablation layered after the paper
+# multi-environment protocol.  All three CrossMaze numeric components are on:
+# the padded topology map, cell coordinates, and four-way wall/risk state.
+# All sampler, network, algorithm, update, and rollout settings are inherited
+# unchanged from gcrl_multienv_paper_20260722/paper_protocol.yaml.
+observation:
+  include_map: true
+  include_location_sensing: true
+  include_wall_sensing: true
+  wall_sensing_version: v3
+  map_sensing_boundary_risk_threshold: 0.10
