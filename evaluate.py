@@ -5,6 +5,7 @@ Usage:
     python evaluate.py --config eval.yaml --model_path checkpoints/.../final
     python evaluate.py --config eval.yaml --model_path 'checkpoints/.../ep7*'
     python evaluate.py --config eval.yaml --seed 42
+    python evaluate.py --config eval.yaml --experiment_id 1234567
 """
 
 import argparse
@@ -71,6 +72,12 @@ def parse_args(argv=None):
         default=None,
         help="Override seed from the merged eval config.",
     )
+    parser.add_argument(
+        "--experiment_id",
+        type=str,
+        default=None,
+        help="Override experiment_id from the config; useful for scheduler job ids.",
+    )
     parser.add_argument("--parallel_backend", type=str, choices=["single", "ddp"], default=None)
     parser.add_argument("-y", "--yes", action="store_true", help="Automatically confirm strong warnings.")
     return parser.parse_args(argv)
@@ -81,6 +88,11 @@ def apply_eval_cli_overrides(config: dict, args) -> dict:
         config["model_path"] = args.model_path
     if args.seed is not None:
         config["seed"] = args.seed
+    if args.experiment_id is not None:
+        experiment_id_override = str(args.experiment_id).strip()
+        if not experiment_id_override:
+            raise ValueError("--experiment_id must not be empty when provided")
+        config["experiment_id"] = experiment_id_override
     return config
 
 
@@ -371,6 +383,33 @@ def get_standalone_results_dir(base_results_dir: str, standalone_eval_id: str) -
     return os.path.join(base_results_dir, f"standalone_{standalone_eval_id}")
 
 
+def ensure_standalone_experiment_id(config: dict) -> str:
+    """Resolve a standalone eval ID, retaining UUID fallback for direct runs."""
+    configured_id = config.get("experiment_id")
+    if configured_id is not None:
+        experiment_id = str(configured_id).strip()
+        if experiment_id:
+            config["experiment_id"] = experiment_id
+            return experiment_id
+
+    experiment_id = uuid.uuid4().hex[:8]
+    config["experiment_id"] = experiment_id
+    return experiment_id
+
+
+def ensure_standalone_results_dir_available(
+    run_results_dir: str,
+    experiment_id: str,
+) -> None:
+    """Reject a reused standalone eval ID before model loading or output writes."""
+    if os.path.exists(run_results_dir):
+        raise FileExistsError(
+            "Standalone eval output directory already exists for experiment_id "
+            f"{experiment_id!r}: {run_results_dir}. Refusing to overwrite existing "
+            "results; choose a new experiment_id."
+        )
+
+
 def resolve_eval_output_mode(config: dict) -> str:
     mode = str(config.get("eval_output_mode", "standalone")).strip().lower()
     if mode not in {"standalone", "training"}:
@@ -539,6 +578,34 @@ def main():
         )
         configure_mujoco_gl(config)
 
+        env_family = config["env_family"]
+        base_results_dir = get_results_base_dir(config)
+        standalone_eval_id = None
+        if eval_output_mode == "standalone":
+            standalone_eval_id = (
+                ensure_standalone_experiment_id(config)
+                if dist_context.is_main_process
+                else None
+            )
+            standalone_eval_id = broadcast_object(
+                standalone_eval_id,
+                dist_context,
+            )
+            config["experiment_id"] = standalone_eval_id
+            run_results_dir = get_standalone_results_dir(
+                base_results_dir,
+                standalone_eval_id,
+            )
+            ensure_standalone_results_dir_available(
+                run_results_dir,
+                standalone_eval_id,
+            )
+        else:
+            run_results_dir = get_training_results_dir(
+                base_results_dir,
+                training_eval_context,
+            )
+
         device = dist_context.device
         if dist_context.is_main_process:
             print(f"[eval] Using backend: {dist_context.backend}")
@@ -560,6 +627,13 @@ def main():
                 "[eval] Rollout workers per rank: "
                 f"{rollout_worker_num} (lifetime={rollout_worker_lifetime})"
             )
+            if eval_output_mode == "standalone":
+                print(f"[eval] Experiment ID: {standalone_eval_id}")
+            else:
+                print(
+                    f"[eval] Training eval tag: "
+                    f"{get_training_eval_tag(training_eval_context)}"
+                )
 
         model, tokenizer = load_from_checkpoint(
             config["model_path"],
@@ -569,35 +643,6 @@ def main():
         model.to(device)
         model.eval()
 
-        env_family = config["env_family"]
-        base_results_dir = get_results_base_dir(config)
-        standalone_eval_id = None
-        if eval_output_mode == "standalone":
-            standalone_eval_id = (
-                uuid.uuid4().hex[:8]
-                if dist_context.is_main_process
-                else None
-            )
-            standalone_eval_id = broadcast_object(
-                standalone_eval_id,
-                dist_context,
-            )
-            run_results_dir = get_standalone_results_dir(
-                base_results_dir,
-                standalone_eval_id,
-            )
-            if dist_context.is_main_process:
-                print(f"[eval] Eval ID: {standalone_eval_id}")
-        else:
-            run_results_dir = get_training_results_dir(
-                base_results_dir,
-                training_eval_context,
-            )
-            if dist_context.is_main_process:
-                print(
-                    f"[eval] Training eval tag: "
-                    f"{get_training_eval_tag(training_eval_context)}"
-                )
         prompt_name = config.get("resolved_eval_prompt_name")
         if prompt_name is None:
             prompt_name = load_template_names(env_family)[0]
@@ -628,11 +673,24 @@ def main():
         config["rollout_worker_lifetime"] = rollout_worker_lifetime
         config["eval_distribute_variants"] = distribute_variants
         eval_config_path = os.path.join(run_results_dir, "eval_config.yaml")
+        results_dir_error = None
         if dist_context.is_main_process:
-            os.makedirs(run_results_dir, exist_ok=True)
-            with open(eval_config_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
-            print(f"[eval] Eval config saved to: {eval_config_path}")
+            try:
+                os.makedirs(
+                    run_results_dir,
+                    exist_ok=eval_output_mode == "training",
+                )
+                with open(eval_config_path, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
+                print(f"[eval] Eval config saved to: {eval_config_path}")
+            except OSError as exc:
+                results_dir_error = (type(exc).__name__, str(exc))
+        results_dir_error = broadcast_object(results_dir_error, dist_context)
+        if results_dir_error is not None:
+            error_type, error_message = results_dir_error
+            if error_type == "FileExistsError":
+                raise FileExistsError(error_message)
+            raise OSError(error_message)
         barrier(dist_context)
 
         local_results = []

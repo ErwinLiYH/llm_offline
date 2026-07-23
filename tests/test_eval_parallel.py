@@ -157,6 +157,24 @@ class EvalParallelTest(unittest.TestCase):
 
         self.assertEqual(config["seed"], 64)
 
+    def test_eval_cli_experiment_id_overrides_merged_config(self):
+        args = evaluate.parse_args(
+            ["--config", "eval.yaml", "--experiment_id", "eval-job-42"]
+        )
+
+        config = evaluate.apply_eval_cli_overrides(
+            {"experiment_id": "configured-id"},
+            args,
+        )
+
+        self.assertEqual(config["experiment_id"], "eval-job-42")
+
+    def test_eval_cli_rejects_empty_experiment_id(self):
+        args = evaluate.parse_args(["--experiment_id", "  "])
+
+        with self.assertRaisesRegex(ValueError, "experiment_id must not be empty"):
+            evaluate.apply_eval_cli_overrides({}, args)
+
     def test_checkpoint_sensing_config_is_inherited_for_eval(self):
         with tempfile.TemporaryDirectory() as checkpoint_dir:
             (Path(checkpoint_dir) / "config.yaml").write_text(
@@ -328,6 +346,37 @@ class EvalParallelTest(unittest.TestCase):
             evaluate.get_standalone_results_dir("/tmp/results", "abc123"),
             "/tmp/results/standalone_abc123",
         )
+
+    def test_standalone_experiment_id_uses_config_or_uuid_fallback(self):
+        configured = {"experiment_id": "  eval-job-42  "}
+        self.assertEqual(
+            evaluate.ensure_standalone_experiment_id(configured),
+            "eval-job-42",
+        )
+        self.assertEqual(configured["experiment_id"], "eval-job-42")
+
+        generated = {"experiment_id": ""}
+        with mock.patch.object(
+            evaluate.uuid,
+            "uuid4",
+            return_value=SimpleNamespace(hex="12345678abcdef"),
+        ):
+            self.assertEqual(
+                evaluate.ensure_standalone_experiment_id(generated),
+                "12345678",
+            )
+        self.assertEqual(generated["experiment_id"], "12345678")
+
+    def test_standalone_results_dir_rejects_existing_experiment_id(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            results_dir = Path(tmp_dir) / "standalone_eval-job-42"
+            results_dir.mkdir()
+
+            with self.assertRaisesRegex(FileExistsError, "eval-job-42"):
+                evaluate.ensure_standalone_results_dir_available(
+                    str(results_dir),
+                    "eval-job-42",
+                )
 
     def test_training_eval_results_dir_uses_training_context(self):
         epoch_context = evaluate.resolve_training_eval_context(

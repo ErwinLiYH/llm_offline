@@ -20,6 +20,7 @@ ENV_BIN=/home/u6mx/yl1118.u6mx/miniforge3/envs/llm_offline/bin
 CONFIG_PATHS=()
 MODEL_PATH=""
 SEED=""
+EXPERIMENT_ID="${SLURM_JOB_ID:-}"
 PARALLEL_BACKEND=""
 NPROC_PER_NODE=1
 ASSUME_YES=false
@@ -33,6 +34,7 @@ Usage:
   sbatch $0 --config <eval.yaml> --model_path <checkpoint_dir>
   sbatch $0 --config <eval.yaml> --model_path '<checkpoint_prefix>*'
   sbatch $0 --config <eval.yaml> --seed 42
+  sbatch $0 --config <eval.yaml> --experiment_id <id>
   sbatch $0 --config <eval.yaml> --yes
   sbatch --gpus=4 --cpus-per-task=128 sbatch/evaluate.isb.slurm --config <eval.yaml> --parallel_backend ddp --nproc-per-node 4
   sbatch $0 --config <eval.yaml> -- --future-evaluate-arg value
@@ -42,6 +44,7 @@ Options:
   --model_path, --model-path <path>  Override model_path from the merged eval config.
                                      A single trailing '*' wildcard is supported; quote it in shells.
   --seed <integer>                   Override seed from the merged eval config.
+  --experiment_id <id>               Override standalone eval experiment id. Defaults to the Slurm job id.
   --parallel_backend, --parallel-backend <single|ddp>
                                      Override config parallel_backend. Default: use eval config.
   --nproc-per-node <n>               torchrun processes for ddp. Default: ${NPROC_PER_NODE}.
@@ -96,6 +99,15 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi
             SEED="$2"
+            shift 2
+            ;;
+        --experiment_id)
+            if [[ $# -lt 2 ]]; then
+                echo "ERROR: --experiment_id requires a value" >&2
+                usage >&2
+                exit 2
+            fi
+            EXPERIMENT_ID="$2"
             shift 2
             ;;
         --parallel_backend|--parallel-backend)
@@ -160,6 +172,10 @@ if ! [[ "${NPROC_PER_NODE}" =~ ^[0-9]+$ ]] || [[ "${NPROC_PER_NODE}" -lt 1 ]]; t
     echo "ERROR: --nproc-per-node must be a positive integer, got: ${NPROC_PER_NODE}" >&2
     exit 2
 fi
+if [[ -z "${EXPERIMENT_ID}" ]]; then
+    echo "ERROR: EXPERIMENT_ID is empty and SLURM_JOB_ID is unavailable" >&2
+    exit 2
+fi
 
 # Do not inherit login-session TMPDIR (/local/user/<uid> -> /run/user, deleted by logind ~20s into the job)
 export TMPDIR=/tmp
@@ -194,6 +210,7 @@ if [[ -n "${SEED}" ]]; then
 else
     echo "Seed override: config default"
 fi
+echo "Experiment id: ${EXPERIMENT_ID}"
 if [[ -n "${PARALLEL_BACKEND}" ]]; then
     echo "Parallel backend override: ${PARALLEL_BACKEND}"
 else
@@ -207,6 +224,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 
 EVAL_ARGS=(--config "${CONFIG_PATHS[@]}")
+EVAL_ARGS+=(--experiment_id "${EXPERIMENT_ID}")
 if [[ -n "${MODEL_PATH}" ]]; then
     EVAL_ARGS+=(--model_path "${MODEL_PATH}")
 fi
