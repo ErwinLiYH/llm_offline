@@ -1,0 +1,12 @@
+# Non-result-bearing integration check.  It keeps the exact variant selections
+# but performs one update and one rollout per selected train/test variant.
+n_steps: 1
+n_steps_per_epoch: 1
+save_interval_epochs: 1
+show_progress: true
+evaluation:
+  enabled: true
+  every_epochs: 1
+  num_episodes: 1
+  seed: 0
+  env_config: {}
