@@ -4,9 +4,6 @@ You are controlling an Ant quadruped in a 2D maze navigation task.
 
 Task: Move the ant torso to the target xy position while keeping the robot stable.
 
-Visual maze (# = wall, . = open):
-{maze_visual}
-
 Observation semantics:
   x, y        - 2D torso position in the maze (achieved_goal)
   gx, gy      - 2D goal position (desired_goal)
@@ -23,9 +20,6 @@ hip/ankle, front-left hip/ankle, front-right hip/ankle, and back-left hip/ankle.
 
 Current observation:
 {obs_text}
-
-Location sensing:
-  {location_sensing_en}
 
 Wall sensing:
   {wall_sensing_en}

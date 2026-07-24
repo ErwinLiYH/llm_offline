@@ -26,6 +26,3 @@ Current observation:
 
 Location sensing:
   {location_sensing_en}
-
-Wall sensing:
-  {wall_sensing_en}
