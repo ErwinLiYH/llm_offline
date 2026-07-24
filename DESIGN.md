@@ -305,7 +305,7 @@ action_head_weight_decay: 0.0 # 仅 continuous action MLP Linear weights 的 Ada
 
 # Debug（注释掉为正常训练）
 # max_data_num: 100      # 每个 dataset split 最多使用多少条样本；注释掉 = 全量数据
-dataset_load_partitions: 1  # >1 时只分区 tokenize/load train tokenized 数据；需要 dataset_cache_dir；DDP 下必须 >= world_size 且能整除 world_size
+dataset_load_partitions: 1  # >1 时只分区 tokenize/load train tokenized 数据；需要有效 cache 目录；DDP 下必须 >= world_size 且能整除 world_size
 episode_keep_num: 5000  # 参与 train/val 划分的默认最大 episode 数；真实 episode 更少时使用全部，cache 命中后仍会重新生效
 episode_keep_per_varient: null  # 可选 dict；按 selected variant 覆盖 episode_keep_num，value 为 null 表示该 variant 使用全部 episodes
 balance_variant_episode_count: false  # 多 variant 时是否把 sampled episode pool 对齐到最小 variant；配置 episode_keep_per_varient 时会被跳过
@@ -442,7 +442,7 @@ exp_configs/
 
 #### 3. 数据集缓存路径
 
-Tokenize 后的数据集缓存在 `dataset_cache_dir`（由 `config.yaml` 配置，默认 `dataset_cache/`）：
+Tokenize 后的数据集默认缓存在 `dataset_cache_dir`（由 `config.yaml` 配置，默认 `dataset_cache/`）：
 
 ```
 dataset_cache/
@@ -455,8 +455,8 @@ dataset_cache/
 - `.pkl` 用于快速加载（下次训练直接跳过 tokenize，节省约 10 分钟）
 - `.pkl` 按 `episode_idx -> tokenized samples` 保存；非分区模式仍使用兼容旧 hash 的共享 train/val cache，分区模式则使用 train shard cache 和单独的完整 val cache
 - `.jsonl` 每行包含 `episode_idx`、`timestep`、`prompt` 和 `action`，供人工抽检数据质量
-- 若 `config.yaml` 中未设置 `dataset_cache_dir`（注释掉），则不缓存，每次重新 tokenize
-- `dataset_load_partitions > 1` 时必须设置 `dataset_cache_dir`。原始轨迹由 rank0 按现有逻辑加载并完成 episode 级 train/val selection；随后每个 variant 的 train timesteps 会按 `sampling_seed` 确定性打乱并切成固定 shard，必要时把 episode 拆成 `[start_t, end_t)` segment。segment worker 会拿完整 episode 上下文，但只 emit 指定 timestep 范围，因此 history prompt 可以引用 segment 前的历史。DDP 下要求 `dataset_load_partitions >= world_size` 且能被 `world_size` 整除；每 `world_size` 个 shard 组成一个 round，rank `r` 只处理本 round 的第 `r` 个 shard。val split 不分区，只由 rank0 构建完整 val loader 并在训练期间复用。
+- 可选的 `dataset_cache_v2_root` 与 `dataset_cache_v2_dir` 必须同时为非空字符串；同时配置时，最终目录是 `dataset_cache_v2_root/dataset_cache_v2_dir`，并忽略 `dataset_cache_dir`。`dataset_cache_v2_dir` 必须是相对路径。只配置其中一个时会回退 `dataset_cache_dir`；两者和旧字段均未配置时不缓存，每次重新 tokenize。
+- 分层配置在合并后再判断 V2 pair，因此可分别在不同 YAML 中设置 root 与 dir；如需从已继承的完整 V2 pair 切回旧字段，可用 `config_delete_keys: ["dataset_cache_v2_root", "dataset_cache_v2_dir"]`。`dataset_load_partitions > 1` 和 `--tokenize-only` 都要求存在上述任一有效 cache 目录。原始轨迹由 rank0 按现有逻辑加载并完成 episode 级 train/val selection；随后每个 variant 的 train timesteps 会按 `sampling_seed` 确定性打乱并切成固定 shard，必要时把 episode 拆成 `[start_t, end_t)` segment。segment worker 会拿完整 episode 上下文，但只 emit 指定 timestep 范围，因此 history prompt 可以引用 segment 前的历史。DDP 下要求 `dataset_load_partitions >= world_size` 且能被 `world_size` 整除；每 `world_size` 个 shard 组成一个 round，rank `r` 只处理本 round 的第 `r` 个 shard。val split 不分区，只由 rank0 构建完整 val loader 并在训练期间复用。
 - 每个 DDP round 会按 round 内最大本地 batch 数计算 `target_batches`。每个 rank 的本地 DataLoader 使用确定性 padding/replacement sampler 对齐到同一个 `target_batches`，padding 只从当前本地 shard 内采样。一个 epoch 仍表示跑完所有 train shard round，epoch 间只打乱 round 访问顺序，shard cache 可稳定复用。
 - `episode_keep_num`、`episode_keep_per_varient`、`train_data_ratio`、`sampling_seed` 和 `balance_variant_episode_count` 不写入 cache 文件名；cache 命中后会重新按当前配置选择 episode 并切分 train/val
 - 如果现有 cache 不覆盖当前 sampled episodes，则忽略旧 cache，重新 tokenize 当前 sampled pool 并覆盖同一个 variant 级 cache
@@ -821,7 +821,7 @@ def validate_action(action) -> bool:
 micromamba run -n llm_offline python train.py --config config.yaml --tokenize-only
 ```
 
-该模式要求配置 `dataset_cache_dir`。`dataset_load_partitions: 1` 时构建或加载完整 train/val cache；`dataset_load_partitions > 1` 时 rank0 规划 shard，rank0 准备完整 val cache，并在 DDP 下按 round scatter 当前 rank 需要的 shard payload，让各 rank 并行构建本地 shard cache。完成后打印 train/val sample 与 batch 汇总、每个 epoch 和全部 epochs 的 train batch steps，并按 `batch_size * world_size` 给出每个 batch step 的近似 global sample 数；摘要同时提醒 `eval_step_interval` 按 epoch-local batch step 计数并在每个 epoch 重置。随后在 DDP 包装、optimizer、W&B、validation、rollout 和训练循环之前退出。
+该模式要求配置有效 dataset cache 目录：`dataset_cache_dir`，或同时配置 `dataset_cache_v2_root` 与相对路径 `dataset_cache_v2_dir`。`dataset_load_partitions: 1` 时构建或加载完整 train/val cache；`dataset_load_partitions > 1` 时 rank0 规划 shard，rank0 准备完整 val cache，并在 DDP 下按 round scatter 当前 rank 需要的 shard payload，让各 rank 并行构建本地 shard cache。完成后打印 train/val sample 与 batch 汇总、每个 epoch 和全部 epochs 的 train batch steps，并按 `batch_size * world_size` 给出每个 batch step 的近似 global sample 数；摘要同时提醒 `eval_step_interval` 按 epoch-local batch step 计数并在每个 epoch 重置。随后在 DDP 包装、optimizer、W&B、validation、rollout 和训练循环之前退出。
 
 当前 `--tokenize-only` 仍复用正常的 `load_model_and_tokenizer()`，因此会加载 Unsloth 模型并可能占用 GPU；它只保证不进入训练，不提供 CPU-only tokenizer 路径。生成的 cache signature 不包含 DDP rank/world size，之后可直接由单卡或 DDP 训练复用。
 

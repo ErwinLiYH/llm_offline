@@ -4,7 +4,11 @@ import unittest
 
 import yaml
 
-from utils.config_loader import deep_merge_configs, load_merged_config
+from utils.config_loader import (
+    deep_merge_configs,
+    load_merged_config,
+    resolve_dataset_cache_dir,
+)
 
 
 class ConfigLoaderTests(unittest.TestCase):
@@ -106,6 +110,71 @@ class ConfigLoaderTests(unittest.TestCase):
         self.assertEqual(merged["action_token_mode"], "simple_mtp_bin")
         self.assertNotIn("gaussian_log_std_init", merged)
         self.assertEqual(merged["dataloader_config"], {"num_workers": 0})
+
+    def test_complete_v2_cache_config_overrides_legacy_cache_dir(self):
+        config = {
+            "dataset_cache_dir": "/legacy/cache",
+            "dataset_cache_v2_root": "/scratch/cache-root",
+            "dataset_cache_v2_dir": "pointmaze/scale16",
+        }
+
+        self.assertEqual(
+            resolve_dataset_cache_dir(config),
+            os.path.join("/scratch/cache-root", "pointmaze/scale16"),
+        )
+
+    def test_partial_v2_cache_config_falls_back_to_legacy_cache_dir(self):
+        self.assertEqual(
+            resolve_dataset_cache_dir(
+                {
+                    "dataset_cache_dir": "/legacy/cache",
+                    "dataset_cache_v2_root": "/scratch/cache-root",
+                }
+            ),
+            "/legacy/cache",
+        )
+        self.assertIsNone(
+            resolve_dataset_cache_dir({"dataset_cache_v2_dir": "pointmaze/scale16"})
+        )
+
+    def test_v2_cache_dir_must_be_relative(self):
+        with self.assertRaisesRegex(ValueError, "must be a relative path"):
+            resolve_dataset_cache_dir(
+                {
+                    "dataset_cache_v2_root": "/scratch/cache-root",
+                    "dataset_cache_v2_dir": "/other/cache",
+                }
+            )
+
+    def test_complete_v2_cache_config_requires_string_paths(self):
+        with self.assertRaisesRegex(ValueError, "dataset_cache_v2_root"):
+            resolve_dataset_cache_dir(
+                {
+                    "dataset_cache_v2_root": 1,
+                    "dataset_cache_v2_dir": "pointmaze/scale16",
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "dataset_cache_v2_dir"):
+            resolve_dataset_cache_dir(
+                {
+                    "dataset_cache_v2_root": "/scratch/cache-root",
+                    "dataset_cache_v2_dir": 1,
+                }
+            )
+
+    def test_v2_cache_config_is_resolved_after_layered_merge(self):
+        merged = deep_merge_configs(
+            {"dataset_cache_v2_root": "/scratch/cache-root"},
+            {
+                "dataset_cache_dir": "/legacy/cache",
+                "dataset_cache_v2_dir": "antmaze/scale16",
+            },
+        )
+
+        self.assertEqual(
+            resolve_dataset_cache_dir(merged),
+            os.path.join("/scratch/cache-root", "antmaze/scale16"),
+        )
 
 
 if __name__ == "__main__":

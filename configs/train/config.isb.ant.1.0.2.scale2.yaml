@@ -2,7 +2,8 @@
 # Merge with: --config configs/train/config.isb.ant.0.0.0.yaml configs/train/config.isb.ant.1.0.1.yaml
 # 1.0.2 using data with hard sampling
 
-dataset_cache_dir: /scratch/u6mx/yl1118.u6mx/dataset_cache_scale2
+dataset_cache_v2_root: /projects/u6mx/yl1118/dataset_cache/round1
+dataset_cache_v2_dir: scale2
 
 train_varients:
 - local-layout-02

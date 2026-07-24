@@ -202,6 +202,18 @@ class PartitionRoundStatsTest(unittest.TestCase):
                     context,
                 )
 
+    def test_complete_v2_cache_config_satisfies_partition_cache_requirement(self):
+        self.assertEqual(
+            resolve_dataset_load_partitions(
+                {
+                    "dataset_load_partitions": 2,
+                    "dataset_cache_v2_root": "/scratch/cache-root",
+                    "dataset_cache_v2_dir": "pointmaze/scale16",
+                }
+            ),
+            2,
+        )
+
 
 class ValidationCacheConfigTest(unittest.TestCase):
     def test_partitioned_validation_cache_request_is_split_specific(self):
@@ -288,6 +300,20 @@ class ValidationCacheConfigTest(unittest.TestCase):
         request = build_dataset_request(config, object(), "local-layout-01", "train")
 
         self.assertEqual(request.local_dataset_root, "/scratch/local_datasets_v2")
+
+    def test_v2_cache_path_is_passed_to_dataset_request(self):
+        config = {
+            "env_family": "pointmaze",
+            "model_name": "unit-tokenizer",
+            "max_length": 128,
+            "dataset_cache_dir": "/legacy/cache",
+            "dataset_cache_v2_root": "/scratch/cache-root",
+            "dataset_cache_v2_dir": "pointmaze/scale16",
+        }
+
+        request = build_dataset_request(config, object(), "open", "train")
+
+        self.assertEqual(request.cache_dir, "/scratch/cache-root/pointmaze/scale16")
 
 
 if __name__ == "__main__":

@@ -1,12 +1,44 @@
 from __future__ import annotations
 
 import copy
+import os
 from collections.abc import Mapping
 from typing import Any
 
 import yaml
 
 DELETE_KEYS_FIELD = "config_delete_keys"
+
+
+def resolve_dataset_cache_dir(config: Mapping[str, Any]) -> str | None:
+    """Return the effective tokenized-dataset cache directory.
+
+    ``dataset_cache_v2_root`` and ``dataset_cache_v2_dir`` are an optional pair.
+    When both are non-empty, they take precedence over the legacy
+    ``dataset_cache_dir`` setting.  A partial V2 pair deliberately falls back to
+    the legacy setting so layered configs can opt into V2 incrementally.
+    """
+    v2_root = config.get("dataset_cache_v2_root")
+    v2_dir = config.get("dataset_cache_v2_dir")
+    if not v2_root or not v2_dir:
+        return config.get("dataset_cache_dir")
+
+    if not isinstance(v2_root, str):
+        raise ValueError(
+            "dataset_cache_v2_root must be a non-empty path string when "
+            "dataset_cache_v2_dir is configured"
+        )
+    if not isinstance(v2_dir, str):
+        raise ValueError(
+            "dataset_cache_v2_dir must be a non-empty relative path string when "
+            "dataset_cache_v2_root is configured"
+        )
+    if os.path.isabs(v2_dir):
+        raise ValueError(
+            "dataset_cache_v2_dir must be a relative path so it can be joined "
+            "under dataset_cache_v2_root"
+        )
+    return os.path.join(v2_root, v2_dir)
 
 
 def deep_merge_configs(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

@@ -4,7 +4,8 @@ wandb_project: pointmazeV2layout
 wall_sensing_version: v5
 map_sensing_boundary_risk_threshold: 0.10
 
-dataset_cache_dir: /scratch/u6mx/yl1118.u6mx/dataset_cache_scale2
+dataset_cache_v2_root: /projects/u6mx/yl1118/dataset_cache/round1
+dataset_cache_v2_dir: scale2
 
 train_varients:
 - local-layoutV2-02

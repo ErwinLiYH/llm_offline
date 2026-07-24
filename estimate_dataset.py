@@ -35,7 +35,7 @@ from model.mtp_bin import (
     resolve_mtp_quadratic_decoding,
 )
 from utils.action_bins import get_action_token_mode
-from utils.config_loader import load_merged_config
+from utils.config_loader import load_merged_config, resolve_dataset_cache_dir
 from utils.distributed import DistributedContext
 from utils.episode_keep import (
     RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY,
@@ -228,10 +228,11 @@ def resolve_dataset_load_partitions(config: dict, dist_context: DistributedConte
     partitions = int(config.get("dataset_load_partitions", 1) or 1)
     if partitions < 1:
         raise ValueError(f"dataset_load_partitions must be >= 1, got {partitions}")
-    if partitions > 1 and not config.get("dataset_cache_dir"):
+    if partitions > 1 and not resolve_dataset_cache_dir(config):
         raise ValueError(
-            "dataset_load_partitions > 1 requires dataset_cache_dir so train tokenized shards "
-            "can be written and reloaded without keeping all samples in memory."
+            "dataset_load_partitions > 1 requires an effective dataset cache directory "
+            "(dataset_cache_dir or a complete dataset_cache_v2_root/dataset_cache_v2_dir pair) "
+            "so train tokenized shards can be written and reloaded without keeping all samples in memory."
         )
     if partitions > 1 and dist_context is not None and dist_context.is_distributed:
         world_size = int(dist_context.world_size)
@@ -292,7 +293,7 @@ def build_dataset_request(
         tokenizer_name_or_path=config["model_name"],
         max_length=config["max_length"],
         num_workers=config.get("dataset_workers", 8),
-        cache_dir=config.get("dataset_cache_dir"),
+        cache_dir=resolve_dataset_cache_dir(config),
         max_data_num=config.get("max_data_num"),
         dataset_partition_count=config.get("dataset_partition_count", 1),
         dataset_partition_index=config.get("dataset_partition_index"),
@@ -629,6 +630,8 @@ def tokenize_sample_footprint(
 
     sample_config = dict(config)
     sample_config["dataset_cache_dir"] = None
+    sample_config["dataset_cache_v2_root"] = None
+    sample_config["dataset_cache_v2_dir"] = None
     sample_config["dataset_partition_count"] = 2
     sample_config["dataset_partition_index"] = 0
     sample_config["max_data_num"] = None

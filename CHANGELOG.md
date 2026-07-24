@@ -1686,3 +1686,19 @@ type: project
 - 在 `crossmaze.eval_position` 中登记三张地图的固定 eval start/goal pair，`eval_reset_cell` / `eval_goal_cell` 继续由 CrossMaze 位置表派生
 - 三个 variant 均已通过拓扑检查、Python 编译、CrossMaze/AntMaze 注册表一致性测试和 AntMaze 环境构造/reset 检查，观测契约保持 27 维 proprioception、2 维 achieved goal 和 2 维 desired goal
 - 当前只完成地图与 variant 注册，尚未生成 `antmaze-local-layout-10-v0`、`11-v0`、`12-v0` 对应的 Minari 离线数据；训练前仍需通过 `local_antmaze_gen.py` 单独生成
+
+## Standalone eval run identity（2026-07-23）
+
+- `evaluate.py` 新增 `--experiment_id`，优先覆盖 YAML 中的 standalone eval ID；缺失、`null` 或空值时仍生成八位 UUID
+- standalone eval 结果目录改为 `standalone_<experiment_id>`；在模型加载和输出写入前拒绝已存在的目录，避免复用 ID 时覆盖历史评测结果
+- `eval.yaml` 新增 `experiment_id` 示例配置；`sbatch/evaluate.isb.slurm` 新增 `--experiment_id`，默认将 Slurm job ID 透传给 `evaluate.py`，无 job ID 且未显式提供时直接报错
+- 新增测试覆盖 CLI 覆盖与空值校验、配置 ID/UUID fallback，以及已有 standalone 结果目录的拒绝行为
+
+## Dataset cache V2 root/dir（2026-07-24）
+
+- 新增 `dataset_cache_v2_root` 与 `dataset_cache_v2_dir`：两者均为非空字符串时按 `os.path.join(root, dir)` 得到最终 tokenized dataset cache 路径，并优先于旧 `dataset_cache_dir`
+- `dataset_cache_v2_dir` 必须为相对路径；只配置其中一个 V2 字段时回退到旧字段，未配置任何有效 cache 目录时保持禁用缓存的旧语义
+- `train.py` 的 dataset request、分区 cache 校验、DDP rank0 预热和 `--tokenize-only`，以及 `estimate_dataset.py` 的 request 与分区校验，统一使用有效 cache 路径；estimator 的抽样 tokenization 显式关闭旧/V2 cache，避免写入正式缓存
+- AntMaze 和 PointMaze 的 scale 系列训练 override 配置迁移到 `/projects/u6mx/yl1118/dataset_cache/round1/<scale>` 的 V2 root/dir 形式；同 scale 的跨 family 缓存继续安全共存，因为 cache signature 包含环境族和 variant 元数据
+- 更新 `config.yaml`、`config.antmaze.yaml`、`AGENTS.md` 和 `DESIGN.md`，说明 V2 优先级、分层合并、部分配置回退，以及使用 `config_delete_keys` 切回旧字段的方式
+- 新增测试覆盖 V2 优先级、相对目录和类型校验、分层合并、分区校验、训练/估算 request 路径，以及 estimator sample cache 禁用行为

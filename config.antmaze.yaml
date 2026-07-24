@@ -42,7 +42,9 @@ map_sensing_boundary_risk_threshold: 0.10  # fraction of cell size used by v2-v5
 ## Data
 dataset_workers: 3            # processes for parallel episode tokenization
 dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable
-dataset_load_partitions: 1    # >1 splits train tokenized data into episode shards; requires dataset_cache_dir
+# dataset_cache_v2_root: /scratch/llm_offline  # optional; set together with dataset_cache_v2_dir and overrides dataset_cache_dir
+# dataset_cache_v2_dir: dataset_cache          # non-empty relative path below dataset_cache_v2_root
+dataset_load_partitions: 1    # >1 splits train tokenized data into episode shards; requires an effective cache directory
 antmaze_data_config:
   filter_success: false       # true = drop raw episodes whose infos.success never becomes true before sampling/splitting
   truncate: false             # true = cut each episode after first success or conservative fall event before tokenization

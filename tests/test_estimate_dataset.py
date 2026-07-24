@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import sys
 import types
 import unittest
@@ -23,6 +24,7 @@ from estimate_dataset import (
     estimate_bytes_for_steps,
     estimate_epoch_batches,
     load_variant_data,
+    tokenize_sample_footprint,
 )
 from train import (
     _resolve_balanced_train_episode_count,
@@ -131,6 +133,57 @@ class EstimateDatasetTest(unittest.TestCase):
 
         self.assertEqual(train_request.episode_keep_num, 5)
         self.assertIsNone(estimate_request.episode_keep_num)
+
+    def test_train_and_estimate_requests_receive_v2_cache_path(self):
+        config = {
+            "model_name": "unit-tokenizer",
+            "max_length": 128,
+            "dataset_cache_dir": "/legacy/cache",
+            "dataset_cache_v2_root": "/scratch/cache-root",
+            "dataset_cache_v2_dir": "antmaze/scale16",
+        }
+
+        train_request = build_train_dataset_request(config, object(), "umaze", "train")
+        estimate_request = build_estimate_dataset_request(config, object(), "umaze", "train")
+        expected_cache_dir = os.path.join("/scratch/cache-root", "antmaze/scale16")
+
+        self.assertEqual(train_request.cache_dir, expected_cache_dir)
+        self.assertEqual(estimate_request.cache_dir, expected_cache_dir)
+
+    def test_estimator_sample_footprint_disables_v2_cache(self):
+        class FakeDataset:
+            request = None
+
+            @classmethod
+            def payloads_for_segments(cls, episodes, segments):
+                del cls, episodes, segments
+                return []
+
+            @classmethod
+            def build_batch(cls, requests):
+                cls.request = requests[0]
+                return [SimpleNamespace(_samples=[{"input_ids": [1, 2, 3]}])]
+
+        data = _variant_data(train_steps=2, val_steps=0)
+        data.episodes = [object(), object()]
+        config = {
+            "env_family": "pointmaze",
+            "model_name": "unit-tokenizer",
+            "max_length": 128,
+            "dataset_cache_v2_root": "/scratch/cache-root",
+            "dataset_cache_v2_dir": "pointmaze/scale16",
+        }
+
+        with mock.patch("estimate_dataset.get_dataset", return_value=FakeDataset):
+            tokenize_sample_footprint(
+                config,
+                object(),
+                data,
+                sample_episodes_per_variant=1,
+                sample_seed=0,
+            )
+
+        self.assertIsNone(FakeDataset.request.cache_dir)
 
     def test_estimator_selection_uses_per_variant_episode_keep_values(self):
         def fake_loader(cls, variant, family_data_config=None, local_dataset_root=None):

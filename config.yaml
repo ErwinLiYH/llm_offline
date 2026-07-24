@@ -47,6 +47,8 @@ map_sensing_boundary_risk_threshold: 0.10  # fraction of cell size used by v2-v5
 ## Data
 dataset_workers: 3            # tokenization worker processes per rank
 dataset_cache_dir: dataset_cache  # cache tokenized dataset to disk; comment out to disable
+# dataset_cache_v2_root: /scratch/llm_offline  # optional; set together with dataset_cache_v2_dir and overrides dataset_cache_dir
+# dataset_cache_v2_dir: dataset_cache          # non-empty relative path below dataset_cache_v2_root
 dataset_load_partitions: 2    # >1 splits train tokenized data into shard caches; DDP requires >= world_size and divisible by world_size
 pointmaze_data_config:
   truncate: true              # true = cut each episode after first success before tokenization
