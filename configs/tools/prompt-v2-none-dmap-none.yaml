@@ -1,0 +1,2 @@
+# Prompt-comparison override. It can be used for both PointMaze and AntMaze.
+prompt_templete_index: ["v2-none-dmap-none"]
