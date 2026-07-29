@@ -14,6 +14,56 @@ from data.pointmaze.variants import POINTMAZE_VARIANTS
 
 
 class CrossMazePackageTest(unittest.TestCase):
+    def test_dynamic_map_numeric_and_visual_contract(self):
+        import crossmaze
+
+        maze_map = [
+            [1, 1, 1, 1],
+            [1, 0, 0, 1],
+            [1, 0, 0, 1],
+            [1, 1, 1, 1],
+        ]
+        original_map = [list(row) for row in maze_map]
+
+        dynamic_map = crossmaze.build_dynamic_map(
+            maze_map,
+            position_cell=[1, 1],
+            goal_cell=[2, 2],
+        )
+
+        self.assertEqual(maze_map, original_map)
+        self.assertEqual(dynamic_map[1][1], crossmaze.DYNAMIC_MAP_CURRENT)
+        self.assertEqual(dynamic_map[2][2], crossmaze.DYNAMIC_MAP_GOAL)
+        self.assertEqual(
+            crossmaze.format_dynamic_visual_map(dynamic_map),
+            "\n".join(
+                (
+                    "  # # # #",
+                    "  # C . #",
+                    "  # . G #",
+                    "  # # # #",
+                )
+            ),
+        )
+
+        overlap_map = crossmaze.build_dynamic_map(
+            maze_map,
+            position_cell=[1, 2],
+            goal_cell=[1, 2],
+        )
+        overlap_visual = crossmaze.format_dynamic_visual_map(overlap_map)
+        self.assertEqual(overlap_map[1][2], crossmaze.DYNAMIC_MAP_SUCCESS)
+        self.assertIn("S", overlap_visual)
+        self.assertNotIn("C", overlap_visual)
+        self.assertNotIn("G", overlap_visual)
+
+        with self.assertRaisesRegex(ValueError, "outside"):
+            crossmaze.build_dynamic_map(
+                maze_map,
+                position_cell=[4, 1],
+                goal_cell=[1, 1],
+            )
+
     def test_reward_type_resolution_and_dataset_paths(self):
         import crossmaze
 
@@ -90,6 +140,7 @@ class CrossMazePackageTest(unittest.TestCase):
             json.dumps(state)
             for key in (
                 "maze_map",
+                "dynamic_map",
                 "maze_size_scaling",
                 "maze_shape",
                 "position_xy",
@@ -124,9 +175,34 @@ class CrossMazePackageTest(unittest.TestCase):
             )
             self.assertIn("observation", obs)
             self.assertIn("desired_goal", obs)
+            position_row, position_col = state["position_cell"]
+            goal_row, goal_col = state["goal_cell"]
+            expected_position_code = (
+                crossmaze.DYNAMIC_MAP_SUCCESS
+                if state["position_cell"] == state["goal_cell"]
+                else crossmaze.DYNAMIC_MAP_CURRENT
+            )
+            self.assertEqual(
+                state["dynamic_map"][position_row][position_col],
+                expected_position_code,
+            )
+            if state["position_cell"] != state["goal_cell"]:
+                self.assertEqual(
+                    state["dynamic_map"][goal_row][goal_col],
+                    crossmaze.DYNAMIC_MAP_GOAL,
+                )
 
             obs2, _r, _t, _tr, _i = env.step(env.action_space.sample())
             self.assertIn(crossmaze.CROSSMAZE_OBS_KEY, obs2)
+            state2 = obs2[crossmaze.CROSSMAZE_OBS_KEY]
+            self.assertEqual(
+                state2["dynamic_map"],
+                crossmaze.build_dynamic_map(
+                    state2["maze_map"],
+                    state2["position_cell"],
+                    state2["goal_cell"],
+                ),
+            )
 
             from utils.maze_sensing import compute_sensing_state
 
@@ -138,7 +214,7 @@ class CrossMazePackageTest(unittest.TestCase):
                 meta,
             )
             for key, value in expected.items():
-                self.assertEqual(obs2[crossmaze.CROSSMAZE_OBS_KEY][key], value, key)
+                self.assertEqual(state2[key], value, key)
         finally:
             env.close()
 

@@ -2,10 +2,12 @@
 
 Public API:
 - `make(env_family, variant, ...)`: build a wrapped PointMaze/AntMaze env whose
-  observations carry a structured `obs["crossmaze"]` field (map layout, location
-  sensing, wall sensing). Text rendering stays on the algorithm side via
-  `render_sensing_text`.
+  observations carry a structured `obs["crossmaze"]` field (static/dynamic map
+  layouts, location sensing, wall sensing). Text rendering stays on the
+  algorithm side.
 - `CrossMazeEnv` / `CROSSMAZE_OBS_KEY`: the wrapper class and the obs key.
+- `build_dynamic_map` / `format_dynamic_visual_map`: numeric and prompt-text
+  dynamic-map helpers (`2=C`, `3=G`, `4=S`).
 - `NEIGHBOR_DIRECTIONS` / `NEIGHBOR_STATUS_*`: the fixed numeric neighbor
   observation contract (`[up, down, left, right]`, `0=free, 1=wall, 2=risk`).
 - `REWARD_TYPES` / `normalize_reward_type` / `resolve_reward_type`: the shared
@@ -20,6 +22,13 @@ Heavy imports (gymnasium, env registries) are deferred until `make` or
 `crossmaze.sensing` stay lightweight for tokenization workers.
 """
 
+from crossmaze.layout import (  # noqa: F401
+    DYNAMIC_MAP_CURRENT,
+    DYNAMIC_MAP_GOAL,
+    DYNAMIC_MAP_SUCCESS,
+    build_dynamic_map,
+    format_dynamic_visual_map,
+)
 from crossmaze.sensing import (  # noqa: F401
     CROSSMAZE_OBS_KEY,
     NEIGHBOR_DIRECTIONS,
@@ -59,17 +68,22 @@ _LAZY_EXPORTS = {
 __all__ = [
     "CROSSMAZE_OBS_KEY",
     "CrossMazeEnv",
+    "DYNAMIC_MAP_CURRENT",
+    "DYNAMIC_MAP_GOAL",
+    "DYNAMIC_MAP_SUCCESS",
     "ENV_FACTS",
     "NEIGHBOR_DIRECTIONS",
     "NEIGHBOR_STATUS_FREE",
     "NEIGHBOR_STATUS_RISK",
     "NEIGHBOR_STATUS_WALL",
     "REWARD_TYPES",
+    "build_dynamic_map",
     "build_sensing",
     "compute_sensing_arrays",
     "compute_sensing_state",
     "eval_env_spec",
     "eval_reset_options",
+    "format_dynamic_visual_map",
     "get_env_facts",
     "get_map_difficulty_config",
     "list_variants",

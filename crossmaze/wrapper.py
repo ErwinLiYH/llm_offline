@@ -4,6 +4,7 @@ import gymnasium as gym
 import numpy as np
 
 from crossmaze.families import extract_position_goal
+from crossmaze.layout import build_dynamic_map
 from crossmaze.reward import normalize_reward_type
 from crossmaze.sensing import (
     CROSSMAZE_OBS_KEY,
@@ -13,7 +14,7 @@ from crossmaze.sensing import (
 
 
 class CrossMazeEnv(gym.Wrapper):
-    """Adds `obs["crossmaze"]` with numeric map layout and sensing state.
+    """Adds `obs["crossmaze"]` with static/dynamic maps and sensing state.
 
     A plain `gym.Wrapper` (not ObservationWrapper) on purpose: the extra key
     intentionally sits outside the declared observation space, and inner env
@@ -70,9 +71,15 @@ class CrossMazeEnv(gym.Wrapper):
             return obs
         position, goal = extract_position_goal(self.env_family, obs)
         state = compute_sensing_state(position, goal, self._meta)
+        dynamic_map = build_dynamic_map(
+            self._maze_map,
+            state["position_cell"],
+            state["goal_cell"],
+        )
         enriched = dict(obs)
         enriched[CROSSMAZE_OBS_KEY] = {
             "maze_map": self._maze_map,
+            "dynamic_map": dynamic_map,
             "maze_size_scaling": self._maze_size_scaling,
             "maze_shape": list(self._maze_shape),
             **state,

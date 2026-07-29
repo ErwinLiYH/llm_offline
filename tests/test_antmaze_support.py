@@ -1274,6 +1274,7 @@ class AntMazeSupportTest(unittest.TestCase):
             "location_sensing_zh",
             "wall_sensing_en",
             "wall_sensing_zh",
+            "dmap",
         ):
             self.assertIn(key, obs_payload)
 
@@ -1294,12 +1295,29 @@ class AntMazeSupportTest(unittest.TestCase):
                     name == "0"
                     or "full_sensing" in name
                     or "loca_sensing" in name
+                    or "-map-" in name
                 )
-                expects_wall = name == "0" or "full_sensing" in name or "wall_sensing" in name
+                expects_wall = (
+                    name == "0"
+                    or "full_sensing" in name
+                    or "wall_sensing" in name
+                    or name.endswith("-wall")
+                )
                 self.assertEqual("Location sensing:" in rendered, expects_location)
                 self.assertEqual("Current cell:" in rendered, expects_location)
                 self.assertEqual("Wall sensing:" in rendered, expects_wall)
                 self.assertEqual("Neighboring cells:" in rendered, expects_wall)
+                if name.startswith("v2-none-dmap-"):
+                    self.assertIn("C = current", rendered)
+                    self.assertIn("G = goal", rendered)
+                    self.assertIn("S = current and goal", rendered)
+                    self.assertIn(obs_payload["dmap"], rendered)
+                    self.assertNotIn("Location sensing:", rendered)
+                    self.assertNotIn("Current cell:", rendered)
+
+        template_names = set(load_template_map("antmaze"))
+        self.assertIn("v2-none-dmap-none", template_names)
+        self.assertIn("v2-none-dmap-wall", template_names)
 
     def test_bin_and_parallel_prompt_families_have_four_sensing_variants(self):
         names = set(load_template_map("antmaze"))

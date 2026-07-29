@@ -10,6 +10,7 @@ from functools import lru_cache
 
 import numpy as np
 
+from crossmaze.layout import build_dynamic_map, format_dynamic_visual_map
 from crossmaze.sensing_config import (  # noqa: F401 re-exported for wrapper/formatters
     DEFAULT_MAP_SENSING_BOUNDARY_RISK_THRESHOLD,
     DEFAULT_WALL_SENSING_VERSION,
@@ -585,9 +586,24 @@ def render_sensing_text(state: dict) -> dict:
     }
 
 
+def _render_prompt_fields(state: dict, meta: dict) -> dict:
+    dynamic_map = state.get("dynamic_map")
+    if dynamic_map is None:
+        dynamic_map = build_dynamic_map(
+            meta["maze_map"],
+            state["position_cell"],
+            state["goal_cell"],
+        )
+    return {
+        **render_sensing_text(state),
+        "dmap": format_dynamic_visual_map(dynamic_map),
+    }
+
+
 def build_sensing(position: np.ndarray, goal: np.ndarray, meta: dict) -> dict:
-    """Build shared location and versioned four-neighbor wall/risk sensing."""
-    return render_sensing_text(compute_sensing_state(position, goal, meta))
+    """Build shared sensing text plus the per-observation dynamic visual map."""
+    state = compute_sensing_state(position, goal, meta)
+    return _render_prompt_fields(state, meta)
 
 
 def _state_matches_meta(state: dict, meta: dict) -> bool:
@@ -634,7 +650,7 @@ def sensing_text_from_obs(
     goal: np.ndarray,
     meta: dict,
 ) -> dict:
-    """Render sensing text, reusing CrossMaze wrapper state when it matches.
+    """Render sensing text and dmap, reusing matching CrossMaze wrapper state.
 
     Any mismatch between the attached state and `meta` (sensing version,
     threshold, scaling, maze map) silently falls back to recomputing from
@@ -642,5 +658,5 @@ def sensing_text_from_obs(
     """
     state = obs.get(CROSSMAZE_OBS_KEY) if hasattr(obs, "get") else None
     if state is not None and _state_matches_meta(state, meta):
-        return render_sensing_text(state)
+        return _render_prompt_fields(state, meta)
     return build_sensing(position, goal, meta)

@@ -1702,3 +1702,15 @@ type: project
 - AntMaze 和 PointMaze 的 scale 系列训练 override 配置迁移到 `/projects/u6mx/yl1118/dataset_cache/round1/<scale>` 的 V2 root/dir 形式；同 scale 的跨 family 缓存继续安全共存，因为 cache signature 包含环境族和 variant 元数据
 - 更新 `config.yaml`、`config.antmaze.yaml`、`AGENTS.md` 和 `DESIGN.md`，说明 V2 优先级、分层合并、部分配置回退，以及使用 `config_delete_keys` 切回旧字段的方式
 - 新增测试覆盖 V2 优先级、相对目录和类型校验、分层合并、分区校验、训练/估算 request 路径，以及 estimator sample cache 禁用行为
+
+## CrossMaze dynamic prompt maps（2026-07-29）
+
+- `crossmaze.layout` 新增动态图构建和文本渲染接口：在 plain 0/1 maze map 上使用 `2=current`、`3=goal`、`4=current+goal`，prompt 侧分别显示为 `C`、`G`、`S`，且不修改原始静态地图
+- `CrossMazeEnv` 在每次 reset/step 的 `obs["crossmaze"]` 中附加最新 `dynamic_map`；PointMaze 和 AntMaze 的 `format_obs()` 同时提供每个 timestep 更新的 `dmap`，离线 tokenization 和 rollout 共用 CrossMaze 计算路径
+- PointMaze 和 AntMaze 各新增 `v2-none-dmap-none` / `v2-none-dmap-wall`；动态图已经表达当前位置和目标，因此两个模板都不再重复输出 location sensing，wall 版本仍保留 wall sensing，原有 `v2-none-map-*` 静态模板保持不变
+- 更新 `AGENTS.md` 和 `DESIGN.md`，记录 `dynamic_map` 数值契约、`dmap` prompt 字段和新模板语义
+
+**验证：**
+- 已通过 CrossMaze、PointMaze formatting 和 AntMaze support 共 70 项定向测试
+- 移除 dmap 模板 location sensing 后，相关 5 项核心回归测试再次通过
+- 已通过 `git diff --check`

@@ -169,7 +169,7 @@ AntMaze local layout 的随机生成和静态拓扑评分是辅助工具，不�
 - 每个 variant 只在 `data/<env_family>/variants.py` 中维护自己的 `prompt_vars`，提供环境名、迷宫拓扑、迷宫可视化、结构说明等差异化信息
 - 训练时使用 `prompt_templete_index` 指定的共享模板名，因此每个 timestep 产生“所选模板数”条训练样本
 - 训练期评估默认使用训练 prompt 列表中的第一个模板；standalone eval 默认使用 checkpoint config 中记录的第一个训练 prompt。`eval.yaml` 可用单个 `prompt_templete_index` 覆盖 standalone eval prompt；若覆盖值不在 checkpoint 训练 prompt 列表中，`evaluate.py` 会强警告并要求输入 `Y`，或通过 `-y/--yes` 自动确认
-- 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的动态字段；PointMaze 与 AntMaze 当前都提供 `obs_text`、`location_sensing_en/zh`、`wall_sensing_en/zh` 和 history block
+- 模板里可以引用 `prompt_vars` 中定义的任意字段以及运行时注入的动态字段；PointMaze 与 AntMaze 当前都提供 `obs_text`、`location_sensing_en/zh`、`wall_sensing_en/zh`、动态迷宫图 `dmap` 和 history block。`dmap` 每个 timestep 都重新渲染，使用 `C` 表示当前位置、`G` 表示目标、`S` 表示当前位置与目标重合
 - PointMaze action-bin prompt 使用 `bin_full_sensing`、`bin_loca_sensing`、`bin_wall_sensing`、`bin_no_sensing`，由 `bin`、`gaussian_bin`、`mtp_bin` 和 `simple_mtp_bin` 共享
 - PointMaze 连续动作 prompt 使用去模式化命名：`parallel_full_sensing`、`parallel_loca_sensing`、`parallel_wall_sensing`、`parallel_no_sensing`，由 `parallel_l1`、`parallel_gaussian` 和 `parallel_t` 共享；当前 `config.yaml` 默认使用 `parallel_full_sensing` + `parallel_l1`
 - AntMaze 保留 `0` 作为 text prompt；action-bin 使用 `bin_full_sensing`、`bin_loca_sensing`、`bin_wall_sensing`、`bin_no_sensing`，continuous 使用 `parallel_full_sensing`、`parallel_loca_sensing`、`parallel_wall_sensing`、`parallel_no_sensing`
@@ -197,7 +197,7 @@ Action:
 - `POINTMAZE_VARIANTS` 中的每个变种通过 `prompt_vars` 提供共享模板需要的静态字段，如 `env_name`、`maze_map`、`maze_shape`、`maze_visual`、`structure_desc_en`、`structure_desc_zh`
 - PointMaze prompt 当前不再使用 reward 描述；`prompt 0` 也不再输出 raw matrix，只保留 visual maze
 - text 模式 target 文本由 `data/pointmaze/formatting.py` 定义，动作格式为紧凑的百分位整数，如 `35,-72`；bin / gaussian_bin / mtp_bin / simple_mtp_bin 由共享 action-bin codec 负责离散化、model token 映射和 display text
-- `format_obs(obs, meta)` 负责生成 `obs_text` 与动态 `location_sensing_en/zh`、`wall_sensing_en/zh`
+- `format_obs(obs, meta)` 负责生成 `obs_text`、动态 `location_sensing_en/zh`、`wall_sensing_en/zh` 与 `dmap`；`v2-none-dmap-none` / `v2-none-dmap-wall` 使用动态图且不再重复输出 location sensing（后者仍输出 wall sensing），原有 `v2-none-map-*` 继续使用静态 `maze_visual`
 - `format_history(history_entries, meta)` 负责生成可选历史块 `history_block_en/zh`
 - 当历史块存在时，历史条目按时间从早到晚排列：第一条是最早采样到的历史 step，最后一条是当前 step 之前最近的采样历史 step
 - `pointmaze_data_config` 是 PointMaze 专属训练数据预处理配置，默认 `truncate: false`、`truncate_holding: 0` 保持旧行为。该处理发生在 raw episodes 加载后、`episode_keep_num` / `episode_keep_per_varient` 抽样和 train/val split 之前；multi-variant episode balancing、partition shard planning 和 `estimate_dataset.py` 都基于预处理后的 episode 数和长度。
@@ -852,7 +852,7 @@ micromamba run -n llm_offline python estimate_dataset.py \
    - *AntMaze text 模式实现*：解析 8 个逗号分隔的整数百分位并映射为 8 维 torque；bin/continuous 模式共享现有通用实现
    - 其他环境族在各自 `formatting.py` 中实现 text action 解析和校验；bin action 的 token-id 解析保持共享
 5. **Obs/Action 序列化**：`dataset.py` 调用同族 `formatting.py` 的 `format_obs`；text 模式调用同族 `format_action`，bin 模式调用共享 action-bin codec 生成 model text 和 display text；`mtp_bin` tokenize generation prompt 和 action prefix，并为 AQT 位置保存 `action_query_*` metadata；`simple_mtp_bin` tokenize generation prompt、`A0..A(D-2)` action prefix 和 `D` 个 query metadata，query offset 与 action 维度一一对应；连续模式只 tokenize generation prompt，存储连续 `action_values`，不拼 assistant action 文本；`parallel_l1` 用 L1 BC；`parallel_gaussian` 先将目标动作 clamp 到 `(-1, 1)` 内并做 `atanh(action)`，再用 latent-space Gaussian NLL 加 tanh change-of-variables correction 训练 bounded likelihood；`parallel_t` 用 Student-t NLL BC，并可通过 `continuous_mean_l1_weight` 额外加入 `alpha * L1(mean, action)`。若配置 `action_head_weight_decay`，训练 optimizer 只对 continuous action MLP head 内的 Linear weight 使用该 AdamW weight decay；LLM/LoRA、`action_queries`、Gaussian `gaussian_log_std`、bias 和 LayerNorm 参数不受影响
-   - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text`、动态 `location_sensing_en/zh` 和动态 `wall_sensing_en/zh`
+   - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text`、动态 `location_sensing_en/zh`、动态 `wall_sensing_en/zh` 和每步更新的 `dmap`
    - *AntMaze 实现*：严格校验 27 维 v4 本体 observation，并结合 `achieved_goal` / `desired_goal` 渲染 torso、姿态、关节和速度状态；训练使用离线数据地图，rollout 使用实例化 eval env 的真实地图
    - `CrossMazeEnv` 的结构化 observation 使用 `neighbor_status: [up, down, left, right]` 四元素整数列表，状态码为 `0=free`、`1=wall`、`2=risk`，不在环境接口中携带方向键或状态文本。prompt 侧的 `render_sensing_text` 按固定顺序将状态码转换为 `wall/free/risk` 文本；`location_sensing` 会给出当前位置格子和目标格子，`wall_sensing` 会给出上下左右相邻状态，具体状态集取决于版本配置。行列从左上角开始按 1-based 计数。坐标由 `utils/maze_sensing.py` 按 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。`wall_sensing_version` 支持 `v1`-`v5`，缺省或 `null` 规范化为 `v3`；`map_sensing_boundary_risk_threshold` 缺省或 `null` 规范化为 `0.10`，含义是 cell size 的比例。默认 `v3` 是 new-corner 版：移动方向邻格 free 时，只有在当前位置贴近某一侧边界、当前同侧格为 free、而前方同侧对角格为 wall 时，才把该方向报告为 `wall`。`v5` 是 risk 版：移动方向邻格本身为 wall 时始终报告 `wall`，上述 new-corner 条件报告 `risk`。Standalone eval 和 `score.py mode: score` 若 checkpoint `config.yaml` 已记录这两个字段，会继承 checkpoint 值并拒绝 eval/score YAML 中的冲突值；旧 checkpoint 没有字段时才使用 eval/score YAML 或默认值。
 6. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），多 variant 训练可用 `episode_keep_per_varient` 按 selected variant 覆盖 keep 数；再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露

@@ -100,6 +100,7 @@ class PointMazeFormattingTest(unittest.TestCase):
         self.assertIn("location_sensing_zh", payload)
         self.assertIn("wall_sensing_en", payload)
         self.assertIn("wall_sensing_zh", payload)
+        self.assertIn("dmap", payload)
         self.assertNotIn("map_sensing_en", payload)
         self.assertNotIn("map_sensing_zh", payload)
 
@@ -121,6 +122,25 @@ class PointMazeFormattingTest(unittest.TestCase):
         for label in ("上=", "下=", "左=", "右="):
             self.assertIn(label, payload["wall_sensing_zh"])
 
+        self.assertEqual(payload["dmap"].count("C"), 1)
+        self.assertEqual(payload["dmap"].count("G"), 1)
+        self.assertNotIn("S", payload["dmap"])
+
+        reached_payload = formatting.format_obs(
+            {
+                "observation": np.array(
+                    [-1.5, -0.49, 0.0, 0.0],
+                    dtype=np.float32,
+                ),
+                "desired_goal": np.array([-1.5, -0.49], dtype=np.float32),
+            },
+            prompt_vars,
+        )
+        self.assertEqual(reached_payload["dmap"].count("S"), 1)
+        self.assertNotIn("C", reached_payload["dmap"])
+        self.assertNotIn("G", reached_payload["dmap"])
+        self.assertNotEqual(payload["dmap"], reached_payload["dmap"])
+
     def test_pointmaze_templates_render_with_split_sensing_fields(self):
         prompt_vars = POINTMAZE_VARIANTS["large"]["prompt_vars"]
         obs = {
@@ -140,6 +160,17 @@ class PointMazeFormattingTest(unittest.TestCase):
                     **history_payload,
                 )
                 self.assertNotIn("map_sensing", rendered)
+                if name.startswith("v2-none-dmap-"):
+                    self.assertIn("C = current", rendered)
+                    self.assertIn("G = goal", rendered)
+                    self.assertIn("S = current and goal", rendered)
+                    self.assertIn(obs_payload["dmap"], rendered)
+                    self.assertNotIn("Location sensing:", rendered)
+                    self.assertNotIn("Current cell:", rendered)
+
+        template_names = set(load_template_map("pointmaze"))
+        self.assertIn("v2-none-dmap-none", template_names)
+        self.assertIn("v2-none-dmap-wall", template_names)
 
     def test_dataset_cache_path_uses_compact_signature_hash(self):
         config = PointMazeBuildConfig(
