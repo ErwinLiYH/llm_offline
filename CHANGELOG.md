@@ -1737,3 +1737,26 @@ type: project
 - 新增 `docs/seed_map.md`，记录 seed/尺寸语义、`d4rl_datagen` 生成命令、聚合目录结构、训练/评估 YAML、优先级和兼容性
 - 新增 seed-map generator、corpus 和 eval 定向测试；主回归结果为 `131 passed`、`128 subtests passed`，最终 seed-map 套件为 `15 passed`、`2 subtests passed`
 - 已在 `d4rl_datagen` 环境分别完成 PointMaze 与 AntMaze 的 fixed `5x5`、单 seed、单轨迹真实生成 smoke test，并通过环境构造、Python 编译和 `git diff --check`
+
+## DataGen staged output paths and seed-map Slurm presets（2026-07-30）
+
+**最终目录与临时目录：**
+- `local_pointmaze_gen.py` 和 `local_antmaze_gen.py` 新增统一的 `--dataset-root`，用于覆盖最终数据父目录或叶名称匹配的精确派生数据集目录；省略时保持原 registered/seed-map 默认路径
+- 新增 `--temporary-dataset-root`，用于中间 Minari shard 和 shard 合并 workspace；默认读取 `TMPDIR`，未设置时回退到平台临时目录
+- 保留 `--seed-map-dataset-root` 作为 `--dataset-root` 的兼容别名，并提供 `--temp-dataset-root` 短别名
+- 六个 DataGen Slurm 脚本统一支持 `DATASET_ROOT` 和 `TEMPORARY_DATASET_ROOT` 环境变量；seed-map 脚本继续兼容旧 `SEED_MAP_DATASET_ROOT`
+
+**临时合并与最终发布：**
+- 固定 variant 的多个 worker shard 不再直接逐个写入最终目录，而是先在 `temporary-dataset-root` 合并成一个完整 staging dataset，再向最终目录发布或续追加一次
+- 新建固定数据集时先传输到最终目录旁的隐藏 publishing 路径，再通过原子 rename 暴露最终目录名；已有数据集续生成时从临时合并结果执行一次追加
+- seed-map 以单张 map 为发布边界：该 map 的 shard 先在临时目录形成 map 级合并数据，再一次追加到单一聚合 corpus；当前 collector 每张 map 生成一个 Minari shard，合并接口已允许未来将同一 map 拆成多个 shard
+- map/variant 发布完成后清理对应原始 shard 和 merge workspace；最终 seed-map 格式仍是单一 `<start>-<end>-<trajectories>/data/main_data.hdf5`，不会退回每张地图一个目录
+
+**Seed-map Slurm 默认任务：**
+- 新增 `sbatch/dataGen.point.hard.seedmap.slurm` 和 `sbatch/dataGen.ant.hard.seedmap.slurm`，默认生成半开范围 `[0, 100)`、每个 seed 50 条轨迹，并从最难的前 200 个 start/goal pair 中随机采样
+- PointMaze 默认随机地图最终尺寸为 `9..15` 的奇数边长，AntMaze 默认范围为 `9..13`
+
+**验证：**
+- DataGen 路径与 PointMaze 定向测试共 11 项通过，AntMaze CLI 定向测试和 seed-map corpus 6 项测试通过
+- 已真实验证 PointMaze 两 worker shard 的临时合并与首次发布、已有固定数据集续生成、seed-map map 级发布；完成后临时目录均为空
+- 六个 DataGen Slurm 脚本通过 `bash -n`，相关 Python 文件通过编译检查和 `git diff --check`

@@ -29,15 +29,6 @@ def add_seed_map_generation_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed-map-start", type=int, default=None)
     parser.add_argument("--seed-map-end", type=int, default=None)
     parser.add_argument("--seed-map-trajectories-per-seed", type=int, default=None)
-    parser.add_argument(
-        "--seed-map-dataset-root",
-        type=Path,
-        default=None,
-        help=(
-            "Parent output directory or the exact derived <start>-<end>-<count> "
-            "dataset directory."
-        ),
-    )
     parser.add_argument("--seed-map-version", default=SEED_MAP_VERSION)
     parser.add_argument(
         "--seed-map-size-mode",
@@ -114,8 +105,13 @@ def resolve_seed_map_generation_path(
         args.seed_map_end,
         args.seed_map_trajectories_per_seed,
     )
-    if args.seed_map_dataset_root is not None:
-        configured = args.seed_map_dataset_root.expanduser()
+    configured_root = getattr(
+        args,
+        "dataset_root",
+        getattr(args, "seed_map_dataset_root", None),
+    )
+    if configured_root is not None:
+        configured = Path(configured_root).expanduser()
         path = configured if configured.name == name else configured / name
     else:
         reward_type = normalize_reward_type(reward_type)

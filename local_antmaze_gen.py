@@ -43,6 +43,15 @@ from data.antmaze.variants import (
     get_antmaze_variant_type,
     resolve_local_dataset_path,
 )
+from utils.datagen_paths import (
+    add_datagen_path_args,
+    configure_minari_temporary_root,
+    publish_new_dataset,
+    remove_temporary_dataset,
+    resolve_final_dataset_path,
+    resolve_temporary_dataset_root,
+    temporary_dataset_merge_path,
+)
 from utils.seed_map_config import (
     add_seed_map_generation_args,
     resolve_seed_map_generation_path,
@@ -232,6 +241,7 @@ def parse_args():
             "difficulty sorting. 0 keeps all pairs."
         ),
     )
+    add_datagen_path_args(parser)
     add_seed_map_generation_args(parser)
     return parser.parse_args()
 
@@ -654,7 +664,9 @@ def _collect_shard(
     hard_retry: int,
     hard_sample_alpha: float,
     hard_pair_space: list[dict],
+    temporary_dataset_root: str,
 ) -> dict:
+    configure_minari_temporary_root(temporary_dataset_root)
     reward_type = normalize_reward_type(env_paras.get("reward_type"))
     collection_reward_type = normalize_reward_type(
         collection_env_paras.get("reward_type")
@@ -975,20 +987,40 @@ def _copy_dataset_root(src_root: Path, dst_root: Path):
     shutil.copytree(src_root, dst_root)
 
 
-def _merge_shard_into_final(shard_root: Path, final_root: Path):
-    if not (final_root / "data").exists():
-        _copy_dataset_root(shard_root, final_root)
+def _merge_minari_dataset(source_root: Path, target_root: Path):
+    if not (target_root / "data").exists():
+        _copy_dataset_root(source_root, target_root)
         return
-    final_dataset = MinariDataset(final_root / "data")
-    shard_dataset = MinariDataset(shard_root / "data")
-    final_dataset.storage.update_from_storage(shard_dataset.storage)
+    target_dataset = MinariDataset(target_root / "data")
+    source_dataset = MinariDataset(source_root / "data")
+    target_dataset.storage.update_from_storage(source_dataset.storage)
 
 
-def _cleanup_dataset_id(dataset_id: str):
-    try:
-        minari.delete_dataset(dataset_id)
-    except FileNotFoundError:
-        pass
+def _merge_shards_into_temporary_dataset(
+    shard_results: list[dict],
+    merged_root: Path,
+    *,
+    label: str,
+) -> None:
+    for result in shard_results:
+        dataset_id = str(result["dataset_id"])
+        shard_root = Path(str(result["path"]))
+        print(
+            f"[local-antmaze-gen] {label}: merging temporary shard "
+            f"{dataset_id} into {merged_root}"
+        )
+        _merge_minari_dataset(shard_root, merged_root)
+
+
+def _publish_merged_dataset(merged_root: Path, final_root: Path) -> None:
+    if (final_root / "data").exists():
+        _merge_minari_dataset(merged_root, final_root)
+        return
+    publish_new_dataset(merged_root, final_root)
+
+
+def _cleanup_dataset_id(dataset_id: str, dataset_path: str | Path):
+    remove_temporary_dataset(dataset_id, dataset_path)
 
 
 def _write_generation_summary(
@@ -1134,6 +1166,8 @@ def generate_variant(
     hard_retry: int,
     hard_sample_alpha: float,
     hard_sample_top_n: int,
+    dataset_root_override: str | Path | None = None,
+    temporary_dataset_root: str | Path | None = None,
 ):
     if variant not in ANTMAZE_VARIANTS:
         raise ValueError(f"Unknown AntMaze variant: {variant!r}")
@@ -1151,10 +1185,17 @@ def generate_variant(
 
     default_reward_type = normalize_reward_type(meta["env_paras"].get("reward_type"))
     reward_type = normalize_reward_type(reward_type, default=default_reward_type)
-    dataset_root = resolve_local_dataset_path(
+    default_dataset_root = resolve_local_dataset_path(
         meta["dataset_path"],
         reward_type=reward_type,
         default_reward_type=default_reward_type,
+    )
+    dataset_root = resolve_final_dataset_path(
+        default_dataset_root,
+        dataset_root_override,
+    )
+    temporary_dataset_root = resolve_temporary_dataset_root(
+        temporary_dataset_root
     )
     if overwrite and dataset_root.exists():
         shutil.rmtree(dataset_root)
@@ -1252,7 +1293,8 @@ def generate_variant(
         f"hard_sample_alpha={hard_sample_alpha}, "
         f"hard_sample_top_n={hard_sample_top_n}, "
         f"hard_pairs={len(hard_pair_space)}/{hard_pair_space_total}, "
-        f"{mode_detail}"
+        f"{mode_detail}, dataset_root={dataset_root}, "
+        f"temporary_dataset_root={temporary_dataset_root}"
     )
 
     shard_specs = []
@@ -1283,6 +1325,7 @@ def generate_variant(
                 "hard_retry": hard_retry,
                 "hard_sample_alpha": hard_sample_alpha,
                 "hard_pair_space": hard_pair_space,
+                "temporary_dataset_root": str(temporary_dataset_root),
             }
         )
 
@@ -1302,11 +1345,20 @@ def generate_variant(
                     future.cancel()
                 raise
 
-        for result in shard_results:
-            dataset_id = str(result["dataset_id"])
-            shard_root = Path(str(result["path"]))
-            print(f"[local-antmaze-gen] {variant}: merging shard {dataset_id}")
-            _merge_shard_into_final(shard_root, dataset_root)
+        with temporary_dataset_merge_path(
+            temporary_dataset_root,
+            label=f"antmaze-{variant}",
+        ) as merged_root:
+            _merge_shards_into_temporary_dataset(
+                shard_results,
+                merged_root,
+                label=variant,
+            )
+            print(
+                f"[local-antmaze-gen] {variant}: publishing merged dataset "
+                f"from {merged_root} to {dataset_root}"
+            )
+            _publish_merged_dataset(merged_root, dataset_root)
     except Exception:
         for future in futures:
             if not future.done() or future.cancelled():
@@ -1320,7 +1372,10 @@ def generate_variant(
         raise
     finally:
         for result in shard_results:
-            _cleanup_dataset_id(str(result["dataset_id"]))
+            _cleanup_dataset_id(
+                str(result["dataset_id"]),
+                str(result["path"]),
+            )
 
     final_episodes, final_successful_episodes, final_success_rate = (
         _write_generation_summary(
@@ -1430,6 +1485,9 @@ def _collect_seed_map_shard_from_kwargs(kwargs: dict) -> dict:
 def generate_seed_map_corpus(args) -> Path:
     seed_map_spec = validate_seed_map_generation_args(args)
     reward_type = normalize_reward_type(args.reward_type, default="sparse")
+    temporary_dataset_root = resolve_temporary_dataset_root(
+        getattr(args, "temporary_dataset_root", None)
+    )
     policy_file = args.policy_file.expanduser().resolve()
     if not policy_file.exists():
         raise FileNotFoundError(f"AntMaze SAC policy file not found: {policy_file}")
@@ -1527,6 +1585,7 @@ def generate_seed_map_corpus(args) -> Path:
                 "hard_retry": int(args.hard_retry),
                 "hard_sample_alpha": float(args.hard_sample_alpha),
                 "hard_sample_top_n": int(args.hard_sample_top_n),
+                "temporary_dataset_root": str(temporary_dataset_root),
                 "existing_count": len(existing),
             }
         )
@@ -1542,7 +1601,8 @@ def generate_seed_map_corpus(args) -> Path:
         f"dataset={dataset_root}, range=[{args.seed_map_start}, {args.seed_map_end}), "
         f"trajectories_per_seed={capacity}, pending_maps={len(tasks)}, "
         f"workers={worker_count}, size_spec={seed_map_spec.to_dict()}, "
-        f"mode={args.mode}, hard_sample={args.hard_sample}"
+        f"mode={args.mode}, hard_sample={args.hard_sample}, "
+        f"temporary_dataset_root={temporary_dataset_root}"
     )
     worker_tasks = []
     for task in tasks:
@@ -1560,24 +1620,45 @@ def generate_seed_map_corpus(args) -> Path:
                 completed_results.append(result)
                 existing_count = int(task["existing_count"])
                 missing_count = capacity - existing_count
-                append_minari_shard_to_seed_map_corpus(
-                    dataset_root,
-                    result["path"],
-                    map_seed=int(result["map_seed"]),
-                    maze_map=result["maze_map"],
-                    trajectory_start_index=existing_count,
-                    trajectory_count=missing_count,
-                    source_episode_start_index=existing_count,
-                )
+                map_seed = int(result["map_seed"])
+                with temporary_dataset_merge_path(
+                    temporary_dataset_root,
+                    label=f"antmaze-seed-map-{map_seed}",
+                ) as merged_root:
+                    _merge_shards_into_temporary_dataset(
+                        [result],
+                        merged_root,
+                        label=f"seed-map-{map_seed}",
+                    )
+                    print(
+                        "[local-antmaze-gen][seed-map] "
+                        f"map_seed={map_seed}: publishing merged map dataset "
+                        f"from {merged_root} to {dataset_root}"
+                    )
+                    append_minari_shard_to_seed_map_corpus(
+                        dataset_root,
+                        merged_root,
+                        map_seed=map_seed,
+                        maze_map=result["maze_map"],
+                        trajectory_start_index=existing_count,
+                        trajectory_count=missing_count,
+                        source_episode_start_index=existing_count,
+                    )
                 print(
                     "[local-antmaze-gen][seed-map] "
-                    f"map_seed={result['map_seed']}: appended={missing_count}, "
+                    f"map_seed={map_seed}: appended={missing_count}, "
                     f"dataset={dataset_root}"
                 )
-                _cleanup_dataset_id(str(result["dataset_id"]))
+                _cleanup_dataset_id(
+                    str(result["dataset_id"]),
+                    str(result["path"]),
+                )
     finally:
         for result in completed_results:
-            _cleanup_dataset_id(str(result["dataset_id"]))
+            _cleanup_dataset_id(
+                str(result["dataset_id"]),
+                str(result["path"]),
+            )
 
     final_manifest = finalize_seed_map_corpus(dataset_root)
     print(
@@ -1591,6 +1672,11 @@ def generate_seed_map_corpus(args) -> Path:
 
 def main():
     args = parse_args()
+    dataset_root_override = getattr(args, "dataset_root", None)
+    temporary_dataset_root = resolve_temporary_dataset_root(
+        getattr(args, "temporary_dataset_root", None)
+    )
+    args.temporary_dataset_root = temporary_dataset_root
     if args.num_workers < 1:
         raise ValueError("--num-workers must be >= 1")
     if args.action_noise < 0:
@@ -1654,6 +1740,8 @@ def main():
             hard_retry=args.hard_retry,
             hard_sample_alpha=args.hard_sample_alpha,
             hard_sample_top_n=args.hard_sample_top_n,
+            dataset_root_override=dataset_root_override,
+            temporary_dataset_root=temporary_dataset_root,
         )
 
 

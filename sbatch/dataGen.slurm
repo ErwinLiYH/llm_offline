@@ -21,6 +21,8 @@ TARGET_EPISODES=${TARGET_EPISODES:-5000}
 NUM_WORKERS=${NUM_WORKERS:-10}
 SEED=${SEED:-42}
 REWARD_TYPE=${REWARD_TYPE:-sparse}
+DATASET_ROOT=${DATASET_ROOT:-}
+TEMPORARY_DATASET_ROOT=${TEMPORARY_DATASET_ROOT:-}
 MAX_EPISODE_STEPS=${MAX_EPISODE_STEPS:-}
 POST_SUCCESS_HOLD_STEPS=${POST_SUCCESS_HOLD_STEPS:-100}
 POST_SUCCESS_HOLD_NOISE_STD=${POST_SUCCESS_HOLD_NOISE_STD:-}
@@ -44,6 +46,12 @@ VARIANTS=(
 VARIANT=${VARIANTS[${SLURM_ARRAY_TASK_ID}]}
 
 EXTRA_ARGS=()
+if [[ -n "${DATASET_ROOT}" ]]; then
+    EXTRA_ARGS+=(--dataset-root "${DATASET_ROOT}")
+fi
+if [[ -n "${TEMPORARY_DATASET_ROOT}" ]]; then
+    EXTRA_ARGS+=(--temporary-dataset-root "${TEMPORARY_DATASET_ROOT}")
+fi
 if [[ -n "${MAX_EPISODE_STEPS}" ]]; then
     EXTRA_ARGS+=(--max-episode-steps "${MAX_EPISODE_STEPS}")
 fi
@@ -73,6 +81,8 @@ echo "Target episodes per variant: ${TARGET_EPISODES}"
 echo "Workers per variant: ${NUM_WORKERS}"
 echo "Seed: ${SEED}"
 echo "Reward type: ${REWARD_TYPE}"
+echo "Final dataset root override: ${DATASET_ROOT:-default registered path}"
+echo "Temporary dataset root: ${TEMPORARY_DATASET_ROOT:-TMPDIR (${TMPDIR:-platform default})}"
 if [[ -n "${MAX_EPISODE_STEPS}" ]]; then
     echo "Max episode steps: ${MAX_EPISODE_STEPS}"
 else

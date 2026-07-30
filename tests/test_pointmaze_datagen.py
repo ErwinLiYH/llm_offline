@@ -112,6 +112,8 @@ class PointMazeDataGenerationTest(unittest.TestCase):
             "hard_retry": 5,
             "hard_sample_alpha": 1.0,
             "hard_sample_top_n": 400,
+            "dataset_root": Path("/tmp/point-final"),
+            "temporary_dataset_root": Path("/tmp/point-shards"),
         }
         invalid_cases = [
             ({"hard_retry": -1}, "--hard-retry must be >= 0"),
@@ -138,6 +140,11 @@ class PointMazeDataGenerationTest(unittest.TestCase):
         self.assertEqual(kwargs["hard_sample_alpha"], 1.0)
         self.assertEqual(kwargs["hard_sample_top_n"], 400)
         self.assertEqual(kwargs["reward_type"], "dense")
+        self.assertEqual(kwargs["dataset_root_override"], Path("/tmp/point-final"))
+        self.assertEqual(
+            kwargs["temporary_dataset_root"],
+            Path("/tmp/point-shards"),
+        )
 
     def test_hard_sample_sbatch_exposes_all_controls(self):
         script = (

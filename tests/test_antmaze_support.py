@@ -741,6 +741,8 @@ class AntMazeSupportTest(unittest.TestCase):
             "hard_retry": 5,
             "hard_sample_alpha": 2.0,
             "hard_sample_top_n": 0,
+            "dataset_root": Path("/tmp/ant-final"),
+            "temporary_dataset_root": Path("/tmp/ant-shards"),
         }
 
         invalid_cases = [
@@ -774,7 +776,13 @@ class AntMazeSupportTest(unittest.TestCase):
         ), mock.patch("local_antmaze_gen.generate_variant") as generate_variant:
             local_antmaze_gen.main()
 
-        self.assertEqual(generate_variant.call_args.kwargs["reward_type"], "dense")
+        kwargs = generate_variant.call_args.kwargs
+        self.assertEqual(kwargs["reward_type"], "dense")
+        self.assertEqual(kwargs["dataset_root_override"], Path("/tmp/ant-final"))
+        self.assertEqual(
+            kwargs["temporary_dataset_root"],
+            Path("/tmp/ant-shards"),
+        )
 
     def test_antmaze_hard_sample_generation_summary_records_difficulty(self):
         import json

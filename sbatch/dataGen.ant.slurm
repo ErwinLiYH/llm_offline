@@ -22,6 +22,8 @@ MIN_SUCCESS_RATE=${MIN_SUCCESS_RATE:-0.8}
 NUM_WORKERS=${NUM_WORKERS:-16}
 SEED=${SEED:-42}
 REWARD_TYPE=${REWARD_TYPE:-sparse}
+DATASET_ROOT=${DATASET_ROOT:-}
+TEMPORARY_DATASET_ROOT=${TEMPORARY_DATASET_ROOT:-}
 ACTION_NOISE=${ACTION_NOISE:-0.2}
 MODE=${MODE:-diverse}
 DIVERSE_CELL_MODE=${DIVERSE_CELL_MODE:-all-free}
@@ -42,6 +44,12 @@ VARIANTS=(
 VARIANT=${VARIANTS[${SLURM_ARRAY_TASK_ID}]}
 
 EXTRA_ARGS=()
+if [[ -n "${DATASET_ROOT}" ]]; then
+    EXTRA_ARGS+=(--dataset-root "${DATASET_ROOT}")
+fi
+if [[ -n "${TEMPORARY_DATASET_ROOT}" ]]; then
+    EXTRA_ARGS+=(--temporary-dataset-root "${TEMPORARY_DATASET_ROOT}")
+fi
 if [[ -n "${MAX_EPISODE_ATTEMPTS}" ]]; then
     EXTRA_ARGS+=(--max-episode-attempts "${MAX_EPISODE_ATTEMPTS}")
 fi
@@ -66,6 +74,8 @@ echo "Minimum saved success rate: ${MIN_SUCCESS_RATE}"
 echo "Workers per variant: ${NUM_WORKERS}"
 echo "Seed: ${SEED}"
 echo "Reward type: ${REWARD_TYPE}"
+echo "Final dataset root override: ${DATASET_ROOT:-default registered path}"
+echo "Temporary dataset root: ${TEMPORARY_DATASET_ROOT:-TMPDIR (${TMPDIR:-platform default})}"
 echo "Action noise: ${ACTION_NOISE}"
 echo "Diverse cell mode: ${DIVERSE_CELL_MODE}"
 if [[ -n "${MAX_EPISODE_ATTEMPTS}" ]]; then

@@ -22,12 +22,22 @@ MIN_SUCCESS_RATE=${MIN_SUCCESS_RATE:-1.0}
 NUM_WORKERS=${NUM_WORKERS:-16}
 SEED=${SEED:-42}
 REWARD_TYPE=${REWARD_TYPE:-sparse}
+DATASET_ROOT=${DATASET_ROOT:-}
+TEMPORARY_DATASET_ROOT=${TEMPORARY_DATASET_ROOT:-}
 ACTION_NOISE=${ACTION_NOISE:-0.2}
 MODE=${MODE:-diverse}
 DIVERSE_CELL_MODE=${DIVERSE_CELL_MODE:-all-free}
 HARD_RETRY=${HARD_RETRY:-5}
 HARD_SAMPLE_ALPHA=${HARD_SAMPLE_ALPHA:-1.0}
 HARD_SAMPLE_TOP_N=${HARD_SAMPLE_TOP_N:-400}
+
+EXTRA_ARGS=()
+if [[ -n "${DATASET_ROOT}" ]]; then
+    EXTRA_ARGS+=(--dataset-root "${DATASET_ROOT}")
+fi
+if [[ -n "${TEMPORARY_DATASET_ROOT}" ]]; then
+    EXTRA_ARGS+=(--temporary-dataset-root "${TEMPORARY_DATASET_ROOT}")
+fi
 
 VARIANTS=(
     local-layout-01
@@ -63,6 +73,8 @@ echo "Minimum saved success rate: ${MIN_SUCCESS_RATE}"
 echo "Workers per variant: ${NUM_WORKERS}"
 echo "Seed: ${SEED}"
 echo "Reward type: ${REWARD_TYPE}"
+echo "Final dataset root override: ${DATASET_ROOT:-default registered path}"
+echo "Temporary dataset root: ${TEMPORARY_DATASET_ROOT:-TMPDIR (${TMPDIR:-platform default})}"
 echo "Action noise: ${ACTION_NOISE}"
 echo "Diverse cell mode: ${DIVERSE_CELL_MODE}"
 echo "Hard retry: ${HARD_RETRY}"
@@ -86,6 +98,7 @@ echo "Max episode attempts per variant: ignored by hard-sample mode"
     --hard-retry "${HARD_RETRY}" \
     --hard-sample-alpha "${HARD_SAMPLE_ALPHA}" \
     --hard-sample-top-n "${HARD_SAMPLE_TOP_N}" \
-    --overwrite
+    --overwrite \
+    "${EXTRA_ARGS[@]}"
 
 echo "Job ${SLURM_JOB_ID} finished at $(date --iso-8601=seconds)"
