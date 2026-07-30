@@ -29,6 +29,10 @@ from data.pointmaze.dataset import (
     split_episode_segments_for_partitions,
 )
 from data.registry import get_action_dim, get_dataset
+from data.seed_map_corpus import (
+    build_seed_map_episode_selection,
+    resolve_seed_map_selection,
+)
 from model.mtp_bin import (
     resolve_mtp_k,
     resolve_mtp_lcm_weight,
@@ -45,6 +49,8 @@ from utils.episode_keep import (
 )
 from utils.prompt_loader import load_template_names
 from utils.sensing_config import normalize_sensing_config, resolve_sensing_config
+from utils.seed_map_config import seed_map_section_enabled
+from utils.variant_selection import VariantSelection
 from utils.variant_selection import get_available_variants, resolve_selection
 
 
@@ -215,6 +221,19 @@ def normalize_prompt_config(config: dict) -> None:
 
 
 def resolve_train_selection(config: dict, available_variants: list[str]):
+    if seed_map_section_enabled(config, "seed_map_train"):
+        seed_map_selection = resolve_seed_map_selection(
+            config["seed_map_train"],
+            env_family=config["env_family"],
+        )
+        config["resolved_seed_map_train"] = seed_map_selection.to_dict()
+        return VariantSelection(
+            mode="seed_map",
+            configured_variants=[],
+            selected_variants=[seed_map_selection.source_tag],
+            selection_tag=seed_map_selection.source_tag,
+            full_selection_tag=seed_map_selection.source_tag,
+        )
     train_variants = config.get("train_varients", config.get("variants"))
     return resolve_selection(
         mode=config["train_mode"],
@@ -309,6 +328,11 @@ def build_dataset_request(
         sampling_seed=config.get("sampling_seed", 0),
         family_data_config=_family_data_config(config),
         local_dataset_root=_local_dataset_root(config),
+        seed_map_selection=(
+            config.get("seed_map_train")
+            if seed_map_section_enabled(config, "seed_map_train")
+            else None
+        ),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
         wall_sensing_version=config.get("wall_sensing_version"),
@@ -335,15 +359,26 @@ def _resolve_training_config(config: dict, world_size: int) -> tuple[dict, Any, 
     normalize_prompt_config(config)
     available_variants = get_available_variants(config["env_family"])
     train_selection = resolve_train_selection(config, available_variants)
-    action_dim = get_action_dim(config["env_family"], train_selection.selected_variants)
-    config["train_varients"] = train_selection.configured_variants
+    action_dim = get_action_dim(
+        config["env_family"],
+        [] if train_selection.mode == "seed_map" else train_selection.selected_variants,
+    )
+    if train_selection.mode != "seed_map":
+        config["train_varients"] = train_selection.configured_variants
     config.pop("variants", None)
     config["action_dim"] = action_dim
-    config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = resolve_episode_keep_per_variant(
-        config,
-        train_selection.selected_variants,
-        available_variants=available_variants,
-    )
+    if train_selection.mode == "seed_map":
+        config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = {
+            train_selection.selected_variants[0]: None
+        }
+    else:
+        config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = (
+            resolve_episode_keep_per_variant(
+                config,
+                train_selection.selected_variants,
+                available_variants=available_variants,
+            )
+        )
 
     action_token_mode = get_action_token_mode(config)
     if action_token_mode == "mtp_bin":
@@ -386,6 +421,37 @@ def _balanced_train_episode_count(
 
 def load_variant_data(config: dict, selected_variants: list[str]) -> list[VariantData]:
     dataset_cls = get_dataset(config["env_family"])
+    if seed_map_section_enabled(config, "seed_map_train"):
+        seed_map_selection = resolve_seed_map_selection(
+            config["seed_map_train"],
+            env_family=config["env_family"],
+        )
+        if selected_variants != [seed_map_selection.source_tag]:
+            raise ValueError(
+                "Resolved seed-map source tag differs from selected_variants: "
+                f"{selected_variants!r}"
+            )
+        selection = build_seed_map_episode_selection(
+            seed_map_selection,
+            train_data_ratio=config.get("train_data_ratio", 0.9),
+            episode_transform=lambda episode: dataset_cls._seed_map_episode_transform(
+                episode,
+                _family_data_config(config),
+                seed_map_selection.source_tag,
+            ),
+        )
+        episodes = list(selection["episodes"])
+        step_counts = [len(episode.actions) for episode in episodes]
+        return [
+            VariantData(
+                variant=seed_map_selection.source_tag,
+                episodes=episodes,
+                step_counts=step_counts,
+                selection=selection,
+                prompt_count=len(config["prompt_templete_index"]),
+            )
+        ]
+
     family_data_config = _family_data_config(config)
     local_dataset_root = _local_dataset_root(config)
     if RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY in config:

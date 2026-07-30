@@ -53,8 +53,14 @@ from utils.model_path_glob import resolve_trailing_wildcard_path
 from utils.prompt_loader import load_named_templates, load_template_names
 from utils.rollout.evaluate_runner import run_evaluate_variant
 from utils.sensing_config import apply_checkpoint_sensing_config as _apply_checkpoint_sensing_config
+from utils.seed_map_config import seed_map_section_enabled
+from utils.seed_map_eval import resolve_seed_map_eval_selection
 from utils.training_tags import format_training_eval_tag
-from utils.variant_selection import get_available_variants, resolve_selection
+from utils.variant_selection import (
+    VariantSelection,
+    get_available_variants,
+    resolve_selection,
+)
 
 
 def parse_args(argv=None):
@@ -113,6 +119,32 @@ def resolve_eval_model_path(config: dict) -> dict:
 
 
 def resolve_standalone_eval_selection(config: dict):
+    if seed_map_section_enabled(config, "seed_map_eval"):
+        seed_map_eval = resolve_seed_map_eval_selection(
+            config["seed_map_eval"],
+            env_family=config["env_family"],
+            default_reward_type=config.get("reward_type"),
+        )
+        config["resolved_seed_map_eval"] = seed_map_eval.to_dict()
+        config["num_episodes"] = seed_map_eval.episodes_per_seed
+        selected_variants = seed_map_eval.selected_variants
+        internal_subset = config.pop("_seed_map_eval_variant_subset", None)
+        if internal_subset is not None:
+            unknown = sorted(set(internal_subset) - set(selected_variants))
+            if unknown:
+                raise ValueError(
+                    "Internal seed-map eval subset contains unknown targets: "
+                    f"{unknown}"
+                )
+            selected_variants = list(internal_subset)
+        return VariantSelection(
+            mode="seed_map",
+            configured_variants=[],
+            selected_variants=selected_variants,
+            selection_tag=seed_map_eval.selection_tag,
+            full_selection_tag=seed_map_eval.selection_tag,
+        )
+
     available_variants = get_available_variants(config["env_family"])
 
     eval_mode = config.get("eval_mode")

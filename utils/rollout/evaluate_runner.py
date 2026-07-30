@@ -7,12 +7,17 @@ from dataclasses import asdict
 import numpy as np
 
 from crossmaze.eval_position import (
+    build_seed_map_eval_position_config,
     eval_position_count,
     eval_position_selection_policy,
     get_eval_position_pool_payload,
     get_map_difficulty_config,
+    get_seed_map_difficulty_config,
+    get_seed_map_eval_position_pool_payload,
     resolve_eval_position_mode,
+    resolve_seed_map_eval_position_mode,
 )
+from crossmaze.seed_map import generate_seed_map
 from data.registry import get_formatter
 from utils.action_bins import uses_action_bins
 from utils.eval_parallel import (
@@ -23,6 +28,7 @@ from utils.eval_parallel import (
 from utils.rollout.policy import RolloutPolicy
 from utils.rollout.protocol import EpisodeResult
 from utils.rollout.supervisor import run_episode_supervisor
+from utils.seed_map_eval import seed_map_eval_target
 
 
 def _ordered_episode_values(episodes: list[EpisodeResult], attr: str):
@@ -139,17 +145,65 @@ def run_evaluate_variant(
         if not episode.worker_failed and episode.start_goal_difficulty is not None
     ]
     eval_seed = int(config.get("seed", 1))
-    eval_position_mode = resolve_eval_position_mode(config["env_family"], config)
-    map_difficulty_config = get_map_difficulty_config(
-        config["env_family"],
-        variant,
-    )
-    position_pool_payload = get_eval_position_pool_payload(
-        config["env_family"],
-        variant,
-        seed=eval_seed,
-        config=config,
-    )
+    seed_map_target = seed_map_eval_target(config, variant)
+    if seed_map_target is not None:
+        maze_map = generate_seed_map(
+            seed_map_target["map_seed"],
+            seed_map_target["seed_map_spec"],
+        )
+        eval_position_mode = resolve_seed_map_eval_position_mode(config)
+        map_difficulty_config = get_seed_map_difficulty_config(maze_map)
+        position_pool_payload = get_seed_map_eval_position_pool_payload(
+            config["env_family"],
+            seed_map_target["map_seed"],
+            seed=eval_seed,
+            maze_map=maze_map,
+            config=config,
+        )
+        seed_position_config = build_seed_map_eval_position_config(
+            config["env_family"],
+            seed_map_target["map_seed"],
+            maze_map,
+            seed=eval_seed,
+            config=config,
+        )
+        position_count = (
+            len(seed_position_config.get("start_goal_list") or [])
+            if seed_position_config is not None
+            else 0
+        )
+        position_policy = (
+            "seeded_weighted_hard_sample_permutation_cycle"
+            if eval_position_mode == "hard-sample"
+            else "env_default_random"
+        )
+    else:
+        eval_position_mode = resolve_eval_position_mode(
+            config["env_family"],
+            config,
+        )
+        map_difficulty_config = get_map_difficulty_config(
+            config["env_family"],
+            variant,
+        )
+        position_pool_payload = get_eval_position_pool_payload(
+            config["env_family"],
+            variant,
+            seed=eval_seed,
+            config=config,
+        )
+        position_count = eval_position_count(
+            config["env_family"],
+            variant,
+            seed=eval_seed,
+            config=config,
+        )
+        position_policy = eval_position_selection_policy(
+            config["env_family"],
+            variant,
+            seed=eval_seed,
+            config=config,
+        )
     position_pool_path = _write_eval_position_pool(
         variant_results_dir=variant_results_dir,
         payload=position_pool_payload,
@@ -220,17 +274,19 @@ def run_evaluate_variant(
         "eval_position_pool_path": position_pool_path,
         "eval_position_source": _eval_position_source(episodes),
         "eval_position_mode": eval_position_mode,
-        "eval_position_selection_policy": eval_position_selection_policy(
-            config["env_family"],
-            variant,
-            seed=eval_seed,
-            config=config,
-        ),
-        "eval_position_count": eval_position_count(
-            config["env_family"],
-            variant,
-            seed=eval_seed,
-            config=config,
+        "eval_position_selection_policy": position_policy,
+        "eval_position_count": position_count,
+        **(
+            {
+                "seed_map": {
+                    "map_seed": seed_map_target["map_seed"],
+                    "seed_map_spec": seed_map_target["seed_map_spec"],
+                    "reward_type": seed_map_target["reward_type"],
+                    "max_episode_steps": seed_map_target["max_episode_steps"],
+                }
+            }
+            if seed_map_target is not None
+            else {}
         ),
         "total_parse_failures": int(sum(episode.parse_failures for episode in episodes)),
         "total_fallbacks": int(sum(episode.fallbacks for episode in episodes)),

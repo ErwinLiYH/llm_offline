@@ -106,3 +106,55 @@ def make(
         sensing_config=config,
         default_reset_options=reset_options,
     )
+
+
+def make_seed_map(
+    env_family: str,
+    map_seed: int,
+    *,
+    seed_map_spec: dict,
+    config: dict | None = None,
+) -> CrossMazeEnv:
+    """Build an eval environment directly from a procedural map seed."""
+
+    import gymnasium as gym
+    import gymnasium_robotics  # noqa: F401 registers maze environments
+
+    from crossmaze.families import SUPPORTED_ENV_FAMILIES
+    from crossmaze.seed_map import (
+        build_seed_map_env_paras,
+        generate_seed_map,
+        normalize_seed_map_spec,
+    )
+    from crossmaze.reward import resolve_reward_type
+
+    config = dict(config or {})
+    if env_family not in SUPPORTED_ENV_FAMILIES:
+        raise ValueError(
+            f"Unsupported env_family for seed-map eval: {env_family!r}"
+        )
+    spec = normalize_seed_map_spec(seed_map_spec)
+    maze_map = generate_seed_map(int(map_seed), spec)
+    reward_type = resolve_reward_type(config, default="sparse")
+    env_paras = build_seed_map_env_paras(
+        env_family,
+        maze_map=maze_map,
+        reward_type=reward_type,
+        max_episode_steps=config.get("max_episode_steps"),
+    )
+    env_id = env_paras.pop("id")
+    env_paras.update(dict(config.get("env_kwargs") or {}))
+    env_paras["maze_map"] = maze_map
+    env_paras["reward_type"] = reward_type
+    env_paras = _apply_video_env_kwargs(config, env_paras)
+    env = gym.make(env_id, **env_paras)
+    return CrossMazeEnv(
+        env,
+        env_family=env_family,
+        layout={
+            "maze_map": maze_map,
+            "maze_size_scaling": 4.0 if env_family == "antmaze" else 1.0,
+        },
+        sensing_config=config,
+        default_reset_options=None,
+    )

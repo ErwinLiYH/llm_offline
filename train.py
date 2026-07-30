@@ -28,6 +28,7 @@ with contextlib.redirect_stdout(io.StringIO()):
 
 from data.base_dataset import DatasetBuildRequest
 from data.registry import get_action_dim, get_dataset
+from data.seed_map_corpus import resolve_seed_map_selection
 from model.continuous_action import (
     ensure_continuous_action_decoder,
     resolve_action_head_dropout,
@@ -102,6 +103,8 @@ from utils.lr_scheduler import (
 )
 from utils.prompt_loader import load_template_names
 from utils.resource_monitor import ResourceMonitor, resource_monitor_path
+from utils.seed_map_config import seed_map_section_enabled
+from utils.seed_map_eval import resolve_seed_map_eval_selection
 from utils.sensing_config import normalize_sensing_config
 from utils.training_tags import format_epoch_tag, format_step_tag
 from utils.variant_selection import resolve_selection, VariantSelection, get_available_variants
@@ -387,6 +390,19 @@ def normalize_prompt_config(config: dict):
 
 
 def resolve_train_selection(config: dict, available_variants: list[str]) -> VariantSelection:
+    if seed_map_section_enabled(config, "seed_map_train"):
+        seed_map_selection = resolve_seed_map_selection(
+            config["seed_map_train"],
+            env_family=config["env_family"],
+        )
+        config["resolved_seed_map_train"] = seed_map_selection.to_dict()
+        return VariantSelection(
+            mode="seed_map",
+            configured_variants=[],
+            selected_variants=[seed_map_selection.source_tag],
+            selection_tag=seed_map_selection.source_tag,
+            full_selection_tag=seed_map_selection.source_tag,
+        )
     train_variants = config.get("train_varients", config.get("variants"))
     return resolve_selection(
         mode=config["train_mode"],
@@ -402,17 +418,57 @@ def resolve_epoch_eval_selection(
     available_variants: list[str],
     train_selection: VariantSelection,
 ) -> VariantSelection:
+    if seed_map_section_enabled(config, "seed_map_eval"):
+        seed_map_eval = resolve_seed_map_eval_selection(
+            config["seed_map_eval"],
+            env_family=config["env_family"],
+            default_reward_type=config.get("reward_type"),
+        )
+        config["resolved_seed_map_eval"] = seed_map_eval.to_dict()
+        config["eval_num_episodes"] = seed_map_eval.episodes_per_seed
+        return VariantSelection(
+            mode="seed_map",
+            configured_variants=[],
+            selected_variants=seed_map_eval.selected_variants,
+            selection_tag=seed_map_eval.selection_tag,
+            full_selection_tag=seed_map_eval.selection_tag,
+        )
+
     eval_mode = config.get("eval_mode")
     eval_variants = config.get("eval_variants")
     if not eval_mode and not eval_variants:
-        return train_selection
+        if train_selection.mode != "seed_map":
+            return train_selection
+        # The seed-map train and eval sources are independent. With no
+        # seed_map_eval section, retain the legacy fixed-variant eval meaning.
+        return resolve_selection(
+            mode=config["train_mode"],
+            variants=config.get("train_varients", config.get("variants")),
+            available_variants=available_variants,
+            field_name="train_varients (legacy eval fallback)",
+        )
 
-    resolved_eval_mode = eval_mode or train_selection.mode
+    resolved_eval_mode = eval_mode or (
+        config["train_mode"]
+        if train_selection.mode == "seed_map"
+        else train_selection.mode
+    )
+    legacy_train_variants = config.get("train_varients", config.get("variants"))
+    if isinstance(legacy_train_variants, str):
+        legacy_train_variants = [legacy_train_variants]
     default_variants = None
     if resolved_eval_mode == "single":
-        default_variants = train_selection.selected_variants
+        default_variants = (
+            legacy_train_variants
+            if train_selection.mode == "seed_map"
+            else train_selection.selected_variants
+        )
     elif resolved_eval_mode == "except":
-        default_variants = train_selection.configured_variants
+        default_variants = (
+            legacy_train_variants
+            if train_selection.mode == "seed_map"
+            else train_selection.configured_variants
+        )
 
     return resolve_selection(
         mode=resolved_eval_mode,
@@ -563,6 +619,11 @@ def build_dataset_request(
         sampling_seed=config.get("sampling_seed", 0),
         family_data_config=_family_data_config(config),
         local_dataset_root=_local_dataset_root(config),
+        seed_map_selection=(
+            config.get("seed_map_train")
+            if seed_map_section_enabled(config, "seed_map_train")
+            else None
+        ),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
         wall_sensing_version=config.get("wall_sensing_version"),
@@ -586,6 +647,14 @@ def _resolve_balanced_train_episode_count(
     selected_variants: list[str],
     dist_context: DistributedContext,
 ) -> int | None:
+    if seed_map_section_enabled(config, "seed_map_train"):
+        if config.get("balance_variant_episode_count", False):
+            rank_zero_print(
+                dist_context,
+                "[train][seed-map] balance_variant_episode_count is ignored; "
+                "seed_count and trajectories_per_seed define the sampled corpus.",
+            )
+        return None
     balance_enabled = config.get("balance_variant_episode_count", False)
     if balance_enabled and has_episode_keep_per_variant(config):
         rank_zero_print(
@@ -1346,6 +1415,10 @@ def _build_training_eval_config(config: dict) -> dict:
     if action_token_mode == "parallel_t":
         eval_config["student_t_df"] = config.get("student_t_df")
         eval_config["continuous_mean_l1_weight"] = config.get("continuous_mean_l1_weight")
+    if "seed_map_eval" in config:
+        eval_config["seed_map_eval"] = config["seed_map_eval"]
+    if "resolved_seed_map_eval" in config:
+        eval_config["resolved_seed_map_eval"] = config["resolved_seed_map_eval"]
     return eval_config
 
 
@@ -1486,6 +1559,8 @@ def _build_isolated_training_eval_config(
             "wandb_enabled": False,
         }
     )
+    if "resolved_seed_map_eval" in child_config:
+        child_config["_seed_map_eval_variant_subset"] = list(local_variants)
     return child_config
 
 
@@ -4346,16 +4421,31 @@ def main():
         available_variants = get_available_variants(config["env_family"])
         train_selection = resolve_train_selection(config, available_variants)
         eval_selection = resolve_epoch_eval_selection(config, available_variants, train_selection)
-        action_dim = get_action_dim(config["env_family"], train_selection.selected_variants)
+        action_dim = get_action_dim(
+            config["env_family"],
+            (
+                []
+                if train_selection.mode == "seed_map"
+                else train_selection.selected_variants
+            ),
+        )
 
-        config["train_varients"] = train_selection.configured_variants
+        if train_selection.mode != "seed_map":
+            config["train_varients"] = train_selection.configured_variants
         config.pop("variants", None)
         config["action_dim"] = action_dim
-        config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = resolve_episode_keep_per_variant(
-            config,
-            train_selection.selected_variants,
-            available_variants=available_variants,
-        )
+        if train_selection.mode == "seed_map":
+            config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = {
+                train_selection.selected_variants[0]: None
+            }
+        else:
+            config[RESOLVED_EPISODE_KEEP_PER_VARIANT_KEY] = (
+                resolve_episode_keep_per_variant(
+                    config,
+                    train_selection.selected_variants,
+                    available_variants=available_variants,
+                )
+            )
         action_token_mode = get_action_token_mode(config)
         if action_token_mode == "mtp_bin":
             config["mtp_k"] = resolve_mtp_k(action_dim, config.get("mtp_k"))

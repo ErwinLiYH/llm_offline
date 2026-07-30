@@ -1714,3 +1714,26 @@ type: project
 - 已通过 CrossMaze、PointMaze formatting 和 AntMaze support 共 70 项定向测试
 - 移除 dmap 模板 location sensing 后，相关 5 项核心回归测试再次通过
 - 已通过 `git diff --check`
+
+## Seed-map procedural maps and aggregate datasets（2026-07-30）
+
+**地图生成与聚合数据：**
+- 新增版本化、可复现的 `seed_map` 程序化地图生成器；`map_seed + SeedMapSpec` 唯一确定地图，支持默认从最终奇数边长 `5..15` 中确定性选择的随机正方形，以及显式奇数 `rows/cols` 的固定矩形
+- `crossmaze.make_seed_map(...)` 为 PointMaze 和 AntMaze 构造同一份 plain 0/1 地图及对应 prompt/env metadata；公开配置、日志和数据格式统一使用 `seed_map` 术语
+- `local_pointmaze_gen.py` / `local_antmaze_gen.py` 新增 `--use-seed-map` 和 `--seed-map-*` 参数，按半开 seed range `[start, end)` 生成每张地图指定数量的轨迹；地图来源之外继续复用原脚本的随机/hard start-goal、PointMaze controller，以及 AntMaze play/diverse/hard-sample 等生成语义
+- seed-map 数据不再按地图拆分目录，而是写成 `<start>-<end>-<trajectories>` 聚合 corpus，例如 `0-1000-10/manifest.json`、`index.jsonl` 和 `data/main_data.hdf5`
+- corpus manifest 固化 family、reward、生成器版本和尺寸配置；append 流程支持按 map seed 恢复缺失后缀、清理中断留下的未索引 HDF5 group，并在完成时校验索引、episode 数和内容 hash
+
+**训练与评估选择：**
+- 新增高优先级 `seed_map_train` section；启用后忽略原 `train_mode` / `train_varients` 选择，通过 `dataset_path`、可组合的 `seed_ranges`、`seed_count`、`trajectories_per_seed` 和 `selection_seed` 做确定性无放回 n-map/m-trajectory 抽样
+- `seed_map_train.split_unit` 支持 `seed` 和 `trajectory`；默认 `seed` 按地图切 train/val，防止同一地图泄漏到两侧，`trajectory` 则保留同图轨迹可跨 split 的显式选择
+- seed-map 数据源已接入 PointMaze/AntMaze raw loading、per-map prompt metadata、tokenization、partition shard planning、DDP、`--tokenize-only` 和 `estimate_dataset.py`；cache signature 纳入 corpus/content hash、selection hash 与地图 metadata
+- 新增独立且高优先级的 `seed_map_eval`；既可从已有 corpus 选择地图，也可用 generator spec 评估未生成 offline 数据的新 seed range，每个 map seed 映射为 `seed-map-<N>` synthetic variant，继续复用现有 DDP variant 分配和 rollout workers
+- seed-map eval 对 PointMaze/AntMaze 都默认使用 `random-start-goal`，也支持原 `hard-sample`；因为程序化地图没有 canonical fixed pair，显式 `fix-start-goal` 会报错
+
+**兼容性、文档与验证：**
+- 未配置 section 或设置 `enabled: false` 时，训练和评估完全保留原 variant 配置与语义；section 已启用但字段、范围、corpus 容量或 family 不匹配时直接报错，不静默回退
+- 只启用 `seed_map_train` 时，training-time eval 仍走原固定 variant 选择；只有显式启用 `seed_map_eval` 才切换到程序化地图评估
+- 新增 `docs/seed_map.md`，记录 seed/尺寸语义、`d4rl_datagen` 生成命令、聚合目录结构、训练/评估 YAML、优先级和兼容性
+- 新增 seed-map generator、corpus 和 eval 定向测试；主回归结果为 `131 passed`、`128 subtests passed`，最终 seed-map 套件为 `15 passed`、`2 subtests passed`
+- 已在 `d4rl_datagen` 环境分别完成 PointMaze 与 AntMaze 的 fixed `5x5`、单 seed、单轨迹真实生成 smoke test，并通过环境构造、Python 编译和 `git diff --check`

@@ -80,6 +80,10 @@ class DatasetBuildRequest:
     sampling_seed: int = 0
     family_data_config: dict[str, Any] | None = None
     local_dataset_root: str | None = None
+    # Procedural aggregate corpus selection. When set, ``variant`` is a
+    # synthetic source tag and registered variant metadata is intentionally
+    # bypassed.
+    seed_map_selection: dict[str, Any] | None = None
 
     # Optional prompt history.
     history_num: int = 0

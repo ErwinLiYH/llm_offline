@@ -9,8 +9,17 @@ import uuid
 import gymnasium_robotics  # noqa: F401 registers maze environments
 import numpy as np
 
-from crossmaze.eval_position import select_eval_position
+from crossmaze.eval_position import (
+    build_seed_map_eval_position_config,
+    select_eval_position,
+    select_seed_map_eval_position,
+)
 from crossmaze import make as crossmaze_make
+from crossmaze import make_seed_map as crossmaze_make_seed_map
+from crossmaze.seed_map import (
+    build_seed_map_prompt_vars,
+    generate_seed_map,
+)
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from data.registry import get_formatter, get_variant
 from utils.eval_rollout import render_policy_prompt, validate_history_config
@@ -24,6 +33,7 @@ from utils.rollout.artifacts import (
 )
 from utils.rollout.protocol import ActionRequest, ActionResponse, EpisodeResult
 from utils.sensing_config import apply_sensing_config_to_prompt_vars
+from utils.seed_map_eval import seed_map_eval_target
 from utils.video_writer import VideoSaveManager
 
 
@@ -106,6 +116,8 @@ class _RolloutWorker:
         self.action_low = None
         self.action_high = None
         self.video_saver = VideoSaveManager(self.config)
+        self.seed_map_target = seed_map_eval_target(self.config, self.variant)
+        self.seed_map_position_config = None
 
     def close(self):
         try:
@@ -131,16 +143,50 @@ class _RolloutWorker:
                 self.config,
             )
         else:
-            meta = get_variant(self.config["env_family"], self.variant)
-            self.env = crossmaze_make(
-                self.config["env_family"],
-                self.variant,
-                mode="eval",
-                config=self.config,
-            )
+            if self.seed_map_target is not None:
+                target = self.seed_map_target
+                seed_map_config = dict(self.config)
+                seed_map_config["reward_type"] = target["reward_type"]
+                seed_map_config["max_episode_steps"] = target[
+                    "max_episode_steps"
+                ]
+                self.env = crossmaze_make_seed_map(
+                    self.config["env_family"],
+                    target["map_seed"],
+                    seed_map_spec=target["seed_map_spec"],
+                    config=seed_map_config,
+                )
+                maze_map = generate_seed_map(
+                    target["map_seed"],
+                    target["seed_map_spec"],
+                )
+                base_prompt_vars = build_seed_map_prompt_vars(
+                    self.config["env_family"],
+                    map_seed=target["map_seed"],
+                    maze_map=maze_map,
+                    reward_type=target["reward_type"],
+                )
+                self.seed_map_position_config = (
+                    build_seed_map_eval_position_config(
+                        self.config["env_family"],
+                        target["map_seed"],
+                        maze_map,
+                        seed=self.config.get("seed"),
+                        config=self.config,
+                    )
+                )
+            else:
+                meta = get_variant(self.config["env_family"], self.variant)
+                self.env = crossmaze_make(
+                    self.config["env_family"],
+                    self.variant,
+                    mode="eval",
+                    config=self.config,
+                )
+                base_prompt_vars = meta["prompt_vars"]
             self.prompt_vars = _prepare_eval_prompt_vars(
                 self.formatter,
-                meta["prompt_vars"],
+                base_prompt_vars,
                 self.env,
             )
             self.prompt_vars = apply_sensing_config_to_prompt_vars(
@@ -211,13 +257,23 @@ class _RolloutWorker:
         if self.mode != "score":
             set_episode_rng_seed(seed)
             eval_seed = self.config.get("seed")
-            eval_position = select_eval_position(
-                self.config["env_family"],
-                self.variant,
-                episode_index=int(episode_index),
-                seed=int(eval_seed) if eval_seed is not None else None,
-                config=self.config,
-            )
+            if self.seed_map_target is not None:
+                eval_position = select_seed_map_eval_position(
+                    self.config["env_family"],
+                    self.seed_map_target["map_seed"],
+                    episode_index=int(episode_index),
+                    seed=int(eval_seed) if eval_seed is not None else None,
+                    position_config=self.seed_map_position_config,
+                    config=self.config,
+                )
+            else:
+                eval_position = select_eval_position(
+                    self.config["env_family"],
+                    self.variant,
+                    episode_index=int(episode_index),
+                    seed=int(eval_seed) if eval_seed is not None else None,
+                    config=self.config,
+                )
             if eval_position is not None:
                 reset_options = {
                     "reset_cell": np.asarray(eval_position["start_cell"], dtype=np.int64),

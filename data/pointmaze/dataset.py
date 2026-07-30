@@ -23,6 +23,12 @@ import torch
 from transformers import AutoTokenizer
 
 from data.base_dataset import BaseOfflineDataset, DatasetBuildRequest, TensorSample, VariantEpisodeStats
+from data.seed_map_corpus import (
+    SeedMapSelection,
+    build_seed_map_episode_selection,
+    load_seed_map_manifest,
+    resolve_seed_map_selection,
+)
 from data.pointmaze.variants import (
     POINTMAZE_VARIANTS,
     get_pointmaze_variant_type,
@@ -466,7 +472,10 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
             f"episode_len={len(actions)}"
         )
     templates = config["templates"]
-    prompt_vars = config["prompt_vars"]
+    prompt_vars = apply_sensing_config_to_prompt_vars(
+        payload.get("seed_map_prompt_vars", config["prompt_vars"]),
+        config,
+    )
     include_text_records = bool(payload.get("include_text_records", False))
     worker_total = int(shared_config["worker_total"])
     split = config["split"]
@@ -741,6 +750,10 @@ def _slice_episode(episode, action_end: int, *, mark_truncated: bool):
         if value is None:
             continue
         kwargs[field] = _slice_aligned_value(value, old_action_len, action_end)
+    for field in ("seed_map_prompt_vars", "seed_map_metadata"):
+        value = _get_episode_field(episode, field)
+        if value is not None:
+            kwargs[field] = value
     if mark_truncated and "truncations" in kwargs:
         kwargs["truncations"] = _set_last_truncation_true(kwargs["truncations"])
     return SimpleNamespace(**kwargs)
@@ -1243,6 +1256,7 @@ class PointMazeBuildConfig:
     sampling_seed: int
     family_data_config: dict | None
     local_dataset_root: str | None
+    seed_map_selection: SeedMapSelection | None
     history_num: int
     history_stride: int
     wall_sensing_version: str
@@ -1337,16 +1351,27 @@ class PointMazeDataset(BaseOfflineDataset):
                 raise ValueError(f"Duplicate train shard planning request for variant={config.variant!r}")
             variants.append(config.variant)
             prompt_count = len(cls._resolve_prompt_names(config))
-            selection = select_variant_episode_indices(
-                variant=config.variant,
-                train_data_ratio=config.train_data_ratio,
-                episode_keep_num=config.episode_keep_num,
-                sampling_seed=config.sampling_seed,
-                balanced_train_target=config.balanced_train_episode_count,
-                episode_loader=cls._load_variant_episodes,
-                family_data_config=config.family_data_config,
-                local_dataset_root=config.local_dataset_root,
-            )
+            if config.seed_map_selection is not None:
+                selection = build_seed_map_episode_selection(
+                    config.seed_map_selection,
+                    train_data_ratio=config.train_data_ratio,
+                    episode_transform=lambda episode: cls._seed_map_episode_transform(
+                        episode,
+                        config.family_data_config,
+                        config.variant,
+                    ),
+                )
+            else:
+                selection = select_variant_episode_indices(
+                    variant=config.variant,
+                    train_data_ratio=config.train_data_ratio,
+                    episode_keep_num=config.episode_keep_num,
+                    sampling_seed=config.sampling_seed,
+                    balanced_train_target=config.balanced_train_episode_count,
+                    episode_loader=cls._load_variant_episodes,
+                    family_data_config=config.family_data_config,
+                    local_dataset_root=config.local_dataset_root,
+                )
             episodes = selection["episodes"]
             step_counts = [len(episode.actions) for episode in episodes]
             variant_shards = split_episode_segments_for_partitions(
@@ -1367,6 +1392,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 )
             selection_summary = dict(selection)
             selection_summary.pop("episodes", None)
+            selection_summary.pop("records", None)
             selection_summary["prompt_count"] = prompt_count
             selections.append(selection_summary)
             episodes_by_variant[config.variant] = episodes
@@ -1428,6 +1454,16 @@ class PointMazeDataset(BaseOfflineDataset):
                         for key, values in episode.observations.items()
                     },
                     "actions": episode.actions,
+                    **(
+                        {
+                            "seed_map_prompt_vars": (
+                                episode.seed_map_prompt_vars
+                            ),
+                            "seed_map_metadata": episode.seed_map_metadata,
+                        }
+                        if hasattr(episode, "seed_map_prompt_vars")
+                        else {}
+                    ),
                 }
             )
         return payloads
@@ -1455,6 +1491,19 @@ class PointMazeDataset(BaseOfflineDataset):
     @classmethod
     def _normalize_family_data_config(cls, family_data_config: dict | None):
         return _normalize_pointmaze_data_config(family_data_config)
+
+    @classmethod
+    def _seed_map_episode_transform(
+        cls,
+        episode,
+        family_data_config: dict | None,
+        variant: str,
+    ):
+        return _apply_pointmaze_data_config(
+            [episode],
+            family_data_config,
+            variant=variant,
+        )[0]
 
     @classmethod
     def _get_variant_type(cls, meta: dict) -> str:
@@ -1511,19 +1560,33 @@ class PointMazeDataset(BaseOfflineDataset):
                     "segment_count": len(base_config.episode_segments),
                 }
             else:
-                selection = select_variant_episode_indices(
-                    variant=base_config.variant,
-                    train_data_ratio=base_config.train_data_ratio,
-                    episode_keep_num=base_config.episode_keep_num,
-                    sampling_seed=base_config.sampling_seed,
-                    balanced_train_target=base_config.balanced_train_episode_count,
-                    episode_loader=cls._load_variant_episodes,
-                    family_data_config=base_config.family_data_config,
-                    local_dataset_root=base_config.local_dataset_root,
-                )
+                if base_config.seed_map_selection is not None:
+                    selection = build_seed_map_episode_selection(
+                        base_config.seed_map_selection,
+                        train_data_ratio=base_config.train_data_ratio,
+                        episode_transform=lambda episode: (
+                            cls._seed_map_episode_transform(
+                                episode,
+                                base_config.family_data_config,
+                                base_config.variant,
+                            )
+                        ),
+                    )
+                else:
+                    selection = select_variant_episode_indices(
+                        variant=base_config.variant,
+                        train_data_ratio=base_config.train_data_ratio,
+                        episode_keep_num=base_config.episode_keep_num,
+                        sampling_seed=base_config.sampling_seed,
+                        balanced_train_target=base_config.balanced_train_episode_count,
+                        episode_loader=cls._load_variant_episodes,
+                        family_data_config=base_config.family_data_config,
+                        local_dataset_root=base_config.local_dataset_root,
+                    )
                 selection = _apply_selection_partition(selection, base_config)
             selection_for_summary = dict(selection)
             selection_for_summary.pop("episodes", None)
+            selection_for_summary.pop("records", None)
             selections_by_variant[variant] = selection_for_summary
             cls._print_selection_summary(base_config, selection)
 
@@ -1554,9 +1617,11 @@ class PointMazeDataset(BaseOfflineDataset):
                 )
                 selection_for_job = dict(selection)
                 selection_for_job.pop("episodes", None)
+                selection_for_job.pop("records", None)
                 selections_by_job[job.job_id] = selection_for_job
                 jobs.append(job)
             selection.pop("episodes", None)
+            selection.pop("records", None)
 
         cls._print_total_selection_summary(list(selections_by_variant.values()))
 
@@ -1680,6 +1745,14 @@ class PointMazeDataset(BaseOfflineDataset):
             sampling_seed=request.sampling_seed,
             family_data_config=cls._normalize_family_data_config(request.family_data_config),
             local_dataset_root=_normalize_local_dataset_root(request.local_dataset_root),
+            seed_map_selection=(
+                resolve_seed_map_selection(
+                    request.seed_map_selection,
+                    env_family=cls.ENV_FAMILY,
+                )
+                if request.seed_map_selection is not None
+                else None
+            ),
             history_num=request.history_num,
             history_stride=request.history_stride,
             **resolve_sensing_config(
@@ -1747,36 +1820,53 @@ class PointMazeDataset(BaseOfflineDataset):
 
     @classmethod
     def _cache_signature_payload(cls, config: PointMazeBuildConfig) -> dict:
-        meta = cls.VARIANTS[config.variant]
-        variant_type = cls._get_variant_type(meta)
         prompt_names = cls._resolve_prompt_names(config)
         templates = load_named_templates(cls.ENV_FAMILY, prompt_names)
-        local_data_signature = cls._local_data_signature(
-            meta,
-            local_dataset_root=config.local_dataset_root,
-        )
-        effective_dataset_path = None
-        if variant_type == "local":
-            effective_dataset_path = str(
-                resolve_local_dataset_path(
-                    meta["dataset_path"],
-                    local_dataset_root=config.local_dataset_root,
-                )
+        if config.seed_map_selection is not None:
+            manifest = load_seed_map_manifest(
+                config.seed_map_selection.dataset_path,
+                require_complete=True,
             )
-        variant_metadata = {
-            "dataset_id": meta.get("dataset_id"),
-            "dataset_path": (
-                effective_dataset_path
-                if effective_dataset_path is not None
-                else meta.get("dataset_path")
-            ),
-            "default_dataset_path": meta.get("dataset_path"),
-            "env_id": meta.get("env_id"),
-            "env_paras": meta.get("env_paras"),
-            "prompt_vars": meta["prompt_vars"],
-        }
-        if "env_kwargs" in meta:
-            variant_metadata["env_kwargs"] = meta["env_kwargs"]
+            variant_type = "seed_map"
+            local_data_signature = (
+                f"seed-map-{manifest['content_hash']}-"
+                f"{config.seed_map_selection.selection_hash}"
+            )
+            variant_metadata = {
+                "seed_map_selection": config.seed_map_selection.to_dict(),
+                "seed_map_spec": manifest["seed_map_spec"],
+                "reward_type": manifest["reward_type"],
+                "content_hash": manifest["content_hash"],
+            }
+        else:
+            meta = cls.VARIANTS[config.variant]
+            variant_type = cls._get_variant_type(meta)
+            local_data_signature = cls._local_data_signature(
+                meta,
+                local_dataset_root=config.local_dataset_root,
+            )
+            effective_dataset_path = None
+            if variant_type == "local":
+                effective_dataset_path = str(
+                    resolve_local_dataset_path(
+                        meta["dataset_path"],
+                        local_dataset_root=config.local_dataset_root,
+                    )
+                )
+            variant_metadata = {
+                "dataset_id": meta.get("dataset_id"),
+                "dataset_path": (
+                    effective_dataset_path
+                    if effective_dataset_path is not None
+                    else meta.get("dataset_path")
+                ),
+                "default_dataset_path": meta.get("dataset_path"),
+                "env_id": meta.get("env_id"),
+                "env_paras": meta.get("env_paras"),
+                "prompt_vars": meta["prompt_vars"],
+            }
+            if "env_kwargs" in meta:
+                variant_metadata["env_kwargs"] = meta["env_kwargs"]
         payload = {
             "env_family": cls.ENV_FAMILY,
             "cache_format": cls.CACHE_FORMAT,
@@ -1917,10 +2007,16 @@ class PointMazeDataset(BaseOfflineDataset):
         selection: dict,
         request_indices: list[int],
     ) -> PointMazeTokenizationJob:
-        meta = cls.VARIANTS[config.variant]
         prompt_names = cls._resolve_prompt_names(config)
         templates = load_named_templates(cls.ENV_FAMILY, prompt_names)
-        prompt_vars = apply_sensing_config_to_prompt_vars(meta["prompt_vars"], vars(config))
+        if config.seed_map_selection is not None:
+            prompt_vars = {}
+        else:
+            meta = cls.VARIANTS[config.variant]
+            prompt_vars = apply_sensing_config_to_prompt_vars(
+                meta["prompt_vars"],
+                vars(config),
+            )
 
         all_episodes = selection.get("episodes")
         episode_indices = cls._selected_indices_for_config(config, selection)
@@ -1964,6 +2060,19 @@ class PointMazeDataset(BaseOfflineDataset):
                         for key, values in episode.observations.items()
                     },
                     "actions": episode.actions,
+                    **(
+                        {
+                            "seed_map_prompt_vars": (
+                                apply_sensing_config_to_prompt_vars(
+                                    episode.seed_map_prompt_vars,
+                                    vars(config),
+                                )
+                            ),
+                            "seed_map_metadata": episode.seed_map_metadata,
+                        }
+                        if hasattr(episode, "seed_map_prompt_vars")
+                        else {}
+                    ),
                 }
                 for episode_idx in episode_indices
                 for episode in [all_episodes[episode_idx]]
@@ -2097,6 +2206,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 "sampling_seed",
                 "family_data_config",
                 "local_dataset_root",
+                "seed_map_selection",
                 "history_num",
                 "history_stride",
                 "wall_sensing_version",

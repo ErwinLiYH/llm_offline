@@ -661,6 +661,29 @@ micromamba run -n d4rl_datagen python local_pointmaze_gen.py \
 
 ---
 
+### Seed-map procedural data
+
+PointMaze 和 AntMaze 的 local 生成脚本都支持 `--use-seed-map`，用于绕过固定 variant 地图并按 `map_seed` 无限生成可复现地图。`crossmaze.seed_map.SeedMapSpec` 将 generator version 和尺寸策略纳入地图身份：`random` 默认从包含外围墙的最终奇数边长 `5, 7, ..., 15` 中按 seed 确定性选择正方形尺寸；`fixed` 接受奇数的最终 `rows/cols`，因此可以生成矩形。相同 `map_seed + spec` 在数据生成、训练 metadata 恢复和 eval worker 中必须得到完全相同的 plain 0/1 地图。
+
+生成范围统一使用半开区间 `[start, end)`。例如 `--seed-map-start 0 --seed-map-end 1000 --seed-map-trajectories-per-seed 10` 生成 1000 张地图、每图 10 条轨迹，并聚合为一个 `0-1000-10` 数据集：
+
+```text
+0-1000-10/
+├── manifest.json
+├── index.jsonl
+└── data/main_data.hdf5
+```
+
+`manifest.json` 固化 family、reward type、seed range、每 seed 轨迹容量和 generator spec；`index.jsonl` 保存每条 trajectory 的 map/trajectory identity 与 HDF5 group；HDF5 保存实际 episode arrays。追加生成按 seed 检查已完成前缀，能清理中断后未写入 index 的 episode group，再从缺失 trajectory 继续。完成状态要求 manifest、index 和 HDF5 一致并记录 content hash。生成使用带 `minari[create]` 的 `d4rl_datagen` 环境；完整命令和字段见 `docs/seed_map.md`。
+
+训练配置中的 `seed_map_train.enabled: true` 优先于 `train_mode` / `train_varients`。它从一个 aggregate `dataset_path` 内先用一个或多个 `seed_ranges` 限定候选地图，再按 `selection_seed` 无放回选择 `seed_count` 张地图，并从每图无放回选择 `trajectories_per_seed` 条轨迹。`split_unit: seed` 是默认值：先按 `train_data_ratio` 划分 map seeds，再展开轨迹，保证 train/val 不共享地图；`split_unit: trajectory` 则允许同一地图的不同轨迹进入两侧。legacy `episode_keep_num`、`episode_keep_per_varient` 和 `balance_variant_episode_count` 不覆盖这一显式 n/m 选择。
+
+`seed_map_eval.enabled: true` 独立于训练数据源，并优先于普通 eval variants。它可以通过 `dataset_path` 继承已有 corpus 的 generator spec 和范围，也可以省略 dataset、显式给出新 `seed_ranges` 与 generator spec 来评估未生成 offline trajectory 的地图。每个 map seed 解析成一个 `seed-map-<N>` synthetic variant，继续使用现有 DDP variant 分配和 per-variant rollout worker。程序化地图没有 canonical fixed pair，因此两个 family 都默认 `random-start-goal`，允许显式 `hard-sample`，拒绝 `fix-start-goal`。只启用 `seed_map_train` 不会隐式改变 training-time eval；需要程序化 eval 时必须单独启用 `seed_map_eval`。
+
+两个 section 缺失或 `enabled: false` 时完全走旧 variant 路径；已经启用但字段、range、family 或 corpus capacity 不合法时直接报错，不静默回退。tokenized cache signature 包含 corpus manifest/content hash、selection hash 和 per-map prompt metadata，partition training、`--tokenize-only` 与 `estimate_dataset.py` 使用同一选择结果。
+
+---
+
 ### Local/custom maze generation and topology scoring
 
 AntMaze local/test layout 由 `generate_antmaze_layouts.py` 生成候选，并按 `utils/maze_metrics.py` 中的静态拓扑指标筛选。当前实现借鉴 design-centric maze generation 的思路：先给定期望的拓扑 profile，再从候选中选择满足路径长度、岔路、死胡同、空间覆盖和开放块约束的地图。它不是论文方法的完整复现，而是适配 AntMaze 网格、rollout 和 prompt 的工程化版本。
@@ -773,7 +796,10 @@ project/
 │   │   ├── dataset.py           # 数据加载、tokenize（每 timestep 展开5条）
 │   │   └── formatting.py        # obs 序列化/附加 prompt 变量、text action 生成与解析、action 校验
 │   ├── base_dataset.py          # 抽象基类，定义通用接口（load、format、tokenize）
+│   ├── seed_map_corpus.py        # seed-map aggregate corpus、恢复校验、n-map/m-trajectory 选择与 split
 │   └── registry.py              # 环境族注册表，路由 dataset、formatter、variants 和 eval env spec
+├── crossmaze/                    # standalone 环境事实、构造、sensing、layout、score 与程序化地图
+│   └── seed_map.py              # 版本化、确定性的程序化地图与 family prompt/env metadata
 ├── model/
 │   └── policy.py                # 模型加载（从 config 读取 model_name）、LoRA 设置
 ├── train.py                     # 训练入口，读取 config 决定训练模式
@@ -794,7 +820,9 @@ project/
     ├── eval_rollout.py          # eval/score 共享 prompt、history、动作生成、parse retry、fallback 逻辑
     ├── maze_metrics.py          # maze 拓扑指标、直径端点和 static_difficulty
     ├── pointmaze_score.py       # PointMaze score env、reference、fingerprint 和 normalized score 逻辑
-    └── prompt_loader.py         # 加载指定环境族的共享模板，返回列表
+    ├── prompt_loader.py         # 加载指定环境族的共享模板，返回列表
+    ├── seed_map_config.py       # seed-map 生成 CLI 与 size spec 规范化
+    └── seed_map_eval.py         # corpus-backed/fresh seed-map eval target 解析
 ```
 
 **`data/<env_family>/formatting.py` 接口规范**（每个环境族必须实现）：
@@ -834,7 +862,7 @@ micromamba run -n llm_offline python estimate_dataset.py \
   --sample-episodes-per-variant 4
 ```
 
-`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。它也支持 `--config base.yaml override.yaml` 多文件合并。脚本读取合并后的训练配置后完整加载 raw episodes，按训练语义解析 `train_mode` / `train_varients`、`local_dataset_root`、`prompt_templete_index`、`episode_keep_num` / `episode_keep_per_varient`、`train_data_ratio`、`balance_variant_episode_count`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时会透传 `antmaze_data_config`，`env_family: pointmaze` 时会透传 `pointmaze_data_config`，因此数据预处理后的 episode 数/step 数才是统计基础。
+`estimate_dataset.py` 只加载 tokenizer，不加载模型、LoRA 或 Unsloth 训练路径，因此可以在无 GPU 环境运行。它也支持 `--config base.yaml override.yaml` 多文件合并。脚本读取合并后的训练配置后完整加载 raw episodes，按训练语义解析 priority `seed_map_train` 或 legacy `train_mode` / `train_varients`、`local_dataset_root`、`prompt_templete_index`、legacy episode keep/balance controls（仅在对应路径生效）、`train_data_ratio`、action mode 和 `dataset_load_partitions`；`env_family: antmaze` 时会透传 `antmaze_data_config`，`env_family: pointmaze` 时会透传 `pointmaze_data_config`，因此数据预处理后的 episode 数/step 数才是统计基础。
 
 体积估算不会写正式 dataset cache。脚本会按每个 selected variant 抽取 `--sample-episodes-per-variant` 条完整 selected episode 做真实 tokenization，把这些样本 pickle 成类似 shard cache 的结构后测量字节数，再按 `sampled_pickle_bytes * target_selected_steps / sampled_steps` 用 step ratio 外推 train、val 和 total `.pkl` 大小，单位为十进制 GB。多 prompt 导致的样本膨胀由抽样 tokenization 自然包含；`max_data_num` 会同时影响样本数和 size target。`--world_size` 只用于数学预估 DDP batch 数和 partition round `target_batches`，不初始化 DDP、不要求真实 rank 或 GPU。
 
@@ -855,7 +883,7 @@ micromamba run -n llm_offline python estimate_dataset.py \
    - *PointMaze 实现*：`format_obs(obs, meta)` 接收环境观测对象（当前为 dict），返回 `obs_text`、动态 `location_sensing_en/zh`、动态 `wall_sensing_en/zh` 和每步更新的 `dmap`
    - *AntMaze 实现*：严格校验 27 维 v4 本体 observation，并结合 `achieved_goal` / `desired_goal` 渲染 torso、姿态、关节和速度状态；训练使用离线数据地图，rollout 使用实例化 eval env 的真实地图
    - `CrossMazeEnv` 的结构化 observation 使用 `neighbor_status: [up, down, left, right]` 四元素整数列表，状态码为 `0=free`、`1=wall`、`2=risk`，不在环境接口中携带方向键或状态文本。prompt 侧的 `render_sensing_text` 按固定顺序将状态码转换为 `wall/free/risk` 文本；`location_sensing` 会给出当前位置格子和目标格子，`wall_sensing` 会给出上下左右相邻状态，具体状态集取决于版本配置。行列从左上角开始按 1-based 计数。坐标由 `utils/maze_sensing.py` 按 `floor + map_center + maze_size_scaling` 公式换算；如果原始结果落在墙格，则吸附到最近的 free cell 中心，避免贴墙/边界数值误差让 prompt 报告墙内位置。`wall_sensing_version` 支持 `v1`-`v5`，缺省或 `null` 规范化为 `v3`；`map_sensing_boundary_risk_threshold` 缺省或 `null` 规范化为 `0.10`，含义是 cell size 的比例。默认 `v3` 是 new-corner 版：移动方向邻格 free 时，只有在当前位置贴近某一侧边界、当前同侧格为 free、而前方同侧对角格为 wall 时，才把该方向报告为 `wall`。`v5` 是 risk 版：移动方向邻格本身为 wall 时始终报告 `wall`，上述 new-corner 条件报告 `risk`。Standalone eval 和 `score.py mode: score` 若 checkpoint `config.yaml` 已记录这两个字段，会继承 checkpoint 值并拒绝 eval/score YAML 中的冲突值；旧 checkpoint 没有字段时才使用 eval/score YAML 或默认值。
-6. **Episode 级别 train/val 划分**：先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），多 variant 训练可用 `episode_keep_per_varient` 按 selected variant 覆盖 keep 数；再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train，剩余作为 val，防止数据泄露
+6. **Episode/map 级别 train/val 划分**：legacy variant 路径先按 `episode_keep_num` 随机抽样 episode pool（真实 episode 更少时使用全部），多 variant 训练可用 `episode_keep_per_varient` 按 selected variant 覆盖 keep 数，再在 pool 内按 `floor(pool_size * train_data_ratio)` 划分 train；seed-map 路径按 section 的 n-map/m-trajectory 选择，并由 `split_unit` 决定先按 map seed 还是 trajectory 划分，默认 `seed` 防止同一地图跨 train/val
 7. **多变种混合采样**：联合训练时按各变种样本数加权，保证各变种均匀覆盖；DDP 下通过分布式 weighted sampler 保持同一语义
 8. **DataLoader 与设备搬运**：`dataloader_config` 统一控制 train/val loader 的 `num_workers`、`pin_memory`、`persistent_workers` 和 `prefetch_factor`，以及 batch tensor 搬到训练设备时的 `non_blocking`。`persistent_workers` / `prefetch_factor` 仅在 `num_workers > 0` 时合法；`pin_memory: true` 配合 `non_blocking: true` 可让 CUDA H2D copy 具备异步重叠条件。DDP 下每个 rank 独立创建相同数量的 DataLoader workers
 9. **DDP 并行训练与评估**：默认 `parallel_backend: single` 保留单卡 Unsloth 路径；`parallel_backend: ddp` 通过 `torchrun` 单机多进程启动，使用 NCCL 同步梯度。DDP 下 `batch_size` 是每 GPU micro-batch，全局有效 batch 为 `batch_size * gradient_accumulation_steps * world_size`。checkpoint 和 validation 仍只由 rank0 执行；`eval_distribute_variants: true` 时训练期和 standalone rollout 把 variants 轮转分配到各 rank，由所属 rank 写对应 result、step logs 和视频，rank0 聚合结果并写 W&B

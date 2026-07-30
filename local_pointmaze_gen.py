@@ -26,10 +26,27 @@ from crossmaze.eval_position import (
     build_hard_start_goal_pair_space as _build_hard_sample_pair_space,
 )
 from crossmaze.reward import REWARD_TYPES, normalize_reward_type
+from crossmaze.seed_map import (
+    build_seed_map_env_paras,
+    generate_seed_map,
+    normalize_seed_map_spec,
+    stable_seed_map_int,
+)
+from data.seed_map_corpus import (
+    append_minari_shard_to_seed_map_corpus,
+    create_seed_map_corpus,
+    existing_seed_map_trajectory_indices,
+    finalize_seed_map_corpus,
+)
 from data.pointmaze.variants import (
     POINTMAZE_VARIANTS,
     get_pointmaze_variant_type,
     resolve_local_dataset_path,
+)
+from utils.seed_map_config import (
+    add_seed_map_generation_args,
+    resolve_seed_map_generation_path,
+    validate_seed_map_generation_args,
 )
 
 OFFICIAL_POINTMAZE_DIR = (
@@ -92,9 +109,9 @@ class PointMazeHoldStepDataCallback(PointMazeStepDataCallback):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--variants", nargs="+", required=True)
+    parser.add_argument("--variants", nargs="+")
     parser.add_argument("--num-workers", type=int, default=os.cpu_count() or 1)
-    parser.add_argument("--target-episodes", type=int, required=True)
+    parser.add_argument("--target-episodes", type=int)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -155,6 +172,7 @@ def parse_args():
             "difficulty sorting. 0 keeps all pairs."
         ),
     )
+    add_seed_map_generation_args(parser)
     return parser.parse_args()
 
 
@@ -860,10 +878,189 @@ def generate_variant(
     )
 
 
+def _collect_seed_map_shard_from_kwargs(kwargs: dict) -> dict:
+    map_seed = int(kwargs.pop("map_seed"))
+    seed_map_spec = normalize_seed_map_spec(kwargs.pop("seed_map_spec"))
+    reward_type = normalize_reward_type(kwargs.pop("reward_type"))
+    max_episode_steps = kwargs.pop("max_episode_steps")
+    hard_sample = bool(kwargs.get("hard_sample", False))
+    hard_sample_alpha = float(kwargs.get("hard_sample_alpha", 1.0))
+    hard_sample_top_n = int(kwargs.pop("hard_sample_top_n", 0))
+
+    maze_map = generate_seed_map(map_seed, seed_map_spec)
+    env_paras = build_seed_map_env_paras(
+        "pointmaze",
+        maze_map=maze_map,
+        reward_type=reward_type,
+        max_episode_steps=max_episode_steps,
+    )
+    hard_pair_space = []
+    hard_pair_space_total = 0
+    if hard_sample:
+        hard_pair_space, hard_pair_space_total = _build_hard_sample_pair_space(
+            maze_map,
+            _free_cells(maze_map),
+            hard_sample_alpha,
+            hard_sample_top_n,
+        )
+    result = _collect_shard(
+        variant=f"seed-map-{map_seed}",
+        env_paras=env_paras,
+        max_episode_steps=int(env_paras["max_episode_steps"]),
+        hard_pair_space=hard_pair_space,
+        **kwargs,
+    )
+    result.update(
+        {
+            "map_seed": map_seed,
+            "maze_map": maze_map,
+            "hard_pair_space_total": hard_pair_space_total,
+        }
+    )
+    return result
+
+
+def generate_seed_map_corpus(args) -> Path:
+    seed_map_spec = validate_seed_map_generation_args(args)
+    reward_type = normalize_reward_type(args.reward_type, default="sparse")
+    repo_root = Path(__file__).resolve().parent
+    dataset_root = resolve_seed_map_generation_path(
+        args,
+        env_family="pointmaze",
+        reward_type=reward_type,
+        repo_root=repo_root,
+        spec=seed_map_spec,
+    )
+    collection_config = {
+        "collection_seed": int(args.seed),
+        "max_episode_steps": int(args.max_episode_steps),
+        "post_success_hold_steps": int(args.post_success_hold_steps),
+        "post_success_hold_noise_std": float(args.post_success_hold_noise_std),
+        "hard_sample": bool(args.hard_sample),
+        "hard_retry": int(args.hard_retry),
+        "hard_sample_alpha": float(args.hard_sample_alpha),
+        "hard_sample_top_n": int(args.hard_sample_top_n),
+    }
+    manifest = create_seed_map_corpus(
+        dataset_root,
+        env_family="pointmaze",
+        reward_type=reward_type,
+        seed_start=int(args.seed_map_start),
+        seed_end=int(args.seed_map_end),
+        trajectories_per_seed=int(args.seed_map_trajectories_per_seed),
+        seed_map_spec=seed_map_spec,
+        collection_config=collection_config,
+        overwrite=bool(args.overwrite),
+    )
+    if bool(manifest.get("complete", False)):
+        print(
+            f"[local-pointmaze-gen][seed-map] corpus already complete: {dataset_root}"
+        )
+        return dataset_root
+
+    capacity = int(args.seed_map_trajectories_per_seed)
+    tasks = []
+    for map_seed in range(int(args.seed_map_start), int(args.seed_map_end)):
+        existing = existing_seed_map_trajectory_indices(dataset_root, map_seed)
+        expected_existing = list(range(len(existing)))
+        if existing != expected_existing:
+            raise ValueError(
+                f"Seed-map corpus map_seed={map_seed} has non-contiguous "
+                f"trajectory indices {existing}; expected {expected_existing}"
+            )
+        if len(existing) >= capacity:
+            continue
+        tasks.append(
+            {
+                "map_seed": map_seed,
+                "seed_map_spec": seed_map_spec.to_dict(),
+                "reward_type": reward_type,
+                "target_episodes": capacity,
+                "seed": int(
+                    stable_seed_map_int(
+                        "pointmaze",
+                        "seed_map_collection",
+                        int(args.seed),
+                        map_seed,
+                        bits=31,
+                    )
+                ),
+                "worker_index": map_seed,
+                "max_episode_steps": int(args.max_episode_steps),
+                "post_success_hold_steps": int(args.post_success_hold_steps),
+                "post_success_hold_noise_std": float(
+                    args.post_success_hold_noise_std
+                ),
+                "hard_sample": bool(args.hard_sample),
+                "hard_retry": int(args.hard_retry),
+                "hard_sample_alpha": float(args.hard_sample_alpha),
+                "hard_sample_top_n": int(args.hard_sample_top_n),
+                "existing_count": len(existing),
+            }
+        )
+
+    if not tasks:
+        finalize_seed_map_corpus(dataset_root)
+        print(
+            f"[local-pointmaze-gen][seed-map] corpus complete: {dataset_root}"
+        )
+        return dataset_root
+
+    worker_count = min(max(int(args.num_workers), 1), len(tasks))
+    print(
+        "[local-pointmaze-gen][seed-map] "
+        f"dataset={dataset_root}, range=[{args.seed_map_start}, {args.seed_map_end}), "
+        f"trajectories_per_seed={capacity}, pending_maps={len(tasks)}, "
+        f"workers={worker_count}, size_spec={seed_map_spec.to_dict()}, "
+        f"hard_sample={args.hard_sample}"
+    )
+    worker_tasks = []
+    for task in tasks:
+        worker_task = dict(task)
+        worker_task.pop("existing_count")
+        worker_tasks.append(worker_task)
+
+    completed_results = []
+    try:
+        with ProcessPoolExecutor(max_workers=worker_count) as executor:
+            for task, result in zip(
+                tasks,
+                executor.map(_collect_seed_map_shard_from_kwargs, worker_tasks),
+            ):
+                completed_results.append(result)
+                existing_count = int(task["existing_count"])
+                missing_count = capacity - existing_count
+                append_minari_shard_to_seed_map_corpus(
+                    dataset_root,
+                    result["path"],
+                    map_seed=int(result["map_seed"]),
+                    maze_map=result["maze_map"],
+                    trajectory_start_index=existing_count,
+                    trajectory_count=missing_count,
+                    source_episode_start_index=existing_count,
+                )
+                print(
+                    "[local-pointmaze-gen][seed-map] "
+                    f"map_seed={result['map_seed']}: appended={missing_count}, "
+                    f"dataset={dataset_root}"
+                )
+                _cleanup_dataset_id(str(result["dataset_id"]))
+    finally:
+        for result in completed_results:
+            _cleanup_dataset_id(str(result["dataset_id"]))
+
+    final_manifest = finalize_seed_map_corpus(dataset_root)
+    print(
+        "[local-pointmaze-gen][seed-map] complete: "
+        f"maps={final_manifest['generated_map_count']}, "
+        f"episodes={final_manifest['total_episodes']}, "
+        f"steps={final_manifest['total_steps']}, dataset={dataset_root}"
+    )
+    return dataset_root
+
+
 def main():
     args = parse_args()
-    if args.target_episodes < 1:
-        raise ValueError("--target-episodes must be >= 1")
     if args.num_workers < 1:
         raise ValueError("--num-workers must be >= 1")
     if args.post_success_hold_steps < 0:
@@ -876,6 +1073,26 @@ def main():
         raise ValueError("--hard-sample-alpha must be >= 0")
     if args.hard_sample_top_n < 0:
         raise ValueError("--hard-sample-top-n must be >= 0")
+    if getattr(args, "use_seed_map", False):
+        if args.variants:
+            print(
+                "[local-pointmaze-gen][seed-map] --variants is ignored because "
+                "--use-seed-map is enabled."
+            )
+        if args.target_episodes is not None:
+            print(
+                "[local-pointmaze-gen][seed-map] --target-episodes is ignored; "
+                "use --seed-map-trajectories-per-seed."
+            )
+        generate_seed_map_corpus(args)
+        return
+
+    if not args.variants:
+        raise ValueError("--variants is required unless --use-seed-map is enabled")
+    if args.target_episodes is None or args.target_episodes < 1:
+        raise ValueError(
+            "--target-episodes must be >= 1 unless --use-seed-map is enabled"
+        )
     for variant in args.variants:
         generate_variant(
             variant,

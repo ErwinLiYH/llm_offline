@@ -270,6 +270,10 @@ def _slice_episode(episode, action_end: int, *, mark_truncated: bool):
         if value is None:
             continue
         kwargs[field] = _slice_aligned_value(value, old_action_len, action_end)
+    for field in ("seed_map_prompt_vars", "seed_map_metadata"):
+        value = _get_episode_field(episode, field)
+        if value is not None:
+            kwargs[field] = value
     if mark_truncated and "truncations" in kwargs:
         kwargs["truncations"] = _set_last_truncation_true(kwargs["truncations"])
     return SimpleNamespace(**kwargs)
@@ -363,6 +367,21 @@ class AntMazeDataset(PointMazeDataset):
     @classmethod
     def _normalize_family_data_config(cls, family_data_config: dict | None):
         return _normalize_antmaze_data_config(family_data_config)
+
+    @classmethod
+    def _seed_map_episode_transform(
+        cls,
+        episode,
+        family_data_config: dict | None,
+        variant: str,
+    ):
+        del variant
+        config = _normalize_antmaze_data_config(family_data_config)
+        if config["filter_success"] and not _raw_success_any(episode):
+            return None
+        if config["truncate"]:
+            episode = _truncate_episode(episode, config)
+        return episode
 
     @classmethod
     def _normalize_request(cls, request):

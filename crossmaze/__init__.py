@@ -5,6 +5,8 @@ Public API:
   observations carry a structured `obs["crossmaze"]` field (static/dynamic map
   layouts, location sensing, wall sensing). Text rendering stays on the
   algorithm side.
+- `make_seed_map(env_family, map_seed, ...)`: build the same wrapper directly
+  from a versioned procedural map seed without registering a variant.
 - `CrossMazeEnv` / `CROSSMAZE_OBS_KEY`: the wrapper class and the obs key.
 - `build_dynamic_map` / `format_dynamic_visual_map`: numeric and prompt-text
   dynamic-map helpers (`2=C`, `3=G`, `4=S`).
@@ -46,9 +48,21 @@ from crossmaze.reward import (  # noqa: F401
     resolve_reward_type,
     reward_typed_dataset_path,
 )
+from crossmaze.seed_map import (  # noqa: F401
+    SEED_MAP_VERSION,
+    SeedMapSpec,
+    build_seed_map_env_paras,
+    build_seed_map_prompt_vars,
+    generate_seed_map,
+    normalize_seed_map_spec,
+    seed_map_generator_hash,
+    seed_map_hash,
+    seed_map_shape,
+)
 
 _LAZY_EXPORTS = {
     "make": ("crossmaze._make", "make"),
+    "make_seed_map": ("crossmaze._make", "make_seed_map"),
     "CrossMazeEnv": ("crossmaze.wrapper", "CrossMazeEnv"),
     "ENV_FACTS": ("crossmaze.variants", "ENV_FACTS"),
     "get_env_facts": ("crossmaze.variants", "get_env_facts"),
@@ -77,6 +91,10 @@ __all__ = [
     "NEIGHBOR_STATUS_RISK",
     "NEIGHBOR_STATUS_WALL",
     "REWARD_TYPES",
+    "SEED_MAP_VERSION",
+    "SeedMapSpec",
+    "build_seed_map_env_paras",
+    "build_seed_map_prompt_vars",
     "build_dynamic_map",
     "build_sensing",
     "compute_sensing_arrays",
@@ -84,15 +102,21 @@ __all__ = [
     "eval_env_spec",
     "eval_reset_options",
     "format_dynamic_visual_map",
+    "generate_seed_map",
     "get_env_facts",
     "get_map_difficulty_config",
     "list_variants",
     "make",
+    "make_seed_map",
     "normalize_reward_type",
+    "normalize_seed_map_spec",
     "path_difficulty_config",
     "render_sensing_text",
     "resolve_reward_type",
     "reward_typed_dataset_path",
+    "seed_map_generator_hash",
+    "seed_map_hash",
+    "seed_map_shape",
 ]
 
 

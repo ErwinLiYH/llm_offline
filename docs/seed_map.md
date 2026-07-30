@@ -1,0 +1,142 @@
+# Seed-map 程序化地图与聚合数据
+
+`seed_map` 是 PointMaze/AntMaze 的可复现程序化地图模式。内部实现使用随机生成的生成树，但公开配置、数据格式和日志只使用 `seed_map` 术语。
+
+## 地图与种子语义
+
+- `map_seed` 与版本化的 size 配置共同唯一确定地图。
+- seed range 都是半开区间 `[start, end)`；`0-1000` 表示 1000 张地图。
+- `random` size 模式默认从最终地图边长 `5, 7, ..., 15` 中按 map seed 选择。这里的尺寸包含外围墙。
+- `fixed` 模式接受奇数的最终 `rows/cols`，因此也支持矩形地图。
+- PointMaze 与 AntMaze 使用同一张 0/1 地图；AntMaze 的 cell scaling 仍为 4。
+
+生成数据时，`--hard-sample` 与原脚本语义不变：
+
+- 未设置：环境 reset 随机选择起点和终点。
+- 设置：从当前 seed map 的可达起终点 pair 中按原 hard-sample 逻辑采样。
+
+## 生成聚合数据
+
+数据生成使用包含 `minari[create]` 的 `d4rl_datagen` 环境；尚未创建时先运行
+`micromamba env create -f dataGen_env.yaml`。
+
+PointMaze 示例：
+
+```bash
+micromamba run -n d4rl_datagen python local_pointmaze_gen.py \
+  --use-seed-map \
+  --seed-map-start 0 \
+  --seed-map-end 1000 \
+  --seed-map-trajectories-per-seed 10 \
+  --seed-map-size-mode random \
+  --seed-map-min-size 5 \
+  --seed-map-max-size 15 \
+  --num-workers 16 \
+  --seed 42
+```
+
+AntMaze 使用相同的 seed-map 参数，并继续接受原来的 `--policy-file`、`--mode`、`--diverse-cell-mode`、`--action-noise` 和 hard-sample 参数：
+
+```bash
+micromamba run -n d4rl_datagen python local_antmaze_gen.py \
+  --use-seed-map \
+  --seed-map-start 0 \
+  --seed-map-end 1000 \
+  --seed-map-trajectories-per-seed 10 \
+  --seed-map-size-mode random \
+  --num-workers 16 \
+  --seed 42
+```
+
+输出是一个逻辑数据集，而不是每张地图一个目录：
+
+```text
+.../0-1000-10/
+  manifest.json
+  index.jsonl
+  data/main_data.hdf5
+```
+
+默认父目录还包含环境 family、seed-map 版本、size 配置和 reward type。可以用 `--seed-map-dataset-root` 指定父目录或精确的 `0-1000-10` 目录。重复运行会按 map seed 恢复缺失数据；`--overwrite` 会重建精确目标数据集。
+
+## 训练选择
+
+在原训练配置上增加 `seed_map_train` 即可。原来的 `train_mode` 和 `train_varients` 可以保留；启用并正确解析 seed-map section 后，它们不会参与训练数据选择。
+
+```yaml
+seed_map_train:
+  enabled: true
+  dataset_path: local_datasets/pointmaze-seed-map-v1-random-size5-15-sparse/0-1000-10
+
+  # 可组合多个不重叠的半开区间。
+  seed_ranges:
+    - [0, 500]
+    - [700, 900]
+
+  # 从以上范围无放回、确定性地抽地图。
+  seed_count: 100
+
+  # 每张选中地图从 corpus 的 10 条中抽 4 条。
+  trajectories_per_seed: 4
+  selection_seed: 42
+
+  # 默认 seed，保证 train/val 不共享地图。
+  # trajectory 会按轨迹切分，允许同一地图进入两边。
+  split_unit: seed
+```
+
+`train_data_ratio` 在 `split_unit: seed` 下按地图数切 train/val，在 `trajectory` 下按轨迹数切分。`episode_keep_num`、`episode_keep_per_varient` 和 `balance_variant_episode_count` 不再控制 seed-map 的 n/m 抽样；n/m 只由 section 明确决定。
+
+tokenized cache 签名包含 corpus manifest/content hash、地图/轨迹选择 hash、每张地图的 prompt metadata 和原有 tokenizer/prompt/action/sensing 配置。
+
+## 评估选择
+
+`seed_map_eval` 独立于训练数据源，并优先于固定 `eval_mode` / `eval_variants`（standalone eval 中优先于 `variant` / `variants`）。
+
+评估 corpus 内地图：
+
+```yaml
+seed_map_eval:
+  enabled: true
+  dataset_path: local_datasets/pointmaze-seed-map-v1-random-size5-15-sparse/0-1000-10
+  seed_ranges:
+    - [900, 1000]
+  seed_count: 20
+  episodes_per_seed: 5
+  selection_seed: 7
+```
+
+评估未生成离线数据的新地图时不需要 `dataset_path`，但必须给出 range 和生成器配置：
+
+```yaml
+seed_map_eval:
+  enabled: true
+  seed_ranges:
+    - [1000, 2000]
+  seed_count: 100
+  episodes_per_seed: 5
+  selection_seed: 7
+  reward_type: sparse
+
+  seed_map_version: v1
+  seed_map_size_mode: random
+  seed_map_min_size: 5
+  seed_map_max_size: 15
+```
+
+每个 map seed 作为一个 synthetic eval variant，可继续使用现有的多 GPU variant 分配和每个 variant 内的 rollout workers。
+
+程序化地图没有注册的 canonical fixed pair，因此 PointMaze 和 AntMaze 的默认起终点模式都是 `random-start-goal`。也可显式配置原有 `hard-sample` 选项；`fix-start-goal` 会报错：
+
+```yaml
+eval_start_goal_mode: hard-sample
+eval_hard_sample_top_n: 100
+eval_hard_sample_alpha: 1.0
+```
+
+## 兼容性
+
+- `seed_map_train` 不存在或 `enabled: false`：训练完全使用原 variant 解析与数据加载路径。
+- `seed_map_eval` 不存在或 `enabled: false`：评估完全使用原 variant 路径。
+- section 启用但字段错误、范围越界、m 超过 corpus 容量、manifest 不完整或 family 不匹配时直接报错，不会静默回退到 variants。
+- 只启用 `seed_map_train` 而未启用 `seed_map_eval` 时，training-time eval 继续使用 legacy 固定 variant 选择；若希望在程序化地图上评估，应明确配置 `seed_map_eval`。

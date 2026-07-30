@@ -762,6 +762,167 @@ def get_eval_position_config(
     raise ValueError(f"Unsupported eval start/goal mode: {mode!r}")
 
 
+def resolve_seed_map_eval_position_mode(config: dict | None = None) -> str:
+    """Resolve start/goal mode for a procedural map.
+
+    Procedural maps have no registered canonical fixed pair, so their default
+    is random start/goal for both environment families.
+    """
+
+    config = config or {}
+    has_explicit_mode = (
+        config.get("eval_start_goal_mode") is not None
+        or config.get("eval_position_mode") is not None
+    )
+    if not has_explicit_mode:
+        return RANDOM_START_GOAL_MODE
+    raw_mode = config.get(
+        "eval_start_goal_mode",
+        config.get("eval_position_mode"),
+    )
+    mode = _normalize_eval_position_mode(raw_mode)
+    if mode == FIX_START_GOAL_MODE:
+        raise ValueError(
+            "seed_map_eval does not support fix-start-goal because generated "
+            "maps have no registered canonical pair; use random-start-goal or "
+            "hard-sample"
+        )
+    return mode
+
+
+def build_seed_map_eval_position_config(
+    env_family: str,
+    map_seed: int,
+    maze_map: list[list[object]],
+    *,
+    seed: int | None = None,
+    config: dict | None = None,
+) -> dict[str, Any] | None:
+    """Build the reusable start/goal pool for one generated map."""
+
+    mode = resolve_seed_map_eval_position_mode(config)
+    if mode == RANDOM_START_GOAL_MODE:
+        return None
+    if mode != HARD_SAMPLE_MODE:
+        raise ValueError(f"Unsupported seed-map eval position mode: {mode!r}")
+    options = _resolve_hard_sample_options(config)
+    records, _ = build_eval_start_goal_pair_space(
+        maze_map,
+        _free_cells(_clean_collection_map(maze_map)),
+        hard_sample_alpha=0.0,
+    )
+    hard_pool_size = _hard_sample_pool_size(
+        len(records),
+        top_percent=options["top_percent"],
+        top_n=options["top_n"],
+    )
+    hard_pool = _add_rank_sample_weights(
+        records[-hard_pool_size:],
+        options["alpha"],
+    )
+    sample_size = min(100, hard_pool_size)
+    rng = random.Random(
+        _stable_seed(
+            "seed-map-eval-position-hard-sample-v1:"
+            f"{env_family}:{int(map_seed)}:{_normalize_eval_seed(seed)}:"
+            f"{options['top_percent']}:{options['top_n']}:{options['alpha']}"
+        )
+    )
+    selected_records = _weighted_sample_without_replacement(
+        hard_pool,
+        sample_size,
+        rng,
+    )
+    return {
+        **_pair_space_metadata(records[0]),
+        "start_goal_list": [
+            _public_pair_record(record)
+            for record in selected_records
+        ],
+    }
+
+
+def select_seed_map_eval_position(
+    env_family: str,
+    map_seed: int,
+    *,
+    episode_index: int | None,
+    seed: int | None,
+    position_config: dict[str, Any] | None,
+    config: dict | None = None,
+) -> dict[str, Any] | None:
+    mode = resolve_seed_map_eval_position_mode(config)
+    if position_config is None or episode_index is None:
+        return None
+    records = list(position_config.get("start_goal_list") or [])
+    if not records:
+        return None
+    variant = f"seed-map-{int(map_seed)}"
+    index = _list_record_index(
+        env_family=env_family,
+        variant=variant,
+        count=len(records),
+        episode_index=int(episode_index),
+        seed=seed,
+    )
+    record = dict(records[index])
+    record["source"] = (
+        "hard_sample" if mode == HARD_SAMPLE_MODE else "start_goal_list"
+    )
+    record["index"] = int(index)
+    return record
+
+
+def get_seed_map_difficulty_config(
+    maze_map: list[list[object]],
+) -> dict[str, Any]:
+    records, _ = build_eval_start_goal_pair_space(
+        maze_map,
+        _free_cells(_clean_collection_map(maze_map)),
+        hard_sample_alpha=0.0,
+    )
+    return _pair_space_metadata(records[0])
+
+
+def get_seed_map_eval_position_pool_payload(
+    env_family: str,
+    map_seed: int,
+    *,
+    seed: int | None,
+    maze_map: list[list[object]],
+    config: dict | None = None,
+) -> dict[str, Any] | None:
+    mode = resolve_seed_map_eval_position_mode(config)
+    if mode != HARD_SAMPLE_MODE:
+        return None
+    position_config = build_seed_map_eval_position_config(
+        env_family,
+        map_seed,
+        maze_map,
+        seed=seed,
+        config=config,
+    )
+    if position_config is None:
+        return None
+    records = list(position_config.get("start_goal_list") or [])
+    return {
+        "env_family": env_family,
+        "variant": f"seed-map-{int(map_seed)}",
+        "map_seed": int(map_seed),
+        "seed": _normalize_eval_seed(seed),
+        "eval_position_mode": mode,
+        "selection_policy": "seeded_weighted_hard_sample_permutation_cycle",
+        "hard_sample_options": _resolve_hard_sample_options(config),
+        **{
+            key: value
+            for key, value in position_config.items()
+            if key != "start_goal_list"
+        },
+        "selected_pair_count": len(records),
+        "start_goal_list": records,
+    }
+
+
 def get_map_difficulty_config(
     env_family: str,
     variant: str,
