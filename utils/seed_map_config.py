@@ -110,19 +110,25 @@ def resolve_seed_map_generation_path(
         "dataset_root",
         getattr(args, "seed_map_dataset_root", None),
     )
+    reward_type = normalize_reward_type(reward_type)
+    if spec.size_mode == "random":
+        size_tag = f"random-size{spec.min_size}-{spec.max_size}"
+    else:
+        size_tag = f"fixed-{spec.fixed_rows}x{spec.fixed_cols}"
+    namespace = f"{env_family}-seed-map-{spec.version}-{size_tag}-{reward_type}"
     if configured_root is not None:
         configured = Path(configured_root).expanduser()
-        path = configured if configured.name == name else configured / name
-    else:
-        reward_type = normalize_reward_type(reward_type)
-        if spec.size_mode == "random":
-            size_tag = f"random-size{spec.min_size}-{spec.max_size}"
+        if configured.name == name:
+            path = configured
+        elif configured.name == namespace:
+            path = configured / name
         else:
-            size_tag = f"fixed-{spec.fixed_rows}x{spec.fixed_cols}"
+            path = configured / namespace / name
+    else:
         path = (
             repo_root
             / "local_datasets"
-            / f"{env_family}-seed-map-{spec.version}-{size_tag}-{reward_type}"
+            / namespace
             / name
         )
     return path.resolve()

@@ -95,7 +95,49 @@ class DataGenerationPathTest(unittest.TestCase):
                     max_size=13,
                 ),
             )
-            self.assertEqual(resolved, Path(temp_dir).resolve() / "0-100-50")
+            self.assertEqual(
+                resolved,
+                Path(temp_dir).resolve()
+                / "antmaze-seed-map-v1-random-size9-13-sparse"
+                / "0-100-50",
+            )
+            namespace = (
+                Path(temp_dir)
+                / "antmaze-seed-map-v1-random-size9-13-sparse"
+            )
+            args.dataset_root = namespace
+            self.assertEqual(
+                resolve_seed_map_generation_path(
+                    args,
+                    env_family="antmaze",
+                    reward_type="sparse",
+                    repo_root=Path("/unused"),
+                    spec=SimpleNamespace(
+                        size_mode="random",
+                        version="v1",
+                        min_size=9,
+                        max_size=13,
+                    ),
+                ),
+                namespace.resolve() / "0-100-50",
+            )
+            exact = namespace / "0-100-50"
+            args.dataset_root = exact
+            self.assertEqual(
+                resolve_seed_map_generation_path(
+                    args,
+                    env_family="antmaze",
+                    reward_type="sparse",
+                    repo_root=Path("/unused"),
+                    spec=SimpleNamespace(
+                        size_mode="random",
+                        version="v1",
+                        min_size=9,
+                        max_size=13,
+                    ),
+                ),
+                exact.resolve(),
+            )
 
     def test_temporary_root_defaults_to_tmpdir_and_configures_minari(self):
         with tempfile.TemporaryDirectory() as temp_dir, mock.patch.dict(

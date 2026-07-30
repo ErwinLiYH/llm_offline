@@ -55,7 +55,7 @@ sbatch sbatch/dataGen.point.hard.seedmap.slurm
 sbatch sbatch/dataGen.ant.hard.seedmap.slurm
 ```
 
-两者默认生成 `[0, 100)`、每个 map seed 50 条成功轨迹，并从最难的 200 个 reachable start/goal pair 中均匀随机采样（`HARD_SAMPLE_ALPHA=0.0`）。PointMaze 默认最终尺寸为 `9/11/13/15`，AntMaze 为 `9/11/13`。脚本默认续写已有 corpus；设置 `OVERWRITE=1` 才会重建。可通过 `SEED_MAP_START`、`SEED_MAP_END`、`TRAJECTORIES_PER_SEED`、`SEED_MAP_MIN_SIZE`、`SEED_MAP_MAX_SIZE`、`HARD_SAMPLE_TOP_N`、`HARD_SAMPLE_ALPHA`、`NUM_WORKERS`、`SEED`、`REWARD_TYPE`、`DATASET_ROOT` 和 `TEMPORARY_DATASET_ROOT` 等环境变量覆盖。
+两者默认生成 `[0, 100)`、每个 map seed 50 条成功轨迹，并从最难的 200 个 reachable start/goal pair 中均匀随机采样（`HARD_SAMPLE_ALPHA=0.0`）。PointMaze 默认最终尺寸为 `9/11/13/15`，AntMaze 为 `9/11/13`。六个 DataGen Slurm 脚本都把 `DATASET_ROOT` 默认设为 `${PROJECT_ROOT}/local_datasets`；seed-map resolver 会继续在该 base root 下加入 family/version/size/reward namespace，避免 PointMaze 和 AntMaze 的同名 `0-100-50` corpus 冲突。脚本默认续写已有 corpus；设置 `OVERWRITE=1` 才会重建。可通过 `SEED_MAP_START`、`SEED_MAP_END`、`TRAJECTORIES_PER_SEED`、`SEED_MAP_MIN_SIZE`、`SEED_MAP_MAX_SIZE`、`HARD_SAMPLE_TOP_N`、`HARD_SAMPLE_ALPHA`、`NUM_WORKERS`、`SEED`、`REWARD_TYPE`、`DATASET_ROOT` 和 `TEMPORARY_DATASET_ROOT` 等环境变量覆盖。
 
 输出是一个逻辑数据集，而不是每张地图一个目录：
 
@@ -66,7 +66,7 @@ sbatch sbatch/dataGen.ant.hard.seedmap.slurm
   data/main_data.hdf5
 ```
 
-默认父目录还包含环境 family、seed-map 版本、size 配置和 reward type。可以用 `--dataset-root` 指定最终数据父目录或叶名称匹配的精确 `0-1000-10` 目录；旧 `--seed-map-dataset-root` 作为兼容别名保留。`--temporary-dataset-root` 同时用于中间 Minari shard 和 map 级合并 workspace，省略时读取 `TMPDIR`，若环境变量也不存在则使用平台临时目录；短别名是 `--temp-dataset-root`。每张 map 的 shard 先在这个临时目录完成合并，再把一个完整的 map 数据批次追加进最终聚合 corpus；发布结束后删除该 map 的 shard 和 merge workspace。当前 seed-map collector 每张 map 生成一个 Minari shard，但 map 级合并接口允许以后把同一张 map 拆成多个 shard 而不改变最终发布语义。重复运行会按 map seed 恢复缺失数据；`--overwrite` 会重建精确目标数据集。
+默认父目录还包含环境 family、seed-map 版本、size 配置和 reward type。可以用 `--dataset-root` 指定最终数据 base root；程序会在其下保留 `<family>-seed-map-<version>-<size>-<reward>/<start>-<end>-<trajectories>` 两级派生路径。也可以直接给出叶名称匹配的精确 `0-1000-10` 目录，或给出名称匹配的 family/spec namespace 目录。旧 `--seed-map-dataset-root` 作为兼容别名保留。`--temporary-dataset-root` 同时用于中间 Minari shard 和 map 级合并 workspace，省略时读取 `TMPDIR`，若环境变量也不存在则使用平台临时目录；短别名是 `--temp-dataset-root`。每张 map 的 shard 先在这个临时目录完成合并，再把一个完整的 map 数据批次追加进最终聚合 corpus；发布结束后删除该 map 的 shard 和 merge workspace。当前 seed-map collector 每张 map 生成一个 Minari shard，但 map 级合并接口允许以后把同一张 map 拆成多个 shard 而不改变最终发布语义。重复运行会按 map seed 恢复缺失数据；`--overwrite` 会重建精确目标数据集。
 
 ## 训练选择
 

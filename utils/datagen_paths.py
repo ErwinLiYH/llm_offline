@@ -21,8 +21,10 @@ def add_datagen_path_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "Parent directory for final generated datasets, or an exact dataset "
-            "directory whose leaf matches the derived dataset name. Defaults to "
-            "the current registered/seed-map output location. "
+            "directory whose leaf matches the derived dataset name. Seed-map "
+            "parent roots retain the family/version/size/reward namespace before "
+            "the dataset leaf. Defaults to the current registered/seed-map output "
+            "location. "
             "--seed-map-dataset-root is a compatibility alias."
         ),
     )
