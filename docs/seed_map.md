@@ -55,7 +55,7 @@ sbatch sbatch/dataGen.point.hard.seedmap.slurm
 sbatch sbatch/dataGen.ant.hard.seedmap.slurm
 ```
 
-两者默认生成 `[0, 100)`、每个 map seed 50 条成功轨迹，并从最难的 200 个 reachable start/goal pair 中均匀随机采样（`HARD_SAMPLE_ALPHA=0.0`）。PointMaze 默认最终尺寸为 `9/11/13/15`，AntMaze 为 `9/11/13`。六个 DataGen Slurm 脚本都把 `DATASET_ROOT` 默认设为 `${PROJECT_ROOT}/local_datasets`；seed-map resolver 会继续在该 base root 下加入 family/version/size/reward namespace，避免 PointMaze 和 AntMaze 的同名 `0-100-50` corpus 冲突。脚本默认续写已有 corpus；设置 `OVERWRITE=1` 才会重建。可通过 `SEED_MAP_START`、`SEED_MAP_END`、`TRAJECTORIES_PER_SEED`、`SEED_MAP_MIN_SIZE`、`SEED_MAP_MAX_SIZE`、`HARD_SAMPLE_TOP_N`、`HARD_SAMPLE_ALPHA`、`NUM_WORKERS`、`SEED`、`REWARD_TYPE`、`DATASET_ROOT` 和 `TEMPORARY_DATASET_ROOT` 等环境变量覆盖。
+两者默认生成 `[0, 100)`、每个 map seed 50 条成功轨迹，并从最难的 200 个 reachable start/goal pair 中均匀随机采样（`HARD_SAMPLE_ALPHA=0.0`）。AntMaze 额外默认 `HARD_SAMPLE_MAX_PATH_LEN=25`：先按原 difficulty 排序跳过 `path_len > 25` 的 pair，再继续向较低排名扫描直至补足 200 个 eligible pair；设为 `0` 可关闭该保险。PointMaze 默认最终尺寸为 `9/11/13/15`，AntMaze 为 `9/11/13`。六个 DataGen Slurm 脚本都把 `DATASET_ROOT` 默认设为 `${PROJECT_ROOT}/local_datasets`；seed-map resolver 会继续在该 base root 下加入 family/version/size/reward namespace，避免 PointMaze 和 AntMaze 的同名 `0-100-50` corpus 冲突。脚本默认续写已有 corpus；设置 `OVERWRITE=1` 才会重建。可通过 `SEED_MAP_START`、`SEED_MAP_END`、`TRAJECTORIES_PER_SEED`、`SEED_MAP_MIN_SIZE`、`SEED_MAP_MAX_SIZE`、`HARD_SAMPLE_TOP_N`、`HARD_SAMPLE_ALPHA`、`HARD_SAMPLE_MAX_PATH_LEN`、`NUM_WORKERS`、`SEED`、`REWARD_TYPE`、`DATASET_ROOT` 和 `TEMPORARY_DATASET_ROOT` 等环境变量覆盖。
 
 输出是一个逻辑数据集，而不是每张地图一个目录：
 

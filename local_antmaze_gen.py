@@ -69,6 +69,7 @@ OFFICIAL_ANTMAZE_DIR = (
 )
 OFFICIAL_SCRIPTS_DIR = OFFICIAL_ANTMAZE_DIR.parents[1]
 DEFAULT_POLICY_FILE = OFFICIAL_ANTMAZE_DIR / "GoalReachAnt_model.zip"
+DEFAULT_HARD_SAMPLE_MAX_PATH_LEN = 25
 
 
 def _load_official_antmaze_controller():
@@ -239,6 +240,16 @@ def parse_args():
         help=(
             "Only sample from the top N hardest reachable start/goal pairs after "
             "difficulty sorting. 0 keeps all pairs."
+        ),
+    )
+    parser.add_argument(
+        "--hard-sample-max-path-len",
+        type=int,
+        default=DEFAULT_HARD_SAMPLE_MAX_PATH_LEN,
+        help=(
+            "Exclude hard-sample pairs whose shortest path is longer than this "
+            "many grid steps before selecting the top N hardest eligible pairs. "
+            "0 disables the limit."
         ),
     )
     add_datagen_path_args(parser)
@@ -1040,6 +1051,7 @@ def _write_generation_summary(
     hard_retry: int,
     hard_sample_alpha: float,
     hard_sample_top_n: int,
+    hard_sample_max_path_len: int,
     hard_pair_space: list[dict],
     hard_pair_space_total: int,
     shard_results: list[dict],
@@ -1124,6 +1136,7 @@ def _write_generation_summary(
         "hard_retry": int(hard_retry),
         "hard_sample_alpha": float(hard_sample_alpha),
         "hard_sample_top_n": int(hard_sample_top_n),
+        "hard_sample_max_path_len": int(hard_sample_max_path_len),
         "hard_pair_space_total": int(hard_pair_space_total),
         "hard_pair_space_used": int(len(hard_pair_space)),
         "hard_pairs_sampled": hard_pairs_sampled,
@@ -1166,6 +1179,7 @@ def generate_variant(
     hard_retry: int,
     hard_sample_alpha: float,
     hard_sample_top_n: int,
+    hard_sample_max_path_len: int = DEFAULT_HARD_SAMPLE_MAX_PATH_LEN,
     dataset_root_override: str | Path | None = None,
     temporary_dataset_root: str | Path | None = None,
 ):
@@ -1182,6 +1196,8 @@ def generate_variant(
         raise ValueError("--hard-sample-alpha must be >= 0")
     if hard_sample_top_n < 0:
         raise ValueError("--hard-sample-top-n must be >= 0")
+    if hard_sample_max_path_len < 0:
+        raise ValueError("--hard-sample-max-path-len must be >= 0")
 
     default_reward_type = normalize_reward_type(meta["env_paras"].get("reward_type"))
     reward_type = normalize_reward_type(reward_type, default=default_reward_type)
@@ -1275,6 +1291,7 @@ def generate_variant(
             hard_candidate_cells,
             hard_sample_alpha,
             hard_sample_top_n,
+            hard_sample_max_path_len or None,
         )
 
     mode_detail = (
@@ -1292,6 +1309,7 @@ def generate_variant(
         f"hard_sample={hard_sample}, hard_retry={hard_retry}, "
         f"hard_sample_alpha={hard_sample_alpha}, "
         f"hard_sample_top_n={hard_sample_top_n}, "
+        f"hard_sample_max_path_len={hard_sample_max_path_len}, "
         f"hard_pairs={len(hard_pair_space)}/{hard_pair_space_total}, "
         f"{mode_detail}, dataset_root={dataset_root}, "
         f"temporary_dataset_root={temporary_dataset_root}"
@@ -1394,6 +1412,7 @@ def generate_variant(
             hard_retry=hard_retry,
             hard_sample_alpha=hard_sample_alpha,
             hard_sample_top_n=hard_sample_top_n,
+            hard_sample_max_path_len=hard_sample_max_path_len,
             hard_pair_space=hard_pair_space,
             hard_pair_space_total=hard_pair_space_total,
             shard_results=shard_results,
@@ -1434,6 +1453,12 @@ def _collect_seed_map_shard_from_kwargs(kwargs: dict) -> dict:
     hard_sample = bool(kwargs.get("hard_sample", False))
     hard_sample_alpha = float(kwargs.get("hard_sample_alpha", 1.0))
     hard_sample_top_n = int(kwargs.pop("hard_sample_top_n", 0))
+    hard_sample_max_path_len = int(
+        kwargs.pop(
+            "hard_sample_max_path_len",
+            DEFAULT_HARD_SAMPLE_MAX_PATH_LEN,
+        )
+    )
 
     maze_map = generate_seed_map(map_seed, seed_map_spec)
     eval_env_paras = build_seed_map_env_paras(
@@ -1461,6 +1486,7 @@ def _collect_seed_map_shard_from_kwargs(kwargs: dict) -> dict:
             hard_candidate_cells,
             hard_sample_alpha,
             hard_sample_top_n,
+            hard_sample_max_path_len or None,
         )
 
     result = _collect_shard(
@@ -1528,6 +1554,7 @@ def generate_seed_map_corpus(args) -> Path:
         "hard_retry": int(args.hard_retry),
         "hard_sample_alpha": float(args.hard_sample_alpha),
         "hard_sample_top_n": int(args.hard_sample_top_n),
+        "hard_sample_max_path_len": int(args.hard_sample_max_path_len),
     }
     manifest = create_seed_map_corpus(
         dataset_root,
@@ -1585,6 +1612,7 @@ def generate_seed_map_corpus(args) -> Path:
                 "hard_retry": int(args.hard_retry),
                 "hard_sample_alpha": float(args.hard_sample_alpha),
                 "hard_sample_top_n": int(args.hard_sample_top_n),
+                "hard_sample_max_path_len": int(args.hard_sample_max_path_len),
                 "temporary_dataset_root": str(temporary_dataset_root),
                 "existing_count": len(existing),
             }
@@ -1602,6 +1630,8 @@ def generate_seed_map_corpus(args) -> Path:
         f"trajectories_per_seed={capacity}, pending_maps={len(tasks)}, "
         f"workers={worker_count}, size_spec={seed_map_spec.to_dict()}, "
         f"mode={args.mode}, hard_sample={args.hard_sample}, "
+        f"hard_sample_top_n={args.hard_sample_top_n}, "
+        f"hard_sample_max_path_len={args.hard_sample_max_path_len}, "
         f"temporary_dataset_root={temporary_dataset_root}"
     )
     worker_tasks = []
@@ -1699,6 +1729,8 @@ def main():
         raise ValueError("--hard-sample-alpha must be >= 0")
     if args.hard_sample_top_n < 0:
         raise ValueError("--hard-sample-top-n must be >= 0")
+    if args.hard_sample_max_path_len < 0:
+        raise ValueError("--hard-sample-max-path-len must be >= 0")
 
     if getattr(args, "use_seed_map", False):
         if args.variants:
@@ -1740,6 +1772,7 @@ def main():
             hard_retry=args.hard_retry,
             hard_sample_alpha=args.hard_sample_alpha,
             hard_sample_top_n=args.hard_sample_top_n,
+            hard_sample_max_path_len=args.hard_sample_max_path_len,
             dataset_root_override=dataset_root_override,
             temporary_dataset_root=temporary_dataset_root,
         )

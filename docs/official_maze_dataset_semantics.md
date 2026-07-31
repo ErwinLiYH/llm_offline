@@ -172,8 +172,12 @@ samples pairs by `sample_weight`, resets the environment with fixed
 tried at most `1 + hard_retry` times. This is not part of official public
 AntMaze dataset generation.
 
-`--hard-sample-top-n N` can restrict sampling to only the top N hardest pairs
-after difficulty sorting. `N=0` keeps all reachable pairs.
+`--hard-sample-max-path-len L` first removes pairs with `path_len > L` while
+preserving the difficulty order. `--hard-sample-top-n N` then keeps the top N
+hardest eligible pairs. This is equivalent to scanning downward from the
+hardest pair, skipping overlong pairs, and continuing past the original top N
+until N eligible pairs have been collected. AntMaze defaults to `L=25`; `L=0`
+disables the path-length guard. `N=0` keeps every eligible reachable pair.
 
 ## Success-Rate Filtering
 
@@ -212,7 +216,8 @@ Each local AntMaze dataset writes `generation_summary.json`, including:
 Hard-sample summaries additionally include:
 
 - `hard_sample`, `hard_retry`, `hard_sample_alpha`
-- `hard_sample_top_n`, `hard_pair_space_total`, `hard_pair_space_used`
+- `hard_sample_top_n`, `hard_sample_max_path_len`, `hard_pair_space_total`,
+  `hard_pair_space_used`
 - pair-space `difficulty`, `path_len`, and `away_steps` min/max/mean
 - pair sampling probability min/max and max-over-min ratio
 - saved-episode `difficulty`, `path_len`, and `away_steps` min/max/mean

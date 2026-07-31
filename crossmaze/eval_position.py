@@ -261,12 +261,16 @@ def build_hard_start_goal_pair_space(
     candidate_cells: list[tuple[int, int]],
     hard_sample_alpha: float,
     hard_sample_top_n: int = 0,
+    hard_sample_max_path_len: int | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Build the legacy local AntMaze data-generation hard pair space.
 
     Eval path/map difficulty is deliberately separate and is implemented by
     `build_eval_start_goal_pair_space` below.
     """
+    if hard_sample_max_path_len is not None and hard_sample_max_path_len < 1:
+        raise ValueError("hard_sample_max_path_len must be >= 1 when configured")
+
     clean_map = _clean_collection_map(maze_map)
     free_cell_set = set(_free_cells(clean_map))
     candidates = sorted(
@@ -327,6 +331,17 @@ def build_hard_start_goal_pair_space(
         ),
     )
     total_reachable_pairs = len(records)
+    if hard_sample_max_path_len is not None:
+        records = [
+            record
+            for record in records
+            if int(record["path_len"]) <= hard_sample_max_path_len
+        ]
+        if not records:
+            raise ValueError(
+                "--hard-sample found no reachable ordered start/goal pairs with "
+                f"path_len <= {hard_sample_max_path_len}"
+            )
     if hard_sample_top_n > 0:
         records = records[-int(hard_sample_top_n):]
 

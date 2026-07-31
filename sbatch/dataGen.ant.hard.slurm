@@ -30,6 +30,7 @@ DIVERSE_CELL_MODE=${DIVERSE_CELL_MODE:-all-free}
 HARD_RETRY=${HARD_RETRY:-5}
 HARD_SAMPLE_ALPHA=${HARD_SAMPLE_ALPHA:-1.0}
 HARD_SAMPLE_TOP_N=${HARD_SAMPLE_TOP_N:-400}
+HARD_SAMPLE_MAX_PATH_LEN=${HARD_SAMPLE_MAX_PATH_LEN:-25}
 
 EXTRA_ARGS=()
 if [[ -n "${DATASET_ROOT}" ]]; then
@@ -80,6 +81,7 @@ echo "Diverse cell mode: ${DIVERSE_CELL_MODE}"
 echo "Hard retry: ${HARD_RETRY}"
 echo "Hard sample alpha: ${HARD_SAMPLE_ALPHA}"
 echo "Hard sample top N: ${HARD_SAMPLE_TOP_N}"
+echo "Hard sample max path length: ${HARD_SAMPLE_MAX_PATH_LEN}"
 echo "Max episode attempts per variant: ignored by hard-sample mode"
 
 "${CONDA_BIN}" run --no-capture-output -n "${ENV_NAME}" \
@@ -98,6 +100,7 @@ echo "Max episode attempts per variant: ignored by hard-sample mode"
     --hard-retry "${HARD_RETRY}" \
     --hard-sample-alpha "${HARD_SAMPLE_ALPHA}" \
     --hard-sample-top-n "${HARD_SAMPLE_TOP_N}" \
+    --hard-sample-max-path-len "${HARD_SAMPLE_MAX_PATH_LEN}" \
     --overwrite \
     "${EXTRA_ARGS[@]}"
 

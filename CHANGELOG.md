@@ -1760,3 +1760,15 @@ type: project
 - DataGen 路径与 PointMaze 定向测试共 11 项通过，AntMaze CLI 定向测试和 seed-map corpus 6 项测试通过
 - 已真实验证 PointMaze 两 worker shard 的临时合并与首次发布、已有固定数据集续生成、seed-map map 级发布；完成后临时目录均为空
 - 六个 DataGen Slurm 脚本通过 `bash -n`，相关 Python 文件通过编译检查和 `git diff --check`
+
+## AntMaze hard-sample path-length guard（2026-07-31）
+
+- `local_antmaze_gen.py` 新增 `--hard-sample-max-path-len`，默认限制 shortest `path_len <= 25`，设为 `0` 可关闭；固定-layout 和 seed-map AntMaze hard-sample 共用该保险，PointMaze 与 eval hard-sample 不受影响
+- hard-pair difficulty 仍在完整 reachable pair 空间上计算并保持原排序；路径长度过滤发生在 `top_n` 截取前，因此会跳过过长 pair，并继续向较低 difficulty 排名扫描，直到补足最难的 N 个 eligible pair；不足 N 时保留全部 eligible pair
+- `generation_summary.json` 和 seed-map corpus `collection_config` 记录 `hard_sample_max_path_len`；`sbatch/dataGen.ant.hard.slurm` 与 `sbatch/dataGen.ant.hard.seedmap.slurm` 新增 `HARD_SAMPLE_MAX_PATH_LEN`，默认值同为 `25`
+- 更新 AntMaze hard-sample CLI 校验、pair-space/top-N 回填测试和相关设计/运行文档
+
+**验证：**
+- seed 76 的原 top-200 路径范围为 `27..38`；启用上限后的回填池仍有 `200` 个 pair，路径范围变为 `18..25`、均值为 `23.51`
+- 对 seed `0..99` 的随机 `9/11/13` 地图完成几何审计：每张图均可补足 `200` 个 eligible pair，所有池的最大路径不超过 `25`
+- AntMaze support 与 CrossMaze 回归共 `61 passed`、`121 subtests passed`；定向 hard-sample 测试 `3 passed`、`5 subtests passed`，并通过相关 Slurm `bash -n`、Python 编译和 `git diff --check`

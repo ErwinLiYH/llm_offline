@@ -680,6 +680,13 @@ class AntMazeSupportTest(unittest.TestCase):
             hard_sample_alpha=2.0,
             hard_sample_top_n=2,
         )
+        bounded_top_pairs, bounded_top_total = _build_hard_sample_pair_space(
+            maze_map,
+            candidate_cells,
+            hard_sample_alpha=2.0,
+            hard_sample_top_n=2,
+            hard_sample_max_path_len=2,
+        )
 
         hard_pair = next(
             pair
@@ -709,6 +716,23 @@ class AntMazeSupportTest(unittest.TestCase):
                 for pair in top_pairs
             )
         )
+        self.assertEqual(bounded_top_total, len(weighted_pairs))
+        self.assertEqual(len(bounded_top_pairs), 2)
+        self.assertTrue(
+            all(pair["path_len"] <= 2 for pair in bounded_top_pairs)
+        )
+        self.assertTrue(all(pair["path_len"] > 2 for pair in top_pairs))
+        with self.assertRaisesRegex(
+            ValueError,
+            "no reachable ordered start/goal pairs with path_len <= 1",
+        ):
+            _build_hard_sample_pair_space(
+                maze_map,
+                candidate_cells,
+                hard_sample_alpha=2.0,
+                hard_sample_top_n=2,
+                hard_sample_max_path_len=1,
+            )
         self.assertTrue(
             all(pair["sample_weight"] == 1.0 for pair in uniform_pairs)
         )
@@ -741,6 +765,7 @@ class AntMazeSupportTest(unittest.TestCase):
             "hard_retry": 5,
             "hard_sample_alpha": 2.0,
             "hard_sample_top_n": 0,
+            "hard_sample_max_path_len": 25,
             "dataset_root": Path("/tmp/ant-final"),
             "temporary_dataset_root": Path("/tmp/ant-shards"),
         }
@@ -762,6 +787,10 @@ class AntMazeSupportTest(unittest.TestCase):
                 {"hard_sample_top_n": -1},
                 "--hard-sample-top-n must be >= 0",
             ),
+            (
+                {"hard_sample_max_path_len": -1},
+                "--hard-sample-max-path-len must be >= 0",
+            ),
         ]
         for overrides, error in invalid_cases:
             with self.subTest(overrides=overrides):
@@ -778,6 +807,7 @@ class AntMazeSupportTest(unittest.TestCase):
 
         kwargs = generate_variant.call_args.kwargs
         self.assertEqual(kwargs["reward_type"], "dense")
+        self.assertEqual(kwargs["hard_sample_max_path_len"], 25)
         self.assertEqual(kwargs["dataset_root_override"], Path("/tmp/ant-final"))
         self.assertEqual(
             kwargs["temporary_dataset_root"],
@@ -848,6 +878,7 @@ class AntMazeSupportTest(unittest.TestCase):
                 hard_retry=1,
                 hard_sample_alpha=2.0,
                 hard_sample_top_n=0,
+                hard_sample_max_path_len=25,
                 hard_pair_space=pair_space,
                 hard_pair_space_total=pair_space_total,
                 shard_results=shard_results,
@@ -862,6 +893,7 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertEqual(summary["reward_type"], "dense")
         self.assertEqual(summary["hard_retry"], 1)
         self.assertEqual(summary["hard_sample_top_n"], 0)
+        self.assertEqual(summary["hard_sample_max_path_len"], 25)
         self.assertEqual(summary["hard_pair_space_total"], pair_space_total)
         self.assertEqual(summary["hard_pair_space_used"], len(pair_space))
         self.assertEqual(summary["hard_pairs_sampled"], 2)

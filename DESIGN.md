@@ -703,7 +703,7 @@ python generate_antmaze_layouts.py \
 python inspect_antmaze_layouts.py --variants medium-play large-play local-layout-01
 ```
 
-本地 AntMaze offline 数据由 `local_antmaze_gen.py` 生成，也支持同一 `--reward-type sparse|dense` 接口。普通 diverse 生成可通过 `sbatch/dataGen.ant.slurm` 提交；hard-sample 生成可通过 `sbatch/dataGen.ant.hard.slurm` 提交，后者显式传入 `--hard-sample --hard-retry <N> --hard-sample-alpha <A>`，按 start/goal pair 难度加权采样并只保存成功 episode。hard-sample 启用前的初版 `local-layout-01..09` 数据备份在 `local_dataset_backups/antmaze_pre_hard_sample_initial_2026-07-01/`，该备份目录被 `.gitignore` 忽略。
+本地 AntMaze offline 数据由 `local_antmaze_gen.py` 生成，也支持同一 `--reward-type sparse|dense` 接口。普通 diverse 生成可通过 `sbatch/dataGen.ant.slurm` 提交；hard-sample 生成可通过 `sbatch/dataGen.ant.hard.slurm` 提交，后者显式传入 `--hard-sample --hard-retry <N> --hard-sample-alpha <A>`，按 start/goal pair 难度加权采样并只保存成功 episode。AntMaze hard-sample 还默认使用 `--hard-sample-max-path-len 25`：在保留原 difficulty 排序的前提下跳过过长 pair，再向较低排名补足 `--hard-sample-top-n`，设为 `0` 可关闭。hard-sample 启用前的初版 `local-layout-01..09` 数据备份在 `local_dataset_backups/antmaze_pre_hard_sample_initial_2026-07-01/`，该备份目录被 `.gitignore` 忽略。
 
 详细说明见 `docs/maze_generation_topology.md` 和 `docs/official_maze_dataset_semantics.md`。
 
