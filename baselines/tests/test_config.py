@@ -169,6 +169,22 @@ class BaselineConfigTest(unittest.TestCase):
         self.assertEqual(config["algorithm_config"]["discount"], 0.99)
         self.assertTrue(config["algorithm_config"]["value_geom_sample"])
         self.assertTrue(config["network"]["use_layer_norm"])
+        self.assertEqual(
+            config["evaluation"]["env_config"]["env_kwargs"],
+            {"continuing_task": False, "reset_target": False},
+        )
+
+    def test_gcrl_rejects_conflicting_multi_goal_rollout_config(self):
+        with self.assertRaisesRegex(ValueError, "single-goal"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "crl",
+                    "train_variants": ["umaze"],
+                    "evaluation": {
+                        "env_config": {"env_kwargs": {"continuing_task": True}}
+                    },
+                }
+            )
 
     def test_gcrl_goal_probabilities_must_sum_to_one(self):
         with self.assertRaisesRegex(ValueError, "probabilities must sum to 1"):

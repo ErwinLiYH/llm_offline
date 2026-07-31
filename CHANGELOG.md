@@ -1781,3 +1781,11 @@ type: project
 - seed 76 的原 top-200 路径范围为 `27..38`；启用上限后的回填池仍有 `200` 个 pair，路径范围变为 `18..25`、均值为 `23.51`
 - 对 seed `0..99` 的随机 `9/11/13` 地图完成几何审计：每张图均可补足 `200` 个 eligible pair，所有池的最大路径不超过 `25`
 - AntMaze support 与 CrossMaze 回归共 `61 passed`、`121 subtests passed`；定向 hard-sample 测试 `3 passed`、`5 subtests passed`，并通过相关 Slurm `bash -n`、Python 编译和 `git diff --check`
+
+## GCRL full-observation goal protocol（2026-07-31）
+
+- CRL/HIQL 从历史 `compact_xy` goal 迁移到 OGBench state-based `full_observation_v1`；PointMaze goal 使用完整 4D state，AntMaze goal 使用严格 v4 的 29D `[achieved_goal, observation]`，可选 map、cell 与 wall component 均和 state 同构
+- 删除独立 compact goal 数组；`value_goals`、`actor_goals`、`low_actor_goals`、`high_actor_goals` 和 `high_actor_targets` 均从同一 state 数组按采样索引恢复，HIQL high loss 恢复为 `V(high_actor_targets, high_actor_goals)`
+- 在线 goal 使用同一环境实例预 reset、5 个 seeded random action 稳定、仅把 qpos xy 传送到 desired target 拍摄 full observation，再以相同 seed/options 真正 reset；CRL/HIQL 强制 `continuing_task=false`、`reset_target=false`，并在首次 success 时结束 episode
+- state 与 goal 共用一套 observation mean/std；resolved config、dataset manifest、normalizer、Flax checkpoint metadata sidecar 和 summary 都记录 `full_observation_v1`，缺失 metadata 或旧 `compact_xy` artifact 会被明确拒绝
+- 共享 rollout 的 PyTorch 与 trainer-state 依赖改为 d3rlpy 路径内惰性加载，使未安装 torch 的 `llm_offline_gcrl` 环境能够导入 runner 并执行 evaluation

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 
 try:
     import flax
@@ -8,6 +10,7 @@ try:
     import jax.numpy as jnp
 
     from baselines.gcrl.agents import create_agent
+    from baselines.gcrl.runner import _save_agent, load_gcrl_checkpoint
 
     _JAX_AVAILABLE = True
 except ModuleNotFoundError:
@@ -38,8 +41,9 @@ class GCRLAgentTest(unittest.TestCase):
 
     def _base_batch(self):
         key = jax.random.PRNGKey(4)
-        observations = jax.random.normal(key, (8, 3))
-        goals = jax.random.normal(jax.random.fold_in(key, 1), (8, 2))
+        # Full-observation goals use the same dimension as states.
+        observations = jax.random.normal(key, (8, 4))
+        goals = jax.random.normal(jax.random.fold_in(key, 1), (8, 4))
         actions = jnp.tanh(jax.random.normal(jax.random.fold_in(key, 2), (8, 2)))
         return observations, goals, actions
 
@@ -69,6 +73,24 @@ class GCRLAgentTest(unittest.TestCase):
             updated, flax.serialization.to_bytes(updated)
         )
         self.assertEqual(restored.network.step, updated.network.step)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.msgpack"
+            metadata = {
+                "version": 1,
+                "gcrl_goal_semantics": "full_observation_v1",
+                "observation_dimension": 4,
+            }
+            _save_agent(path, updated, metadata)
+            restored = load_gcrl_checkpoint(
+                path,
+                updated,
+                expected={"observation_dimension": 4},
+            )
+            self.assertEqual(restored.network.step, updated.network.step)
+
+            path.with_suffix(".msgpack.metadata.json").unlink()
+            with self.assertRaisesRegex(ValueError, "compact_xy"):
+                load_gcrl_checkpoint(path, updated)
 
     def test_hiql_update_and_predict(self):
         observations, goals, actions = self._base_batch()
@@ -87,8 +109,7 @@ class GCRLAgentTest(unittest.TestCase):
             "value_goals": goals,
             "low_actor_goals": goals,
             "high_actor_goals": goals,
-            "high_actor_target_states": observations,
-            "high_actor_target_goals": goals,
+            "high_actor_targets": observations,
             "rewards": -jnp.ones(8),
             "masks": jnp.ones(8),
         }

@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import unittest
+
+import numpy as np
+
+from baselines.config import normalize_baseline_config
+from baselines.data.observation import (
+    GOAL_CONDITIONED_STATE_DIMS,
+    GoalConditionedObservationWrapper,
+)
+from baselines.evaluation import _make_evaluation_env
+
+
+class GCRLRolloutObservationTest(unittest.TestCase):
+    def _env(self, env_family: str) -> GoalConditionedObservationWrapper:
+        config = normalize_baseline_config(
+            {
+                "algorithm": "crl",
+                "env_family": env_family,
+                "train_variants": ["umaze"],
+                "device": "cpu",
+                "observation": {
+                    "include_map": True,
+                    "include_location_sensing": True,
+                    "include_wall_sensing": True,
+                },
+            }
+        )
+        return _make_evaluation_env(
+            env_family=env_family,
+            variant="umaze",
+            reward_type="sparse",
+            env_config=config["evaluation"]["env_config"],
+            observation_config=config["observation"],
+            goal_conditioned=True,
+        )
+
+    def test_point_and_ant_full_goal_capture_is_repeatable(self):
+        expected_dims = {"pointmaze": 235, "antmaze": 227}
+        for env_family in ("pointmaze", "antmaze"):
+            with self.subTest(env_family=env_family):
+                env = self._env(env_family)
+                try:
+                    first, _ = env.reset(seed=17)
+                    second, _ = env.reset(seed=17)
+                    self.assertEqual(first["state"].shape, (expected_dims[env_family],))
+                    self.assertEqual(first["goal"].shape, first["state"].shape)
+                    self.assertTrue(np.all(np.isfinite(first["goal"])))
+                    np.testing.assert_array_equal(first["state"], second["state"])
+                    np.testing.assert_array_equal(first["goal"], second["goal"])
+
+                    goal_xy = np.asarray(env.last_crossmaze_state["goal_xy"])
+                    np.testing.assert_allclose(first["goal"][:2], goal_xy, atol=1e-6)
+                    if env_family == "antmaze":
+                        self.assertEqual(first["goal"][:29].shape, (29,))
+
+
+                    base_env = env.env.unwrapped
+                    agent_env = (
+                        base_env.point_env
+                        if env_family == "pointmaze"
+                        else base_env.ant_env
+                    )
+                    qpos = base_env.data.qpos.copy()
+                    qvel = base_env.data.qvel.copy()
+                    qpos[:2] = goal_xy
+                    agent_env.set_state(qpos, qvel)
+                    _observation, _reward, terminated, _truncated, info = env.step(
+                        np.zeros(env.action_space.shape, dtype=env.action_space.dtype)
+                    )
+                    self.assertTrue(info["success"])
+                    self.assertTrue(terminated)
+                finally:
+                    env.close()
+
+
+if __name__ == "__main__":
+    unittest.main()

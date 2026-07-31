@@ -10,6 +10,8 @@ subset in this directory are adapted from OGBench's `impls` reference code:
   `impls/utils/{datasets,encoders,flax_utils,networks}.py`
 - License: MIT, copyright 2024 OGBench Authors
 
-Local changes split CrossMaze states from compact goals, preserve goal
-relabeling within each maze variant, add deterministic rollout prediction,
-and integrate the agents with this repository's data/evaluation artifacts.
+Local changes preserve full-observation state goals (`goal(j) == state(j)`),
+restrict relabeling and CRL in-batch negatives to one maze variant, compact
+static/dynamic map storage, construct online goal observations with OGBench's
+stabilize/teleport/reset flow, add deterministic rollout prediction, and
+integrate the agents with this repository's versioned artifacts.

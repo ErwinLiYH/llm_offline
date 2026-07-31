@@ -23,10 +23,9 @@ GOAL_CONDITIONED_STATE_DIMS = {
     "pointmaze": 4,
     "antmaze": 29,
 }
-GOAL_CONDITIONED_GOAL_DIMS = {
-    "pointmaze": 2,
-    "antmaze": 2,
-}
+
+GCRL_GOAL_SEMANTICS = "full_observation_v1"
+OBSERVATION_SCHEMA_VERSION = "baseline_observation_v2"
 
 # Kept as a compatibility alias for code that only needs the legacy dimensions.
 OBSERVATION_DIMS = BASE_OBSERVATION_DIMS
@@ -123,25 +122,18 @@ def goal_conditioned_observation_dims(
     env_family: str,
     observation_config: Mapping | None = None,
 ) -> tuple[int, int]:
-    """Return separate state and goal dimensions for CRL/HIQL.
-
-    Unlike the legacy d3rlpy input, the desired goal is not duplicated inside
-    the state vector. Map and wall features describe the state; the goal cell
-    belongs to the goal vector.
-    """
+    """Return the identical full-observation dimensions used by CRL/HIQL."""
     if env_family not in GOAL_CONDITIONED_STATE_DIMS:
         raise ValueError(f"Unsupported env_family: {env_family!r}")
     state_dim = GOAL_CONDITIONED_STATE_DIMS[env_family]
-    goal_dim = GOAL_CONDITIONED_GOAL_DIMS[env_family]
     if _enabled(observation_config, "include_map"):
         rows, cols = family_map_shape(env_family)
         state_dim += rows * cols
     if _enabled(observation_config, "include_location_sensing"):
         state_dim += 2
-        goal_dim += 2
     if _enabled(observation_config, "include_wall_sensing"):
         state_dim += WALL_SENSING_DIM
-    return state_dim, goal_dim
+    return state_dim, state_dim
 
 
 def goal_conditioned_observation_schema(
@@ -151,7 +143,7 @@ def goal_conditioned_observation_schema(
     state_dim, goal_dim = goal_conditioned_observation_dims(
         env_family, observation_config
     )
-    state_components = [
+    components = [
         {
             "name": "state",
             "dimension": GOAL_CONDITIONED_STATE_DIMS[env_family],
@@ -162,15 +154,9 @@ def goal_conditioned_observation_schema(
             ),
         }
     ]
-    goal_components = [
-        {
-            "name": "goal_xy",
-            "dimension": GOAL_CONDITIONED_GOAL_DIMS[env_family],
-        }
-    ]
     if _enabled(observation_config, "include_map"):
         rows, cols = family_map_shape(env_family)
-        state_components.append(
+        components.append(
             {
                 "name": "map",
                 "dimension": rows * cols,
@@ -180,7 +166,7 @@ def goal_conditioned_observation_schema(
             }
         )
     if _enabled(observation_config, "include_location_sensing"):
-        state_components.append(
+        components.append(
             {
                 "name": "position_cell",
                 "dimension": 2,
@@ -188,16 +174,8 @@ def goal_conditioned_observation_schema(
                 "index_base": 0,
             }
         )
-        goal_components.append(
-            {
-                "name": "goal_cell",
-                "dimension": 2,
-                "order": ["row", "col"],
-                "index_base": 0,
-            }
-        )
     if _enabled(observation_config, "include_wall_sensing"):
-        state_components.append(
+        components.append(
             {
                 "name": "wall_sensing",
                 "dimension": WALL_SENSING_DIM,
@@ -206,10 +184,12 @@ def goal_conditioned_observation_schema(
             }
         )
     return {
+        "version": OBSERVATION_SCHEMA_VERSION,
+        "goal_semantics": GCRL_GOAL_SEMANTICS,
         "state_dimension": state_dim,
         "goal_dimension": goal_dim,
-        "state_components": state_components,
-        "goal_components": goal_components,
+        "state_components": components,
+        "goal_components": [dict(component) for component in components],
     }
 
 
@@ -370,46 +350,25 @@ def vectorize_observation(
     return np.asarray(vector, dtype=np.float32)
 
 
-def vectorize_goal_conditioned_observation(
+def vectorize_gcrl_state_observation(
     observation,
     env_family: str,
     *,
     observation_config: Mapping | None = None,
     variant: str | None = None,
-    goal_xy: np.ndarray | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Vectorize a state and a separately supplied or desired goal.
-
-    Offline relabeling passes achieved positions through ``goal_xy``. Online
-    rollout leaves it unset and therefore uses ``desired_goal``.
-    """
+):
+    """Vectorize one full GCRL state; relabeled goals reuse these exact rows."""
     if not isinstance(observation, Mapping):
         raise ValueError("CrossMaze goal-conditioned observation must be a mapping")
-    state, position, desired_goal = _state_position_and_goal(
-        observation, env_family
-    )
+    state, position, desired_goal = _state_position_and_goal(observation, env_family)
     expected_state_base = GOAL_CONDITIONED_STATE_DIMS[env_family]
     if state.shape[-1] != expected_state_base:
         raise ValueError(
             f"Unexpected {env_family} goal-conditioned state dimension: "
             f"expected {expected_state_base}, got {state.shape[-1]}"
         )
-    goal = desired_goal if goal_xy is None else np.asarray(goal_xy, dtype=np.float32)
-    if goal.shape[-1] != GOAL_CONDITIONED_GOAL_DIMS[env_family]:
-        raise ValueError(
-            f"Unexpected {env_family} goal dimension: expected 2, got {goal.shape[-1]}"
-        )
-    if goal.shape[:-1] != state.shape[:-1]:
-        try:
-            goal = np.broadcast_to(goal, state.shape[:-1] + (goal.shape[-1],))
-        except ValueError as exc:
-            raise ValueError(
-                "Goal leading dimensions must match the state leading dimensions"
-            ) from exc
-
     config = dict(observation_config or {})
     state_features = [state]
-    goal_features = [goal]
     if uses_structured_observation(config):
         required_config = {
             "wall_sensing_version",
@@ -435,36 +394,24 @@ def vectorize_goal_conditioned_observation(
         if _enabled(config, "include_location_sensing") or _enabled(
             config, "include_wall_sensing"
         ):
-            sensing = compute_sensing_arrays(position, goal, meta)
+            sensing = compute_sensing_arrays(position, desired_goal, meta)
             if _enabled(config, "include_location_sensing"):
                 state_features.append(sensing["position_cell"].astype(np.float32))
-                goal_features.append(sensing["goal_cell"].astype(np.float32))
             if _enabled(config, "include_wall_sensing"):
                 state_features.append(sensing["neighbor_status"].astype(np.float32))
 
     state_vector = np.concatenate(state_features, axis=-1)
-    goal_vector = np.concatenate(goal_features, axis=-1)
-    expected_state_dim, expected_goal_dim = goal_conditioned_observation_dims(
-        env_family, config
-    )
+    expected_state_dim, _ = goal_conditioned_observation_dims(env_family, config)
     if state_vector.shape[-1] != expected_state_dim:
         raise ValueError(
             f"Unexpected {env_family} goal-conditioned state dimension: "
             f"expected {expected_state_dim}, got {state_vector.shape[-1]}"
         )
-    if goal_vector.shape[-1] != expected_goal_dim:
-        raise ValueError(
-            f"Unexpected {env_family} goal dimension: "
-            f"expected {expected_goal_dim}, got {goal_vector.shape[-1]}"
-        )
-    if not np.all(np.isfinite(state_vector)) or not np.all(np.isfinite(goal_vector)):
+    if not np.all(np.isfinite(state_vector)):
         raise ValueError(
             f"{env_family} goal-conditioned observation contains non-finite values"
         )
-    return (
-        np.asarray(state_vector, dtype=np.float32),
-        np.asarray(goal_vector, dtype=np.float32),
-    )
+    return np.asarray(state_vector, dtype=np.float32)
 
 
 class BaselineObservationWrapper(gym.ObservationWrapper):
@@ -505,8 +452,15 @@ class BaselineObservationWrapper(gym.ObservationWrapper):
         )
 
 
-class GoalConditionedObservationWrapper(gym.ObservationWrapper):
-    """Expose separate state and desired-goal arrays for CRL and HIQL."""
+class GoalConditionedObservationWrapper(gym.Wrapper):
+    """Expose isomorphic full state/goal observations for CRL and HIQL.
+
+    The goal is captured with the OGBench maze protocol: reset once, stabilize
+    the robot with five seeded random actions, teleport only qpos xy to the
+    desired target and observe it, then repeat the original reset for rollout.
+    """
+
+    STABILIZATION_STEPS = 5
 
     def __init__(
         self,
@@ -521,6 +475,7 @@ class GoalConditionedObservationWrapper(gym.ObservationWrapper):
         self.env_family = env_family
         self.observation_config = dict(observation_config or {})
         self.last_crossmaze_state: Mapping | None = None
+        self._episode_goal: np.ndarray | None = None
         state_dim, goal_dim = goal_conditioned_observation_dims(
             env_family, self.observation_config
         )
@@ -541,16 +496,108 @@ class GoalConditionedObservationWrapper(gym.ObservationWrapper):
             }
         )
 
-    def observation(self, observation):
+    def _state_vector(self, observation) -> np.ndarray:
         attached = (
             observation.get(CROSSMAZE_OBS_KEY)
             if isinstance(observation, Mapping)
             else None
         )
         self.last_crossmaze_state = attached if isinstance(attached, Mapping) else None
-        state, goal = vectorize_goal_conditioned_observation(
+        return vectorize_gcrl_state_observation(
             observation,
             self.env_family,
             observation_config=self.observation_config,
         )
-        return {"state": state, "goal": goal}
+
+    def _goal_observation_at_target(self, target_xy: np.ndarray):
+        base_env = self.env.unwrapped
+        if self.env_family == "pointmaze":
+            agent_env = getattr(base_env, "point_env", None)
+        else:
+            agent_env = getattr(base_env, "ant_env", None)
+        if agent_env is None or not hasattr(agent_env, "set_state"):
+            raise TypeError(
+                "GCRL full-observation rollout requires the Gymnasium Robotics "
+                f"{self.env_family} v4 state API"
+            )
+        qpos = np.asarray(base_env.data.qpos, dtype=np.float64).copy()
+        qvel = np.asarray(base_env.data.qvel, dtype=np.float64).copy()
+        qpos[:2] = np.asarray(target_xy, dtype=np.float64)[:2]
+        agent_env.set_state(qpos, qvel)
+        agent_observation = agent_env._get_obs()
+        if isinstance(agent_observation, tuple):
+            agent_observation = agent_observation[0]
+        observation = base_env._get_obs(agent_observation)
+        enrich = getattr(self.env, "_enrich", None)
+        if enrich is None:
+            raise TypeError("GCRL full-observation rollout requires CrossMazeEnv enrichment")
+        return enrich(observation)
+
+    @staticmethod
+    def _assert_repeatable_reset(first, second) -> None:
+        for key in ("observation", "achieved_goal", "desired_goal"):
+            if key in first or key in second:
+                if key not in first or key not in second or not np.array_equal(
+                    np.asarray(first[key]), np.asarray(second[key])
+                ):
+                    raise RuntimeError(
+                        "GCRL goal capture changed the deterministic reset "
+                        f"observation field {key!r}"
+                    )
+        first_crossmaze = first.get(CROSSMAZE_OBS_KEY)
+        second_crossmaze = second.get(CROSSMAZE_OBS_KEY)
+        if isinstance(first_crossmaze, Mapping) and isinstance(second_crossmaze, Mapping):
+            for key in ("position_cell", "goal_cell", "position_xy", "goal_xy"):
+                if not np.array_equal(
+                    np.asarray(first_crossmaze.get(key)),
+                    np.asarray(second_crossmaze.get(key)),
+                ):
+                    raise RuntimeError(
+                        "GCRL goal capture changed the deterministic CrossMaze "
+                        f"reset field {key!r}"
+                    )
+
+    def reset(self, *, seed=None, options=None, **kwargs):
+        if seed is None:
+            raise ValueError("GCRL rollout reset requires an explicit deterministic seed")
+        self.action_space.seed(int(seed))
+        preliminary, _ = self.env.reset(seed=seed, options=options, **kwargs)
+        target_xy = np.asarray(preliminary["desired_goal"], dtype=np.float32).copy()
+        for _ in range(self.STABILIZATION_STEPS):
+            self.env.step(self.action_space.sample())
+        goal_observation = self._goal_observation_at_target(target_xy)
+        goal_achieved = (
+            np.asarray(goal_observation["observation"], dtype=np.float32)[:2]
+            if self.env_family == "pointmaze"
+            else np.asarray(goal_observation["achieved_goal"], dtype=np.float32)[:2]
+        )
+        if not np.allclose(goal_achieved, target_xy, rtol=0.0, atol=1e-6):
+            raise RuntimeError("Captured GCRL goal observation is not at desired target xy")
+        goal_vector = vectorize_gcrl_state_observation(
+            goal_observation,
+            self.env_family,
+            observation_config=self.observation_config,
+        )
+
+        actual, info = self.env.reset(seed=seed, options=options, **kwargs)
+        self._assert_repeatable_reset(preliminary, actual)
+        state_vector = self._state_vector(actual)
+        if state_vector.shape != goal_vector.shape:
+            raise RuntimeError("GCRL rollout state and goal schemas are not isomorphic")
+        self._episode_goal = np.asarray(goal_vector, dtype=np.float32)
+        return {"state": state_vector, "goal": self._episode_goal.copy()}, info
+
+    def step(self, action):
+        if self._episode_goal is None:
+            raise RuntimeError("GCRL environment must be reset before step")
+        observation, reward, terminated, truncated, info = self.env.step(action)
+        state_vector = self._state_vector(observation)
+        # The evaluation protocol is single-goal and ends at first success.
+        terminated = bool(terminated) or bool(info.get("success", False))
+        return (
+            {"state": state_vector, "goal": self._episode_goal.copy()},
+            reward,
+            terminated,
+            truncated,
+            info,
+        )

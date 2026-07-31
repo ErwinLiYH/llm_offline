@@ -9,7 +9,14 @@ import gymnasium as gym
 import numpy as np
 
 from baselines.evaluation import BaselineEpochCallback, evaluate_rollouts
-from baselines.trainer_state import load_trainer_state
+
+try:
+    from baselines.trainer_state import load_trainer_state
+
+    _TORCH_AVAILABLE = True
+except ModuleNotFoundError:
+    load_trainer_state = None
+    _TORCH_AVAILABLE = False
 
 
 class _PredictZero:
@@ -22,6 +29,7 @@ class _PredictGoalConditionedZero:
         assert set(observations) == {"state", "goal"}
         assert observations["state"].ndim == 2
         assert observations["goal"].ndim == 2
+        assert observations["state"].shape == observations["goal"].shape
         return np.zeros((len(observations["state"]), 2), dtype=np.float32)
 
 
@@ -57,21 +65,56 @@ class _EpisodeRecordEnv(gym.Env):
     def __init__(self):
         self._seed = 0
         self._step = 0
+        self.goal = np.array([3.0, 1.0], dtype=np.float64)
+        self.data = type(
+            "Data", (), {"qpos": np.zeros(2), "qvel": np.zeros(2)}
+        )()
+        self.point_env = self
+
+    def set_state(self, qpos, qvel):
+        self.data.qpos = np.asarray(qpos, dtype=np.float64).copy()
+        self.data.qvel = np.asarray(qvel, dtype=np.float64).copy()
+
+    def _get_obs(self, raw=None):
+        if raw is None:
+            return np.concatenate([self.data.qpos, self.data.qvel])
+        return {
+            "observation": np.asarray(raw, dtype=np.float32),
+            "achieved_goal": np.asarray(raw[:2], dtype=np.float32),
+            "desired_goal": self.goal.astype(np.float32),
+        }
+
+    def _enrich(self, observation):
+        observation = dict(observation)
+        position = observation["observation"][:2]
+        position_cell = (
+            [3, 1]
+            if np.array_equal(position, self.goal.astype(np.float32))
+            else [1, int(round(position[0]))]
+        )
+        goal_cell = [3, 1]
+        maze_map = [
+            [1] * 5,
+            [1, 0, 0, 0, 1],
+            [1, 0, 0, 0, 1],
+            [1, 0, 0, 0, 1],
+            [1] * 5,
+        ]
+        observation["crossmaze"] = {
+            "maze_map": maze_map,
+            "maze_size_scaling": 1.0,
+            "position_cell": position_cell,
+            "goal_cell": goal_cell,
+            "position_xy": position.astype(float).tolist(),
+            "goal_xy": self.goal.astype(float).tolist(),
+        }
+        return observation
 
     def _observation(self):
         start_col = 1 + self._seed % 2
-        return {
-            "observation": np.array(
-                [start_col, 1.0, 0.0, 0.0], dtype=np.float32
-            ),
-            "desired_goal": np.array([3.0, 1.0], dtype=np.float32),
-            "crossmaze": {
-                "position_cell": [1, start_col],
-                "goal_cell": [3, 1],
-                "position_xy": [float(start_col), 1.0],
-                "goal_xy": [3.0, 1.0],
-            },
-        }
+        self.data.qpos = np.array([start_col, 1.0], dtype=np.float64)
+        self.data.qvel = np.zeros(2, dtype=np.float64)
+        return self._enrich(self._get_obs(self._get_obs()))
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -104,6 +147,7 @@ class _FixedEpisodeRecordEnv(_EpisodeRecordEnv):
 
 
 class EvaluationRecordTest(unittest.TestCase):
+    @unittest.skipUnless(_TORCH_AVAILABLE, "requires the d3rlpy baseline environment")
     def test_epoch_callback_saves_matching_trainer_state(self):
         with tempfile.TemporaryDirectory() as directory:
             callback = BaselineEpochCallback(
@@ -129,6 +173,7 @@ class EvaluationRecordTest(unittest.TestCase):
             self.assertEqual(trainer_state["epoch"], 1)
             self.assertEqual(trainer_state["step"], 25_000)
 
+    @unittest.skipUnless(_TORCH_AVAILABLE, "requires the d3rlpy baseline environment")
     def test_epoch_callback_applies_resume_offsets(self):
         with tempfile.TemporaryDirectory() as directory:
             callback = BaselineEpochCallback(

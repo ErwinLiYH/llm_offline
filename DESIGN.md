@@ -892,6 +892,13 @@ micromamba run -n llm_offline python estimate_dataset.py \
 12. **Official normalized score**：`score.py` 复用 `utils/eval_rollout.py` 中的 prompt 渲染、history、模型动作生成、parse retry 和 fallback 逻辑，但结果 schema 与路径独立于 `evaluate.py`。remote PointMaze reference 使用静态 Minari metadata；local reference 使用显式 goal cell、固定 score env fingerprint 和本地 JSON 校验，避免在 goal/horizon/reward type 变动后误复用旧 reference
 13. **新环境族扩展**：在 `prompts/` 新建目录、`data/` 下新建子文件夹（含 `variants.py`、`dataset.py`、`formatting.py`）、`registry.py` 注册一行，`train.py` 和 `evaluate.py` 无需改动
 
+### Conventional baseline observation / GCRL goal 协议
+
+- d3rlpy 保留 PointMaze 6D 与 AntMaze 31D base。GCRL 使用唯一协议 `full_observation_v1`：PointMaze 的 state/goal base 都是 4D `observation`，AntMaze 都是 v4 的 29D `[achieved_goal, observation]`；对任意 relabel index `j`，`goal(j)` 必须逐元素等于完整 `state(j)`。
+- GCRL 只保存一个 state 数组。state 与 goal 共用同一组 observation mean/std，并统一处理 observations、goals 和 HIQL `high_actor_targets`。
+- 在线 GCRL reset 固定为单目标 `continuing_task=false/reset_target=false`。同一实例先以 episode seed/options reset、固定 action-space seed 后执行 5 个随机动作稳定姿态，只把 qpos xy 传送到 desired target 并取得 full goal observation，再以相同 seed/options 真正 reset；两次真实起点/目标必须逐元素一致，首次 success 结束 episode。
+- resolved config、dataset manifest、normalizer、Flax checkpoint metadata sidecar 和 summary 都记录 `gcrl_goal_semantics: full_observation_v1`。缺失 metadata 或旧 `compact_xy` artifact 明确拒绝加载。
+
 ---
 
 ### 暂不需要实现

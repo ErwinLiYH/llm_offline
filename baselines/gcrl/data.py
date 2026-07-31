@@ -7,10 +7,11 @@ import numpy as np
 
 from baselines.data.loader import episode_field, select_episode_splits
 from baselines.data.observation import (
+    GCRL_GOAL_SEMANTICS,
     GOAL_CONDITIONED_STATE_DIMS,
     family_map_shape,
     goal_conditioned_observation_schema,
-    vectorize_goal_conditioned_observation,
+    vectorize_gcrl_state_observation,
 )
 
 
@@ -18,7 +19,6 @@ from baselines.data.observation import (
 class GCRLEpisode:
     variant: str
     states: np.ndarray
-    goals: np.ndarray
     actions: np.ndarray
     # The map is invariant for every time step of one variant.  Keep it once
     # instead of repeating it in every offline state (especially important for
@@ -35,7 +35,6 @@ class GCRLEpisode:
 @dataclass(frozen=True)
 class _VariantArrays:
     states: np.ndarray
-    goals: np.ndarray
     actions: np.ndarray
     anchor_state_indices: np.ndarray
     final_state_indices: np.ndarray
@@ -56,22 +55,16 @@ class PreparedGCRLDatasets:
 
 @dataclass(frozen=True)
 class GCRLNormalizer:
-    state_mean: np.ndarray
-    state_std: np.ndarray
-    goal_mean: np.ndarray
-    goal_std: np.ndarray
+    observation_mean: np.ndarray
+    observation_std: np.ndarray
 
     @classmethod
     def fit(cls, dataset: "GCRLDataset") -> "GCRLNormalizer":
         state_count = 0
-        goal_count = 0
         state_sum = None
         state_square_sum = None
-        goal_sum = None
-        goal_square_sum = None
         for arrays in dataset.variants.values():
             states = np.asarray(arrays.states, dtype=np.float64)
-            goals = np.asarray(arrays.goals, dtype=np.float64)
             current_state_sum, current_state_square_sum = dataset.state_statistics(
                 arrays
             )
@@ -85,76 +78,78 @@ class GCRLNormalizer:
                 if state_square_sum is None
                 else state_square_sum + current_state_square_sum
             )
-            goal_sum = goals.sum(axis=0) if goal_sum is None else goal_sum + goals.sum(axis=0)
-            goal_square_sum = (
-                np.square(goals).sum(axis=0)
-                if goal_square_sum is None
-                else goal_square_sum + np.square(goals).sum(axis=0)
-            )
             state_count += len(states)
-            goal_count += len(goals)
-        if state_count < 1 or goal_count < 1:
+        if state_count < 1:
             raise ValueError("Cannot fit a GCRL normalizer on an empty dataset")
         state_mean = state_sum / state_count
-        goal_mean = goal_sum / goal_count
         state_var = np.maximum(state_square_sum / state_count - np.square(state_mean), 0.0)
-        goal_var = np.maximum(goal_square_sum / goal_count - np.square(goal_mean), 0.0)
         state_std = np.sqrt(state_var)
-        goal_std = np.sqrt(goal_var)
         state_std = np.where(state_std < 1e-6, 1.0, state_std)
-        goal_std = np.where(goal_std < 1e-6, 1.0, goal_std)
         return cls(
-            state_mean=np.asarray(state_mean, dtype=np.float32),
-            state_std=np.asarray(state_std, dtype=np.float32),
-            goal_mean=np.asarray(goal_mean, dtype=np.float32),
-            goal_std=np.asarray(goal_std, dtype=np.float32),
+            observation_mean=np.asarray(state_mean, dtype=np.float32),
+            observation_std=np.asarray(state_std, dtype=np.float32),
         )
 
     @classmethod
-    def identity(cls, state_dim: int, goal_dim: int) -> "GCRLNormalizer":
+    def identity(cls, observation_dim: int) -> "GCRLNormalizer":
         return cls(
-            state_mean=np.zeros(state_dim, dtype=np.float32),
-            state_std=np.ones(state_dim, dtype=np.float32),
-            goal_mean=np.zeros(goal_dim, dtype=np.float32),
-            goal_std=np.ones(goal_dim, dtype=np.float32),
+            observation_mean=np.zeros(observation_dim, dtype=np.float32),
+            observation_std=np.ones(observation_dim, dtype=np.float32),
         )
 
     def normalize_states(self, values) -> np.ndarray:
-        return (np.asarray(values, dtype=np.float32) - self.state_mean) / self.state_std
+        return (
+            np.asarray(values, dtype=np.float32) - self.observation_mean
+        ) / self.observation_std
 
     def normalize_goals(self, values) -> np.ndarray:
-        return (np.asarray(values, dtype=np.float32) - self.goal_mean) / self.goal_std
+        return self.normalize_states(values)
 
     def normalize_batch(self, batch: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        state_keys = {
+        observation_keys = {
             "observations",
             "next_observations",
-            "high_actor_target_states",
-        }
-        goal_keys = {
             "value_goals",
             "actor_goals",
             "low_actor_goals",
             "high_actor_goals",
-            "high_actor_target_goals",
+            "high_actor_targets",
         }
         normalized = {}
         for key, value in batch.items():
-            if key in state_keys:
+            if key in observation_keys:
                 normalized[key] = self.normalize_states(value)
-            elif key in goal_keys:
-                normalized[key] = self.normalize_goals(value)
             else:
                 normalized[key] = np.asarray(value)
         return normalized
 
-    def to_dict(self) -> dict[str, list[float]]:
+    def to_dict(self) -> dict:
         return {
-            "state_mean": self.state_mean.tolist(),
-            "state_std": self.state_std.tolist(),
-            "goal_mean": self.goal_mean.tolist(),
-            "goal_std": self.goal_std.tolist(),
+            "version": 2,
+            "gcrl_goal_semantics": GCRL_GOAL_SEMANTICS,
+            "observation_mean": self.observation_mean.tolist(),
+            "observation_std": self.observation_std.tolist(),
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "GCRLNormalizer":
+        validate_gcrl_goal_semantics(payload, source="normalizer")
+        if payload.get("version") != 2:
+            raise ValueError(f"Unsupported GCRL normalizer version: {payload.get('version')!r}")
+        return cls(
+            observation_mean=np.asarray(payload["observation_mean"], dtype=np.float32),
+            observation_std=np.asarray(payload["observation_std"], dtype=np.float32),
+        )
+
+
+def validate_gcrl_goal_semantics(payload: dict, *, source: str) -> None:
+    actual = payload.get("gcrl_goal_semantics")
+    if actual != GCRL_GOAL_SEMANTICS:
+        description = "missing" if actual is None else repr(actual)
+        raise ValueError(
+            f"{source} uses unsupported GCRL goal semantics {description}; "
+            f"required {GCRL_GOAL_SEMANTICS!r}. Legacy compact_xy artifacts cannot be loaded."
+        )
 
 
 class GCRLDataset:
@@ -173,6 +168,14 @@ class GCRLDataset:
         self.variants = {
             variant: self._pack_variant(items) for variant, items in grouped.items()
         }
+        state_dims = {
+            arrays.states.shape[-1]
+            + (0 if arrays.map_insert_index is None else len(arrays.map_features))
+            for arrays in self.variants.values()
+        }
+        action_dims = {arrays.actions.shape[-1] for arrays in self.variants.values()}
+        if len(state_dims) != 1 or len(action_dims) != 1:
+            raise ValueError("All GCRL variants must share state and action dimensions")
         self._variant_names = list(self.variants)
         counts = np.asarray(
             [self.variants[name].transition_count for name in self._variant_names],
@@ -184,7 +187,6 @@ class GCRLDataset:
     @staticmethod
     def _pack_variant(episodes: list[GCRLEpisode]) -> _VariantArrays:
         states = []
-        goals = []
         actions = []
         anchor_indices = []
         final_indices = []
@@ -214,7 +216,6 @@ class GCRLDataset:
                 )
             step_count = episode.transition_count
             states.append(episode.states)
-            goals.append(episode.goals)
             actions.append(episode.actions)
             anchor_indices.append(state_offset + np.arange(step_count, dtype=np.int64))
             final_indices.append(
@@ -223,7 +224,6 @@ class GCRLDataset:
             state_offset += step_count + 1
         return _VariantArrays(
             states=np.concatenate(states, axis=0),
-            goals=np.concatenate(goals, axis=0),
             actions=np.concatenate(actions, axis=0),
             anchor_state_indices=np.concatenate(anchor_indices, axis=0),
             final_state_indices=np.concatenate(final_indices, axis=0),
@@ -252,7 +252,7 @@ class GCRLDataset:
 
     @property
     def goal_dim(self) -> int:
-        return int(next(iter(self.variants.values())).goals.shape[-1])
+        return self.state_dim
 
     @property
     def action_dim(self) -> int:
@@ -373,7 +373,9 @@ class GCRLDataset:
                 arrays, arrays.states[anchors + 1]
             ),
             "actions": arrays.actions[transition_indices],
-            "value_goals": arrays.goals[value_goal_indices],
+            "value_goals": self._restore_map_features(
+                arrays, arrays.states[value_goal_indices]
+            ),
             "masks": 1.0 - successes,
             "rewards": successes - (1.0 if algorithm == "hiql" else 0.0),
         }
@@ -388,7 +390,9 @@ class GCRLDataset:
                 geometric=config["actor_geom_sample"],
                 discount=config["discount"],
             )
-            batch["actor_goals"] = arrays.goals[actor_goal_indices]
+            batch["actor_goals"] = self._restore_map_features(
+                arrays, arrays.states[actor_goal_indices]
+            )
         elif algorithm == "hiql":
             subgoal_steps = config["subgoal_steps"]
             low_goal_indices = np.minimum(anchors + subgoal_steps, finals)
@@ -421,12 +425,15 @@ class GCRLDataset:
             )
             batch.update(
                 {
-                    "low_actor_goals": arrays.goals[low_goal_indices],
-                    "high_actor_goals": arrays.goals[high_goal_indices],
-                    "high_actor_target_states": self._restore_map_features(
+                    "low_actor_goals": self._restore_map_features(
+                        arrays, arrays.states[low_goal_indices]
+                    ),
+                    "high_actor_goals": self._restore_map_features(
+                        arrays, arrays.states[high_goal_indices]
+                    ),
+                    "high_actor_targets": self._restore_map_features(
                         arrays, arrays.states[high_target_indices]
                     ),
-                    "high_actor_target_goals": arrays.goals[high_target_indices],
                 }
             )
         else:
@@ -451,20 +458,11 @@ def _convert_episode(
             raise ValueError(
                 f"{env_family} GCRL requires dict observations"
             ) from exc
-    if env_family == "pointmaze":
-        achieved_xy = np.asarray(observations["observation"], dtype=np.float32)[
-            ..., :2
-        ]
-    else:
-        achieved_xy = np.asarray(observations["achieved_goal"], dtype=np.float32)[
-            ..., :2
-        ]
-    states, goals = vectorize_goal_conditioned_observation(
+    states = vectorize_gcrl_state_observation(
         observations,
         env_family,
         observation_config=observation_config,
         variant=variant,
-        goal_xy=achieved_xy,
     )
     map_features = None
     map_insert_index = None
@@ -493,7 +491,7 @@ def _convert_episode(
         raise ValueError(
             f"Unexpected {env_family} action shape for variant={variant!r}: {actions.shape}"
         )
-    if len(states) != len(actions) + 1 or len(goals) != len(actions) + 1:
+    if len(states) != len(actions) + 1:
         raise ValueError(
             f"GCRL episode for variant={variant!r} must have T+1 observations and T actions"
         )
@@ -506,7 +504,6 @@ def _convert_episode(
     return GCRLEpisode(
         variant=variant,
         states=np.asarray(states, dtype=np.float32),
-        goals=np.asarray(goals, dtype=np.float32),
         actions=np.clip(actions, -1.0, 1.0).astype(np.float32),
         map_features=map_features,
         map_insert_index=map_insert_index,
@@ -567,6 +564,7 @@ def prepare_gcrl_datasets(
         validation_episodes, seed=config["seed"] + 1_000_003
     )
     manifest = {
+        "gcrl_goal_semantics": GCRL_GOAL_SEMANTICS,
         "env_family": config["env_family"],
         "observation_config": dict(config["observation"]),
         "observation_schema": goal_conditioned_observation_schema(

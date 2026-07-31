@@ -243,7 +243,7 @@ class HIQLAgent(flax.struct.PyTreeNode):
             batch["observations"], batch["high_actor_goals"]
         )
         target_v1, target_v2 = self.network.select("value")(
-            batch["high_actor_target_states"], batch["high_actor_goals"]
+            batch["high_actor_targets"], batch["high_actor_goals"]
         )
         advantage = (target_v1 + target_v2 - v1 - v2) / 2.0
         weights = jnp.minimum(
@@ -256,7 +256,7 @@ class HIQLAgent(flax.struct.PyTreeNode):
         )
         target_representation = self.network.select("goal_rep")(
             jnp.concatenate(
-                [batch["observations"], batch["high_actor_target_goals"]],
+                [batch["observations"], batch["high_actor_targets"]],
                 axis=-1,
             )
         )

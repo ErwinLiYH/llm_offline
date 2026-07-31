@@ -752,6 +752,29 @@ def normalize_baseline_config(raw_config: dict) -> dict:
             "training_diagnostics requires algorithm_config.compile_graph=false"
         )
 
+    normalized_evaluation = _normalize_evaluation(raw.get("evaluation"))
+    if algorithm in _GCRL_DEFAULTS:
+        env_config = normalized_evaluation["env_config"]
+        env_kwargs = dict(env_config.get("env_kwargs") or {})
+        required_single_goal = {"continuing_task": False, "reset_target": False}
+        for field, required in required_single_goal.items():
+            configured_values = []
+            if field in env_config:
+                configured_values.append((f"evaluation.env_config.{field}", env_config[field]))
+            if field in env_kwargs:
+                configured_values.append(
+                    (f"evaluation.env_config.env_kwargs.{field}", env_kwargs[field])
+                )
+            for name, configured in configured_values:
+                if configured is not required:
+                    raise ValueError(
+                        f"CRL/HIQL require {name}={str(required).lower()} for "
+                        "single-goal evaluation"
+                    )
+            env_config.pop(field, None)
+            env_kwargs[field] = required
+        env_config["env_kwargs"] = env_kwargs
+
     return {
         "algorithm": algorithm,
         "env_family": env_family,
@@ -787,7 +810,7 @@ def normalize_baseline_config(raw_config: dict) -> dict:
         "observation": _normalize_observation(raw.get("observation")),
         "network": normalized_network,
         "algorithm_config": normalized_algorithm_config,
-        "evaluation": _normalize_evaluation(raw.get("evaluation")),
+        "evaluation": normalized_evaluation,
         "logging": _normalize_logging(raw.get("logging")),
         "training_diagnostics": training_diagnostics,
         "resume": _normalize_resume(raw.get("resume"), algorithm=algorithm),

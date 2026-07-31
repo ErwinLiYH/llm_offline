@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import random
 from pathlib import Path
 
@@ -13,9 +14,11 @@ from baselines.artifacts import append_jsonl, create_run_dir, write_json, write_
 from baselines.evaluation import evaluate_rollouts
 from baselines.gcrl.agents import create_agent
 from baselines.gcrl.data import (
+    GCRL_GOAL_SEMANTICS,
     GCRLNormalizer,
     PreparedGCRLDatasets,
     prepare_gcrl_datasets,
+    validate_gcrl_goal_semantics,
 )
 from baselines.registry import resolve_baseline_selections
 
@@ -121,9 +124,34 @@ def _mean_metrics(records: list[dict[str, float]]) -> dict[str, float]:
     return {key: float(np.mean([record[key] for record in records])) for key in keys}
 
 
-def _save_agent(path: Path, agent) -> None:
+def _checkpoint_metadata_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".metadata.json")
+
+
+def _save_agent(path: Path, agent, metadata: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(flax.serialization.to_bytes(agent))
+    write_json(_checkpoint_metadata_path(path), metadata)
+
+
+def load_gcrl_checkpoint(path: str | Path, template_agent, *, expected: dict | None = None):
+    """Load Flax bytes only when the full-observation metadata sidecar matches."""
+    path = Path(path)
+    metadata_path = _checkpoint_metadata_path(path)
+    if not metadata_path.is_file():
+        raise ValueError(
+            f"GCRL checkpoint metadata sidecar is missing: {metadata_path}. "
+            "Legacy compact_xy checkpoints cannot be loaded."
+        )
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    validate_gcrl_goal_semantics(metadata, source="checkpoint")
+    for key, expected_value in (expected or {}).items():
+        if metadata.get(key) != expected_value:
+            raise ValueError(
+                f"GCRL checkpoint metadata mismatch for {key}: "
+                f"expected {expected_value!r}, found {metadata.get(key)!r}"
+            )
+    return flax.serialization.from_bytes(template_agent, path.read_bytes())
 
 
 class GCRLPolicy:
@@ -176,6 +204,7 @@ def train_gcrl_baseline(config: dict) -> Path:
     resolved_config["resolved_eval_reward_types"] = selections.eval_reward_types
     resolved_config["runtime_versions"] = versions
     resolved_config["jax_device"] = str(device)
+    resolved_config["gcrl_goal_semantics"] = GCRL_GOAL_SEMANTICS
     write_yaml(run_dir / "config.yaml", resolved_config)
 
     print(
@@ -196,7 +225,7 @@ def train_gcrl_baseline(config: dict) -> Path:
         normalizer = GCRLNormalizer.fit(prepared.train)
     else:
         normalizer = GCRLNormalizer.identity(
-            prepared.train.state_dim, prepared.train.goal_dim
+            prepared.train.state_dim
         )
     write_json(run_dir / "normalizer.json", normalizer.to_dict())
 
@@ -211,6 +240,16 @@ def train_gcrl_baseline(config: dict) -> Path:
     total_epochs = config["n_steps"] // config["n_steps_per_epoch"]
     training_history = []
     evaluation_history = []
+    checkpoint_metadata = {
+        "version": 1,
+        "gcrl_goal_semantics": GCRL_GOAL_SEMANTICS,
+        "env_family": config["env_family"],
+        "algorithm": config["algorithm"],
+        "observation_schema": prepared.manifest["observation_schema"],
+        "observation_config": dict(config["observation"]),
+        "observation_dimension": prepared.train.state_dim,
+        "action_dimension": prepared.train.action_dim,
+    }
     with jax.default_device(device):
         agent = create_agent(
             config["algorithm"],
@@ -255,7 +294,9 @@ def train_gcrl_baseline(config: dict) -> Path:
             final_epoch = epoch == total_epochs
             if epoch % config["save_interval_epochs"] == 0 or final_epoch:
                 _save_agent(
-                    run_dir / "checkpoints" / f"step_{total_step}.msgpack", agent
+                    run_dir / "checkpoints" / f"step_{total_step}.msgpack",
+                    agent,
+                    checkpoint_metadata,
                 )
 
             evaluation = config["evaluation"]
@@ -296,12 +337,13 @@ def train_gcrl_baseline(config: dict) -> Path:
                     f"length={aggregate['length_mean']:.1f}"
                 )
 
-        _save_agent(run_dir / "model.msgpack", agent)
+        _save_agent(run_dir / "model.msgpack", agent, checkpoint_metadata)
 
     summary = {
         "experiment_id": experiment_id,
         "algorithm": config["algorithm"],
         "backend": "jax",
+        "gcrl_goal_semantics": GCRL_GOAL_SEMANTICS,
         "env_family": config["env_family"],
         "train_variants": selections.train.selected_variants,
         "eval_variants": selections.eval.selected_variants,
@@ -324,6 +366,9 @@ def train_gcrl_baseline(config: dict) -> Path:
         "evaluation_history": evaluation_history,
         "final_evaluation": evaluation_history[-1] if evaluation_history else None,
         "model_path": str(run_dir / "model.msgpack"),
+        "model_metadata_path": str(
+            _checkpoint_metadata_path(run_dir / "model.msgpack")
+        ),
         "normalizer_path": str(run_dir / "normalizer.json"),
     }
     write_json(run_dir / "summary.json", summary)

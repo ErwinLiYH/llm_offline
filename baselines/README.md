@@ -94,10 +94,12 @@ target recipes must match apart from the larger total budget.
 
 PointMaze base observations are `[observation, desired_goal]` (6 values).
 AntMaze base observations are `[achieved_goal, observation, desired_goal]` (31
-values) for the d3rlpy algorithms. CRL/HIQL keep state and goal separate:
-PointMaze state is the 4D `observation`, AntMaze state is the 29D
-`[achieved_goal, observation]`, and both use a 2D xy goal. Optional numeric
-map, location-sensing, and wall-sensing components
+values) for the d3rlpy algorithms. CRL/HIQL use the versioned
+`full_observation_v1` protocol: PointMaze state and goal are both based on the
+4D `observation`, AntMaze state and goal are both based on the 29D
+`[achieved_goal, observation]`, and every relabeled goal equals a complete
+state row. Optional numeric map, location-sensing, and
+wall-sensing components
 can be concatenated through independent `observation` switches:
 
 ```yaml
@@ -119,9 +121,10 @@ enabled, the final dimensions are 239 for PointMaze and 231 for AntMaze. The
 offline adapter recomputes sensing from each variant's recorded coordinates
 and map, while rollout uses the live CrossMaze layout. The complete vector is
 then handled by the same training-fitted `StandardObservationScaler` as the
-legacy observation. CRL/HIQL instead fit separate state and goal normalizers;
-map/current-cell/wall features belong to state, while goal-cell features belong
-to goal. No prompt or sensing text enters these baselines.
+legacy observation. CRL/HIQL use one observation normalizer for every
+observation-like tensor. Their static map is stored once per variant.
+A relabeled goal reuses the complete target state row byte for byte. No prompt
+or sensing text enters these baselines.
 
 ### BC scaling encoder
 
@@ -157,9 +160,12 @@ the action head.
 CRL/HIQL load complete episodes because their goals are relabeled from future
 or random achieved states. Relabeling never crosses a maze variant. Each
 minibatch is also variant-homogeneous, so CRL's in-batch negatives cannot mix
-incompatible maps. HIQL uses separate compact goal targets and full state
-targets internally, which permits the state and goal dimensions above to
-differ.
+incompatible maps. HIQL uses the single upstream-style `high_actor_targets`
+full-state tensor, and all state/goal dimensions and schemas are identical.
+Online GCRL evaluation forces `continuing_task=false` and `reset_target=false`.
+At reset it performs a seeded preliminary reset, five seeded random actions,
+captures a full observation after teleporting only qpos xy to the target, then
+repeats the same reset for the real episode.
 
 Local variants honor top-level `reward_type: sparse | dense` and select the
 corresponding reward-typed dataset directory. Remote Minari variants have fixed
@@ -173,8 +179,10 @@ Each run is written under `baseline_runs/<experiment_id>/` with the resolved
 config, dataset split manifest, native d3rlpy logs, periodic evaluation JSONL,
 checkpoints, final `model.d3`, and `summary.json`.
 
-JAX runs use the same directory layout but write `training.jsonl`,
-`normalizer.json`, `.msgpack` checkpoints, and final `model.msgpack`. Rollout
+JAX runs use the same directory layout but write `training.jsonl`, versioned
+`normalizer.json`, `.msgpack` checkpoints plus required `.metadata.json`
+sidecars, and final `model.msgpack`. Missing or legacy `compact_xy` metadata is
+rejected rather than silently loaded. Rollout
 evaluation runs at configured epoch boundaries and at the final epoch. The
 existing standalone d3rlpy checkpoint-sweep scripts have not yet been extended
 to load JAX checkpoints, and the JAX runner currently requires W&B logging to

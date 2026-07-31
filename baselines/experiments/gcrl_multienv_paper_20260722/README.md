@@ -1,5 +1,9 @@
 # Formal multi-environment GCRL experiment
 
+> Historical protocol: these runs used the retired `compact_xy` goal semantics.
+> Their recorded numbers remain unchanged but are not directly comparable to
+> `full_observation_v1` runs or loadable by the current GCRL checkpoint path.
+
 This protocol trains each GCRL algorithm separately on PointMaze and AntMaze
 multi-environment suites.  Held-out `test-layout*` maps are never supplied to
 the offline sampler.  They appear only in checkpoint rollout evaluation.

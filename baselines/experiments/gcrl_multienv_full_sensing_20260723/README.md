@@ -1,5 +1,9 @@
 # Full-sensing multi-environment GCRL experiment
 
+> Historical protocol: these runs used the retired `compact_xy` goal semantics
+> (including the documented asymmetric dimensions). They are not current
+> `full_observation_v1` runs.
+
 This is a controlled follow-up to
 `gcrl_multienv_paper_20260722`.  CRL and HIQL retain the same OGBench-derived
 algorithm parameters, 3x512 GELU+LayerNorm networks, seed, 1M-update budget,

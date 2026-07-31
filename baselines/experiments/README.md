@@ -83,6 +83,9 @@ micromamba run -n llm_offline_baselines python baseline_train.py --config \
 独立覆盖配置。`paper_obs_v1/common.yaml` 固化了同一组字段，避免正式 protocol 依赖
 外部叠加文件。
 
+旧 GCRL 实验目录均使用已退役的 `compact_xy` goal 语义，其中的既有结果不应
+与当前 `full_observation_v1` run 直接比较。
+
 ## 运行约定
 
 - 所有 `run_*.sh` 会跳过已完成的 run，并拒绝或跳过不完整目录，避免无意覆盖。

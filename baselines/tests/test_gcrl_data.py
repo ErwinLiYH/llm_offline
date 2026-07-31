@@ -18,7 +18,6 @@ def _episode(variant: str, value: float, length: int = 5) -> GCRLEpisode:
     return GCRLEpisode(
         variant=variant,
         states=states,
-        goals=goals,
         actions=np.full((length, 2), value, dtype=np.float32),
     )
 
@@ -67,20 +66,62 @@ class GCRLDatasetTest(unittest.TestCase):
         np.testing.assert_array_equal(batch["rewards"], np.ones(8))
         np.testing.assert_array_equal(batch["masks"], np.zeros(8))
 
-    def test_hiql_batch_keeps_state_and_goal_targets_separate(self):
+    def test_hiql_batch_uses_full_state_goals_and_one_high_target(self):
         dataset = GCRLDataset([_episode("map", 0.2)], seed=3)
         batch = dataset.sample(8, algorithm="hiql", config=_sampling_config())
-        self.assertEqual(batch["high_actor_target_states"].shape, (8, 3))
-        self.assertEqual(batch["high_actor_target_goals"].shape, (8, 2))
-        self.assertEqual(batch["low_actor_goals"].shape, (8, 2))
+        self.assertNotIn("high_actor_target_states", batch)
+        self.assertNotIn("high_actor_target_goals", batch)
+        for key in (
+            "value_goals",
+            "low_actor_goals",
+            "high_actor_goals",
+            "high_actor_targets",
+        ):
+            self.assertEqual(batch[key].shape, (8, 3))
         self.assertEqual(batch["rewards"].shape, (8,))
 
     def test_normalizer_handles_constant_features(self):
         dataset = GCRLDataset([_episode("map", 0.2)], seed=3)
         normalizer = GCRLNormalizer.fit(dataset)
-        self.assertTrue(np.all(np.isfinite(normalizer.state_std)))
-        self.assertTrue(np.all(normalizer.state_std > 0))
-        self.assertTrue(np.all(np.isfinite(normalizer.goal_std)))
+        self.assertTrue(np.all(np.isfinite(normalizer.observation_std)))
+        self.assertTrue(np.all(normalizer.observation_std > 0))
+        self.assertNotIn("goal_mean", normalizer.to_dict())
+        self.assertNotIn("goal_std", normalizer.to_dict())
+        restored = GCRLNormalizer.from_dict(normalizer.to_dict())
+        np.testing.assert_array_equal(
+            restored.observation_mean, normalizer.observation_mean
+        )
+        with self.assertRaisesRegex(ValueError, "compact_xy"):
+            GCRLNormalizer.from_dict(
+                {
+                    "version": 1,
+                    "state_mean": [0.0],
+                    "goal_mean": [0.0],
+                }
+            )
+
+    def test_current_goals_remain_exactly_equal_after_normalization(self):
+        dataset = GCRLDataset([_episode("map", 0.2)], seed=3)
+        batch = dataset.sample(
+            8,
+            algorithm="crl",
+            config=_sampling_config(
+                value_p_curgoal=1.0,
+                value_p_trajgoal=0.0,
+                value_p_randomgoal=0.0,
+                actor_p_curgoal=1.0,
+                actor_p_trajgoal=0.0,
+                actor_p_randomgoal=0.0,
+            ),
+        )
+        normalizer = GCRLNormalizer.fit(dataset)
+        normalized = normalizer.normalize_batch(batch)
+        np.testing.assert_array_equal(
+            normalized["observations"], normalized["value_goals"]
+        )
+        np.testing.assert_array_equal(
+            normalized["observations"], normalized["actor_goals"]
+        )
 
     def test_static_map_is_compact_but_restored_in_original_state_order(self):
         episode = _episode("map", 0.2, length=4)
@@ -90,7 +131,6 @@ class GCRLDatasetTest(unittest.TestCase):
         compact_episode = GCRLEpisode(
             variant=episode.variant,
             states=episode.states,
-            goals=episode.goals,
             actions=episode.actions,
             map_features=np.asarray([7.0, 8.0], dtype=np.float32),
             map_insert_index=2,
@@ -103,11 +143,12 @@ class GCRLDatasetTest(unittest.TestCase):
             batch["next_observations"][:, 2:4], [[7.0, 8.0]] * 8
         )
         np.testing.assert_array_equal(
-            batch["high_actor_target_states"][:, 2:4], [[7.0, 8.0]] * 8
+            batch["high_actor_targets"][:, 2:4], [[7.0, 8.0]] * 8
         )
         normalizer = GCRLNormalizer.fit(dataset)
-        np.testing.assert_array_equal(normalizer.state_mean[2:4], [7.0, 8.0])
-        np.testing.assert_array_equal(normalizer.state_std[2:4], [1.0, 1.0])
+        np.testing.assert_array_equal(normalizer.observation_mean[2:4], [7.0, 8.0])
+        np.testing.assert_array_equal(normalizer.observation_std[2:4], [1.0, 1.0])
+
 
 
 if __name__ == "__main__":

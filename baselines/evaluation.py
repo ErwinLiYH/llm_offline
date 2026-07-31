@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
-import torch
 
 import crossmaze
 from crossmaze.eval_position import (
@@ -18,7 +17,6 @@ from baselines.data.observation import (
     BaselineObservationWrapper,
     GoalConditionedObservationWrapper,
 )
-from baselines.trainer_state import save_trainer_state
 
 
 def _mean(values: list[float]) -> float:
@@ -74,6 +72,22 @@ def _make_evaluation_env(
     observation_config: dict,
     goal_conditioned: bool,
 ):
+    env_config = dict(env_config)
+    if goal_conditioned:
+        env_kwargs = dict(env_config.get("env_kwargs") or {})
+        for field in ("continuing_task", "reset_target"):
+            if field in env_config and env_config[field] is not False:
+                raise ValueError(
+                    f"CRL/HIQL single-goal evaluation requires {field}=false"
+                )
+            if field in env_kwargs and env_kwargs[field] is not False:
+                raise ValueError(
+                    "CRL/HIQL single-goal evaluation requires "
+                    f"env_kwargs.{field}=false"
+                )
+            env_config.pop(field, None)
+            env_kwargs[field] = False
+        env_config["env_kwargs"] = env_kwargs
     wrapper_class = (
         GoalConditionedObservationWrapper
         if goal_conditioned
@@ -326,6 +340,8 @@ def evaluate_validation(algo, validation_buffer, *, algorithm: str) -> dict:
 
 
 def _policy_parameter_global_norm(algo) -> float:
+    import torch
+
     assert algo.impl is not None
     squared_norms = [
         parameter.detach().float().pow(2).sum()
@@ -371,6 +387,8 @@ class BaselineEpochCallback:
     def _record_training_diagnostics(self, algo, epoch: int, total_step: int) -> dict | None:
         if self._action_probe is None:
             return None
+        import torch
+
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         actions = np.asarray(algo.predict(self._action_probe), dtype=np.float64)
@@ -418,6 +436,8 @@ class BaselineEpochCallback:
         return record
 
     def __call__(self, algo, epoch: int, total_step: int) -> None:
+        from baselines.trainer_state import save_trainer_state
+
         local_epoch = epoch
         epoch += self._epoch_offset
         total_step += self._step_offset
