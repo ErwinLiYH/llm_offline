@@ -194,7 +194,16 @@ def _load_resume_context(config: dict) -> dict | None:
     )
     mismatches = []
     for field in _RESUME_COMPATIBILITY_FIELDS:
-        if source_config.get(field) != config.get(field):
+        source_value = source_config.get(field)
+        current_value = config.get(field)
+        if field == "observation":
+            source_value = dict(source_value or {})
+            current_value = dict(current_value or {})
+            # Dynamic maps were added as an independent opt-in feature. Older
+            # d3rlpy runs that omit the key are schema-equivalent to false.
+            source_value.setdefault("include_dynamic_map", False)
+            current_value.setdefault("include_dynamic_map", False)
+        if source_value != current_value:
             mismatches.append(field)
     if mismatches:
         raise ValueError(

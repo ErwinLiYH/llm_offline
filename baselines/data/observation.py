@@ -8,6 +8,9 @@ import numpy as np
 
 from crossmaze import (
     CROSSMAZE_OBS_KEY,
+    DYNAMIC_MAP_CURRENT,
+    DYNAMIC_MAP_GOAL,
+    DYNAMIC_MAP_SUCCESS,
     compute_sensing_arrays,
     get_env_facts,
     list_variants,
@@ -26,6 +29,7 @@ GOAL_CONDITIONED_STATE_DIMS = {
 
 GCRL_GOAL_SEMANTICS = "full_observation_v1"
 OBSERVATION_SCHEMA_VERSION = "baseline_observation_v2"
+DYNAMIC_MAP_GOAL_SEMANTICS = "environment_desired_goal_v1"
 
 # Kept as a compatibility alias for code that only needs the legacy dimensions.
 OBSERVATION_DIMS = BASE_OBSERVATION_DIMS
@@ -43,6 +47,7 @@ def uses_structured_observation(observation_config: Mapping | None) -> bool:
         _enabled(observation_config, key)
         for key in (
             "include_map",
+            "include_dynamic_map",
             "include_location_sensing",
             "include_wall_sensing",
         )
@@ -66,6 +71,9 @@ def observation_dim(env_family: str, observation_config: Mapping | None = None) 
         raise ValueError(f"Unsupported env_family: {env_family!r}")
     dimension = BASE_OBSERVATION_DIMS[env_family]
     if _enabled(observation_config, "include_map"):
+        rows, cols = family_map_shape(env_family)
+        dimension += rows * cols
+    if _enabled(observation_config, "include_dynamic_map"):
         rows, cols = family_map_shape(env_family)
         dimension += rows * cols
     if _enabled(observation_config, "include_location_sensing"):
@@ -93,6 +101,25 @@ def observation_schema(env_family: str, observation_config: Mapping | None = Non
                 "padding_value": MAP_PADDING_VALUE,
             }
         )
+    if _enabled(observation_config, "include_dynamic_map"):
+        rows, cols = family_map_shape(env_family)
+        components.append(
+            {
+                "name": "dynamic_map",
+                "dimension": rows * cols,
+                "shape": [rows, cols],
+                "flatten_order": "row-major",
+                "padding_value": MAP_PADDING_VALUE,
+                "status_codes": {
+                    "open": 0,
+                    "wall": 1,
+                    "current": DYNAMIC_MAP_CURRENT,
+                    "goal": DYNAMIC_MAP_GOAL,
+                    "current_and_goal": DYNAMIC_MAP_SUCCESS,
+                },
+                "goal_semantics": DYNAMIC_MAP_GOAL_SEMANTICS,
+            }
+        )
     if _enabled(observation_config, "include_location_sensing"):
         components.append(
             {
@@ -112,6 +139,7 @@ def observation_schema(env_family: str, observation_config: Mapping | None = Non
             }
         )
     return {
+        "version": OBSERVATION_SCHEMA_VERSION,
         "base": base_name,
         "dimension": observation_dim(env_family, observation_config),
         "components": components,
@@ -127,6 +155,9 @@ def goal_conditioned_observation_dims(
         raise ValueError(f"Unsupported env_family: {env_family!r}")
     state_dim = GOAL_CONDITIONED_STATE_DIMS[env_family]
     if _enabled(observation_config, "include_map"):
+        rows, cols = family_map_shape(env_family)
+        state_dim += rows * cols
+    if _enabled(observation_config, "include_dynamic_map"):
         rows, cols = family_map_shape(env_family)
         state_dim += rows * cols
     if _enabled(observation_config, "include_location_sensing"):
@@ -163,6 +194,25 @@ def goal_conditioned_observation_schema(
                 "shape": [rows, cols],
                 "flatten_order": "row-major",
                 "padding_value": MAP_PADDING_VALUE,
+            }
+        )
+    if _enabled(observation_config, "include_dynamic_map"):
+        rows, cols = family_map_shape(env_family)
+        components.append(
+            {
+                "name": "dynamic_map",
+                "dimension": rows * cols,
+                "shape": [rows, cols],
+                "flatten_order": "row-major",
+                "padding_value": MAP_PADDING_VALUE,
+                "status_codes": {
+                    "open": 0,
+                    "wall": 1,
+                    "current": DYNAMIC_MAP_CURRENT,
+                    "goal": DYNAMIC_MAP_GOAL,
+                    "current_and_goal": DYNAMIC_MAP_SUCCESS,
+                },
+                "goal_semantics": DYNAMIC_MAP_GOAL_SEMANTICS,
             }
         )
     if _enabled(observation_config, "include_location_sensing"):
@@ -283,6 +333,76 @@ def _map_features(
     return np.broadcast_to(flattened, leading_shape + flattened.shape)
 
 
+def _dynamic_map_features(
+    maze_map: list[list[object]],
+    *,
+    env_family: str,
+    position_cell: np.ndarray,
+    goal_cell: np.ndarray,
+) -> np.ndarray:
+    """Build padded C/G/S maps for arbitrary leading batch dimensions."""
+    position_cell = np.asarray(position_cell, dtype=np.int64)
+    goal_cell = np.asarray(goal_cell, dtype=np.int64)
+    if position_cell.shape != goal_cell.shape or position_cell.shape[-1:] != (2,):
+        raise ValueError("position_cell and goal_cell must have matching [..., 2] shapes")
+    leading_shape = position_cell.shape[:-1]
+    base = np.array(
+        _map_features(
+            maze_map,
+            env_family=env_family,
+            leading_shape=leading_shape,
+        ),
+        dtype=np.float32,
+        copy=True,
+    )
+    target_rows, target_cols = family_map_shape(env_family)
+    position_indices = position_cell[..., 0] * target_cols + position_cell[..., 1]
+    goal_indices = goal_cell[..., 0] * target_cols + goal_cell[..., 1]
+    if (
+        np.any(position_cell < 0)
+        or np.any(goal_cell < 0)
+        or np.any(position_cell[..., 0] >= target_rows)
+        or np.any(goal_cell[..., 0] >= target_rows)
+        or np.any(position_cell[..., 1] >= target_cols)
+        or np.any(goal_cell[..., 1] >= target_cols)
+    ):
+        raise ValueError("Dynamic-map cells fall outside the family map slot")
+    rows = base.reshape((-1, base.shape[-1]))
+    flat_position = position_indices.reshape(-1)
+    flat_goal = goal_indices.reshape(-1)
+    row_indices = np.arange(len(rows), dtype=np.int64)
+    distinct = flat_position != flat_goal
+    rows[row_indices[distinct], flat_position[distinct]] = DYNAMIC_MAP_CURRENT
+    rows[row_indices[distinct], flat_goal[distinct]] = DYNAMIC_MAP_GOAL
+    rows[row_indices[~distinct], flat_position[~distinct]] = DYNAMIC_MAP_SUCCESS
+    return rows.reshape(leading_shape + (base.shape[-1],))
+
+
+def gcrl_dynamic_map_indices(
+    observation: Mapping,
+    env_family: str,
+    *,
+    observation_config: Mapping,
+    variant: str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return padded flat current/desired-goal cell indices for compact dmaps."""
+    _state, position, goal = _state_position_and_goal(observation, env_family)
+    meta = _layout_meta(
+        observation,
+        env_family=env_family,
+        variant=variant,
+        observation_config=observation_config,
+    )
+    sensing = compute_sensing_arrays(position, goal, meta)
+    _rows, target_cols = family_map_shape(env_family)
+    position_cell = np.asarray(sensing["position_cell"], dtype=np.int64)
+    goal_cell = np.asarray(sensing["goal_cell"], dtype=np.int64)
+    return (
+        position_cell[..., 0] * target_cols + position_cell[..., 1],
+        goal_cell[..., 0] * target_cols + goal_cell[..., 1],
+    )
+
+
 def vectorize_observation(
     observation,
     env_family: str,
@@ -322,6 +442,16 @@ def vectorize_observation(
                     meta["maze_map"],
                     env_family=env_family,
                     leading_shape=vector.shape[:-1],
+                )
+            )
+        if _enabled(config, "include_dynamic_map"):
+            sensing = compute_sensing_arrays(position, goal, meta)
+            features.append(
+                _dynamic_map_features(
+                    meta["maze_map"],
+                    env_family=env_family,
+                    position_cell=sensing["position_cell"],
+                    goal_cell=sensing["goal_cell"],
                 )
             )
         if _enabled(config, "include_location_sensing") or _enabled(
@@ -391,10 +521,22 @@ def vectorize_gcrl_state_observation(
                     leading_shape=state.shape[:-1],
                 )
             )
+        sensing = None
+        if _enabled(config, "include_dynamic_map"):
+            sensing = compute_sensing_arrays(position, desired_goal, meta)
+            state_features.append(
+                _dynamic_map_features(
+                    meta["maze_map"],
+                    env_family=env_family,
+                    position_cell=sensing["position_cell"],
+                    goal_cell=sensing["goal_cell"],
+                )
+            )
         if _enabled(config, "include_location_sensing") or _enabled(
             config, "include_wall_sensing"
         ):
-            sensing = compute_sensing_arrays(position, desired_goal, meta)
+            if sensing is None:
+                sensing = compute_sensing_arrays(position, desired_goal, meta)
             if _enabled(config, "include_location_sensing"):
                 state_features.append(sensing["position_cell"].astype(np.float32))
             if _enabled(config, "include_wall_sensing"):

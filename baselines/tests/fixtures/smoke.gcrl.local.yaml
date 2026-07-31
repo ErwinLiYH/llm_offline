@@ -10,6 +10,7 @@ save_interval_epochs: 1
 show_progress: false
 observation:
   include_map: true
+  include_dynamic_map: true
   include_location_sensing: true
   include_wall_sensing: true
   wall_sensing_version: v3

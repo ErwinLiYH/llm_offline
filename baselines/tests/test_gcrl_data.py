@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 
-from baselines.gcrl.data import GCRLDataset, GCRLEpisode, GCRLNormalizer
+from baselines.data.observation import vectorize_gcrl_state_observation
+from baselines.gcrl.data import (
+    GCRLDataset,
+    GCRLEpisode,
+    GCRLNormalizer,
+    _convert_episode,
+)
 
 
 def _episode(variant: str, value: float, length: int = 5) -> GCRLEpisode:
@@ -149,6 +156,79 @@ class GCRLDatasetTest(unittest.TestCase):
         np.testing.assert_array_equal(normalizer.observation_mean[2:4], [7.0, 8.0])
         np.testing.assert_array_equal(normalizer.observation_std[2:4], [1.0, 1.0])
 
+    def test_dynamic_map_compaction_and_exact_statistics(self):
+        episode = _episode("map", 0.2, length=4)
+        positions = np.asarray([0, 0, 1, 1, 0], dtype=np.int64)
+        goals = np.asarray([1, 0, 1, 0, 0], dtype=np.int64)
+        compact_episode = GCRLEpisode(
+            variant=episode.variant,
+            states=episode.states,
+            actions=episode.actions,
+            map_features=np.asarray([0.0, 1.0], dtype=np.float32),
+            map_insert_index=2,
+            dynamic_map_insert_index=4,
+            dynamic_position_indices=positions,
+            dynamic_goal_indices=goals,
+        )
+        dataset = GCRLDataset([compact_episode], seed=3)
+        arrays = dataset.variants["map"]
+        restored = dataset._restore_observation_features(
+            arrays, np.arange(len(arrays.states))
+        )
+        self.assertEqual(restored.shape, (5, 7))
+        np.testing.assert_array_equal(restored[:, 2:4], [[0.0, 1.0]] * 5)
+        expected_dynamic = np.asarray(
+            [[2, 3], [4, 1], [0, 4], [3, 2], [4, 1]], dtype=np.float32
+        )
+        np.testing.assert_array_equal(restored[:, 4:6], expected_dynamic)
+        normalizer = GCRLNormalizer.fit(dataset)
+        np.testing.assert_allclose(normalizer.observation_mean, restored.mean(axis=0))
+        expected_std = restored.std(axis=0)
+        expected_std[expected_std < 1e-6] = 1.0
+        np.testing.assert_allclose(normalizer.observation_std, expected_std, atol=1e-6)
+
+    def test_offline_compact_dynamic_map_restores_exact_vectorizer_rows(self):
+        observations = {
+            "observation": np.asarray(
+                [
+                    [0.0, 1.0, 0.0, 0.0],
+                    [0.5, 1.0, 0.1, 0.0],
+                    [1.0, -1.0, 0.0, 0.0],
+                ],
+                dtype=np.float32,
+            ),
+            "desired_goal": np.asarray([[1.0, -1.0]] * 3, dtype=np.float32),
+        }
+        config = {
+            "include_map": True,
+            "include_dynamic_map": True,
+            "include_location_sensing": True,
+            "include_wall_sensing": True,
+            "wall_sensing_version": "v5",
+            "map_sensing_boundary_risk_threshold": 0.1,
+        }
+        raw = SimpleNamespace(
+            observations=observations,
+            actions=np.zeros((2, 2), dtype=np.float32),
+        )
+        episode = _convert_episode(
+            raw,
+            env_family="pointmaze",
+            variant="umaze",
+            observation_config=config,
+        )
+        dataset = GCRLDataset([episode], seed=0)
+        arrays = dataset.variants["umaze"]
+        restored = dataset._restore_observation_features(
+            arrays, np.arange(3, dtype=np.int64)
+        )
+        expected = vectorize_gcrl_state_observation(
+            observations,
+            "pointmaze",
+            observation_config=config,
+            variant="umaze",
+        )
+        np.testing.assert_array_equal(restored, expected)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from baselines.data.observation import (
     GCRL_GOAL_SEMANTICS,
     GOAL_CONDITIONED_STATE_DIMS,
     family_map_shape,
+    gcrl_dynamic_map_indices,
     goal_conditioned_observation_schema,
     vectorize_gcrl_state_observation,
 )
@@ -26,6 +27,9 @@ class GCRLEpisode:
     # vector order only when a minibatch is sampled.
     map_features: np.ndarray | None = None
     map_insert_index: int | None = None
+    dynamic_map_insert_index: int | None = None
+    dynamic_position_indices: np.ndarray | None = None
+    dynamic_goal_indices: np.ndarray | None = None
 
     @property
     def transition_count(self) -> int:
@@ -40,6 +44,9 @@ class _VariantArrays:
     final_state_indices: np.ndarray
     map_features: np.ndarray | None
     map_insert_index: int | None
+    dynamic_map_insert_index: int | None
+    dynamic_position_indices: np.ndarray | None
+    dynamic_goal_indices: np.ndarray | None
 
     @property
     def transition_count(self) -> int:
@@ -171,6 +178,7 @@ class GCRLDataset:
         state_dims = {
             arrays.states.shape[-1]
             + (0 if arrays.map_insert_index is None else len(arrays.map_features))
+            + (0 if arrays.dynamic_map_insert_index is None else len(arrays.map_features))
             for arrays in self.variants.values()
         }
         action_dims = {arrays.actions.shape[-1] for arrays in self.variants.values()}
@@ -192,10 +200,25 @@ class GCRLDataset:
         final_indices = []
         map_features = None
         map_insert_index = None
+        dynamic_map_insert_index = None
+        dynamic_position_indices = []
+        dynamic_goal_indices = []
+        uses_dynamic_map = None
+        uses_static_map = None
         state_offset = 0
         for episode in episodes:
-            if (episode.map_features is None) != (episode.map_insert_index is None):
+            episode_uses_static_map = episode.map_insert_index is not None
+            episode_uses_dynamic_map = episode.dynamic_map_insert_index is not None
+            if (episode.map_features is None) == (
+                episode_uses_static_map or episode_uses_dynamic_map
+            ):
                 raise ValueError("GCRL episode map metadata is incomplete")
+            if uses_static_map is None:
+                uses_static_map = episode_uses_static_map
+            elif uses_static_map != episode_uses_static_map:
+                raise ValueError(
+                    "All GCRL episodes for one variant must agree on static-map usage"
+                )
             if episode.map_features is not None:
                 candidate = np.asarray(episode.map_features, dtype=np.float32)
                 if candidate.ndim != 1:
@@ -214,6 +237,37 @@ class GCRLDataset:
                 raise ValueError(
                     "All GCRL episodes for one variant must agree on map feature usage"
                 )
+            if episode_uses_dynamic_map != (
+                episode.dynamic_position_indices is not None
+                and episode.dynamic_goal_indices is not None
+            ):
+                raise ValueError("GCRL episode dynamic-map metadata is incomplete")
+            if uses_dynamic_map is None:
+                uses_dynamic_map = episode_uses_dynamic_map
+                dynamic_map_insert_index = episode.dynamic_map_insert_index
+            elif (
+                uses_dynamic_map != episode_uses_dynamic_map
+                or dynamic_map_insert_index != episode.dynamic_map_insert_index
+            ):
+                raise ValueError(
+                    "All GCRL episodes for one variant must agree on dynamic-map usage"
+                )
+            if episode_uses_dynamic_map:
+                positions = np.asarray(episode.dynamic_position_indices, dtype=np.int64)
+                goals = np.asarray(episode.dynamic_goal_indices, dtype=np.int64)
+                if positions.shape != (len(episode.states),) or goals.shape != positions.shape:
+                    raise ValueError(
+                        "GCRL episode dynamic-map indices must match its T+1 states"
+                    )
+                if episode.map_features is None or (
+                    np.any(positions < 0)
+                    or np.any(goals < 0)
+                    or np.any(positions >= len(episode.map_features))
+                    or np.any(goals >= len(episode.map_features))
+                ):
+                    raise ValueError("GCRL episode dynamic-map indices are out of bounds")
+                dynamic_position_indices.append(positions)
+                dynamic_goal_indices.append(goals)
             step_count = episode.transition_count
             states.append(episode.states)
             actions.append(episode.actions)
@@ -229,6 +283,17 @@ class GCRLDataset:
             final_state_indices=np.concatenate(final_indices, axis=0),
             map_features=map_features,
             map_insert_index=map_insert_index,
+            dynamic_map_insert_index=dynamic_map_insert_index,
+            dynamic_position_indices=(
+                np.concatenate(dynamic_position_indices, axis=0)
+                if uses_dynamic_map
+                else None
+            ),
+            dynamic_goal_indices=(
+                np.concatenate(dynamic_goal_indices, axis=0)
+                if uses_dynamic_map
+                else None
+            ),
         )
 
     @property
@@ -247,7 +312,12 @@ class GCRLDataset:
         arrays = next(iter(self.variants.values()))
         return int(
             arrays.states.shape[-1]
-            + (0 if arrays.map_features is None else arrays.map_features.shape[-1])
+            + (0 if arrays.map_insert_index is None else arrays.map_features.shape[-1])
+            + (
+                0
+                if arrays.dynamic_map_insert_index is None
+                else arrays.map_features.shape[-1]
+            )
         )
 
     @property
@@ -259,62 +329,132 @@ class GCRLDataset:
         return int(next(iter(self.variants.values())).actions.shape[-1])
 
     @staticmethod
-    def _restore_map_features(
+    def _restore_observation_features(
         arrays: _VariantArrays,
-        values: np.ndarray,
+        state_indices: np.ndarray,
     ) -> np.ndarray:
-        """Insert one variant-static map into sampled state rows.
-
-        Map slots intentionally remain at their original position (after the
-        base state and before location/wall features), so offline batches and
-        online rollout observations have byte-for-byte compatible schemas.
-        """
-        values = np.asarray(values, dtype=np.float32)
+        """Restore static/dynamic map slots only for the requested state rows."""
+        state_indices = np.asarray(state_indices, dtype=np.int64)
+        values = np.asarray(arrays.states[state_indices], dtype=np.float32)
         if arrays.map_features is None:
             return values
-        if arrays.map_insert_index is None:
-            raise ValueError("GCRL variant map metadata is incomplete")
-        insert_index = arrays.map_insert_index
-        if insert_index < 0 or insert_index > values.shape[-1]:
-            raise ValueError("GCRL variant map insertion index is invalid")
-        map_values = np.broadcast_to(
-            arrays.map_features,
-            values.shape[:-1] + arrays.map_features.shape,
-        )
-        return np.concatenate(
-            [values[..., :insert_index], map_values, values[..., insert_index:]],
-            axis=-1,
-        )
+        map_dim = arrays.map_features.shape[-1]
+        components: list[tuple[int, np.ndarray]] = []
+        if arrays.map_insert_index is not None:
+            components.append(
+                (
+                    arrays.map_insert_index,
+                    np.broadcast_to(
+                        arrays.map_features,
+                        values.shape[:-1] + arrays.map_features.shape,
+                    ),
+                )
+            )
+        if arrays.dynamic_map_insert_index is not None:
+            if (
+                arrays.dynamic_position_indices is None
+                or arrays.dynamic_goal_indices is None
+            ):
+                raise ValueError("GCRL variant dynamic-map metadata is incomplete")
+            dynamic = np.array(
+                np.broadcast_to(
+                    arrays.map_features,
+                    values.shape[:-1] + arrays.map_features.shape,
+                ),
+                copy=True,
+            )
+            rows = dynamic.reshape((-1, map_dim))
+            positions = arrays.dynamic_position_indices[state_indices].reshape(-1)
+            goals = arrays.dynamic_goal_indices[state_indices].reshape(-1)
+            row_indices = np.arange(len(rows), dtype=np.int64)
+            distinct = positions != goals
+            rows[row_indices[distinct], positions[distinct]] = 2.0
+            rows[row_indices[distinct], goals[distinct]] = 3.0
+            rows[row_indices[~distinct], positions[~distinct]] = 4.0
+            components.append((arrays.dynamic_map_insert_index, dynamic))
+        if not components:
+            return values
+        full_dim = values.shape[-1] + map_dim * len(components)
+        restored = np.empty(values.shape[:-1] + (full_dim,), dtype=np.float32)
+        compact_mask = np.ones(full_dim, dtype=bool)
+        for insert_index, component in components:
+            if insert_index < 0 or insert_index + map_dim > full_dim:
+                raise ValueError("GCRL variant map insertion index is invalid")
+            compact_mask[insert_index : insert_index + map_dim] = False
+            restored[..., insert_index : insert_index + map_dim] = component
+        if np.count_nonzero(compact_mask) != values.shape[-1]:
+            raise ValueError("GCRL map component slots overlap")
+        restored[..., compact_mask] = values
+        return restored
 
     @classmethod
     def state_statistics(cls, arrays: _VariantArrays) -> tuple[np.ndarray, np.ndarray]:
-        """Return exact full-state moments without materializing repeated maps."""
+        """Return exact moments without materializing repeated static/dynamic maps."""
         states = np.asarray(arrays.states, dtype=np.float64)
         state_sum = states.sum(axis=0)
         state_square_sum = np.square(states).sum(axis=0)
         if arrays.map_features is None:
             return state_sum, state_square_sum
-        if arrays.map_insert_index is None:
-            raise ValueError("GCRL variant map metadata is incomplete")
         count = len(states)
         map_features = np.asarray(arrays.map_features, dtype=np.float64)
-        insert_index = arrays.map_insert_index
-        return (
-            np.concatenate(
-                [
-                    state_sum[:insert_index],
+        map_dim = len(map_features)
+        components: list[tuple[int, np.ndarray, np.ndarray]] = []
+        if arrays.map_insert_index is not None:
+            components.append(
+                (
+                    arrays.map_insert_index,
                     map_features * count,
-                    state_sum[insert_index:],
-                ]
-            ),
-            np.concatenate(
-                [
-                    state_square_sum[:insert_index],
                     np.square(map_features) * count,
-                    state_square_sum[insert_index:],
-                ]
-            ),
-        )
+                )
+            )
+        if arrays.dynamic_map_insert_index is not None:
+            if (
+                arrays.dynamic_position_indices is None
+                or arrays.dynamic_goal_indices is None
+            ):
+                raise ValueError("GCRL variant dynamic-map metadata is incomplete")
+            positions = arrays.dynamic_position_indices
+            goals = arrays.dynamic_goal_indices
+            same = positions == goals
+            position_only = np.bincount(
+                positions[~same], minlength=map_dim
+            ).astype(np.float64)
+            goal_only = np.bincount(goals[~same], minlength=map_dim).astype(np.float64)
+            success = np.bincount(positions[same], minlength=map_dim).astype(np.float64)
+            dynamic_sum = (
+                map_features * count
+                + position_only * (2.0 - map_features)
+                + goal_only * (3.0 - map_features)
+                + success * (4.0 - map_features)
+            )
+            dynamic_square_sum = (
+                np.square(map_features) * count
+                + position_only * (4.0 - np.square(map_features))
+                + goal_only * (9.0 - np.square(map_features))
+                + success * (16.0 - np.square(map_features))
+            )
+            components.append(
+                (
+                    arrays.dynamic_map_insert_index,
+                    dynamic_sum,
+                    dynamic_square_sum,
+                )
+            )
+        if not components:
+            return state_sum, state_square_sum
+        full_dim = len(state_sum) + map_dim * len(components)
+        full_sum = np.empty(full_dim, dtype=np.float64)
+        full_square_sum = np.empty(full_dim, dtype=np.float64)
+        compact_mask = np.ones(full_dim, dtype=bool)
+        for insert_index, component_sum, component_square_sum in components:
+            compact_mask[insert_index : insert_index + map_dim] = False
+            full_sum[insert_index : insert_index + map_dim] = component_sum
+            full_square_sum[insert_index : insert_index + map_dim] = component_square_sum
+        if np.count_nonzero(compact_mask) != len(state_sum):
+            raise ValueError("GCRL map component slots overlap")
+        full_sum[compact_mask] = state_sum
+        full_square_sum[compact_mask] = state_square_sum
+        return full_sum, full_square_sum
 
     def _sample_goal_indices(
         self,
@@ -368,13 +508,11 @@ class GCRLDataset:
         )
         successes = (anchors == value_goal_indices).astype(np.float32)
         batch = {
-            "observations": self._restore_map_features(arrays, arrays.states[anchors]),
-            "next_observations": self._restore_map_features(
-                arrays, arrays.states[anchors + 1]
-            ),
+            "observations": self._restore_observation_features(arrays, anchors),
+            "next_observations": self._restore_observation_features(arrays, anchors + 1),
             "actions": arrays.actions[transition_indices],
-            "value_goals": self._restore_map_features(
-                arrays, arrays.states[value_goal_indices]
+            "value_goals": self._restore_observation_features(
+                arrays, value_goal_indices
             ),
             "masks": 1.0 - successes,
             "rewards": successes - (1.0 if algorithm == "hiql" else 0.0),
@@ -390,8 +528,8 @@ class GCRLDataset:
                 geometric=config["actor_geom_sample"],
                 discount=config["discount"],
             )
-            batch["actor_goals"] = self._restore_map_features(
-                arrays, arrays.states[actor_goal_indices]
+            batch["actor_goals"] = self._restore_observation_features(
+                arrays, actor_goal_indices
             )
         elif algorithm == "hiql":
             subgoal_steps = config["subgoal_steps"]
@@ -425,14 +563,14 @@ class GCRLDataset:
             )
             batch.update(
                 {
-                    "low_actor_goals": self._restore_map_features(
-                        arrays, arrays.states[low_goal_indices]
+                    "low_actor_goals": self._restore_observation_features(
+                        arrays, low_goal_indices
                     ),
-                    "high_actor_goals": self._restore_map_features(
-                        arrays, arrays.states[high_goal_indices]
+                    "high_actor_goals": self._restore_observation_features(
+                        arrays, high_goal_indices
                     ),
-                    "high_actor_targets": self._restore_map_features(
-                        arrays, arrays.states[high_target_indices]
+                    "high_actor_targets": self._restore_observation_features(
+                        arrays, high_target_indices
                     ),
                 }
             )
@@ -466,23 +604,67 @@ def _convert_episode(
     )
     map_features = None
     map_insert_index = None
-    if observation_config["include_map"]:
-        map_insert_index = GOAL_CONDITIONED_STATE_DIMS[env_family]
+    dynamic_map_insert_index = None
+    dynamic_position_indices = None
+    dynamic_goal_indices = None
+    include_map = bool(observation_config.get("include_map", False))
+    include_dynamic_map = bool(
+        observation_config.get("include_dynamic_map", False)
+    )
+    if include_map or include_dynamic_map:
+        base_dim = GOAL_CONDITIONED_STATE_DIMS[env_family]
         rows, cols = family_map_shape(env_family)
         map_dim = rows * cols
-        map_features = np.asarray(
-            states[0, map_insert_index : map_insert_index + map_dim],
-            dtype=np.float32,
-        ).copy()
-        repeated_map = states[:, map_insert_index : map_insert_index + map_dim]
-        if not np.all(repeated_map == map_features[None, :]):
-            raise ValueError(
-                f"GCRL map features unexpectedly vary within variant={variant!r}"
+        removal_ranges = []
+        if include_map:
+            map_insert_index = base_dim
+            map_features = np.asarray(
+                states[0, map_insert_index : map_insert_index + map_dim],
+                dtype=np.float32,
+            ).copy()
+            repeated_map = states[:, map_insert_index : map_insert_index + map_dim]
+            if not np.all(repeated_map == map_features[None, :]):
+                raise ValueError(
+                    f"GCRL map features unexpectedly vary within variant={variant!r}"
+                )
+            removal_ranges.append((map_insert_index, map_insert_index + map_dim))
+        if include_dynamic_map:
+            dynamic_map_insert_index = base_dim + (
+                map_dim if include_map else 0
             )
-        states = np.concatenate(
-            [states[:, :map_insert_index], states[:, map_insert_index + map_dim :]],
-            axis=-1,
-        )
+            dynamic_maps = states[
+                :, dynamic_map_insert_index : dynamic_map_insert_index + map_dim
+            ]
+            if map_features is None:
+                map_features = np.asarray(dynamic_maps[0], dtype=np.float32).copy()
+                map_features[np.isin(map_features, [2.0, 3.0, 4.0])] = 0.0
+            dynamic_position_indices, dynamic_goal_indices = gcrl_dynamic_map_indices(
+                observations,
+                env_family,
+                observation_config=observation_config,
+                variant=variant,
+            )
+            expected_dynamic = np.broadcast_to(map_features, dynamic_maps.shape).copy()
+            row_indices = np.arange(len(expected_dynamic), dtype=np.int64)
+            distinct = dynamic_position_indices != dynamic_goal_indices
+            expected_dynamic[
+                row_indices[distinct], dynamic_position_indices[distinct]
+            ] = 2.0
+            expected_dynamic[row_indices[distinct], dynamic_goal_indices[distinct]] = 3.0
+            expected_dynamic[
+                row_indices[~distinct], dynamic_position_indices[~distinct]
+            ] = 4.0
+            if not np.array_equal(dynamic_maps, expected_dynamic):
+                raise ValueError(
+                    f"GCRL dynamic-map reconstruction mismatch for variant={variant!r}"
+                )
+            removal_ranges.append(
+                (dynamic_map_insert_index, dynamic_map_insert_index + map_dim)
+            )
+        keep = np.ones(states.shape[-1], dtype=bool)
+        for start, stop in removal_ranges:
+            keep[start:stop] = False
+        states = states[:, keep]
     actions = np.asarray(episode_field(episode, "actions"), dtype=np.float32)
     if actions.ndim == 1:
         actions = actions.reshape(-1, 1)
@@ -507,6 +689,17 @@ def _convert_episode(
         actions=np.clip(actions, -1.0, 1.0).astype(np.float32),
         map_features=map_features,
         map_insert_index=map_insert_index,
+        dynamic_map_insert_index=dynamic_map_insert_index,
+        dynamic_position_indices=(
+            np.asarray(dynamic_position_indices, dtype=np.int64)
+            if dynamic_position_indices is not None
+            else None
+        ),
+        dynamic_goal_indices=(
+            np.asarray(dynamic_goal_indices, dtype=np.int64)
+            if dynamic_goal_indices is not None
+            else None
+        ),
     )
 
 

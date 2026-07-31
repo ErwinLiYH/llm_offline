@@ -98,33 +98,39 @@ values) for the d3rlpy algorithms. CRL/HIQL use the versioned
 `full_observation_v1` protocol: PointMaze state and goal are both based on the
 4D `observation`, AntMaze state and goal are both based on the 29D
 `[achieved_goal, observation]`, and every relabeled goal equals a complete
-state row. Optional numeric map, location-sensing, and
+state row. Optional numeric static-map, dynamic-map, location-sensing, and
 wall-sensing components
 can be concatenated through independent `observation` switches:
 
 ```yaml
 observation:
   include_map: true
+  include_dynamic_map: true
   include_location_sensing: true
   include_wall_sensing: true
   wall_sensing_version: v3
   map_sensing_boundary_risk_threshold: 0.10
 ```
 
-The defaults keep all three components disabled for backward compatibility.
+The defaults keep all four components disabled for backward compatibility.
 Map matrices use `0=free`, `1=wall`, row-major flattening, and `-1` padding to
-the family-wide maximum shape (PointMaze `15x15`, AntMaze `12x16`). Location
+the family-wide maximum shape (PointMaze `15x15`, AntMaze `12x16`). Dynamic
+maps use `0=open`, `1=wall`, `2=current`, `3=goal`, and `4=current+goal`; they
+are independent of static maps and may be enabled together. Location
 sensing is the 0-based numeric vector
 `[position_row, position_col, goal_row, goal_col]`; wall sensing is
-`[up, down, left, right]` with `0=free`, `1=wall`, and `2=risk`. With all three
-enabled, the final dimensions are 239 for PointMaze and 231 for AntMaze. The
+`[up, down, left, right]` with `0=free`, `1=wall`, and `2=risk`. With all four
+enabled, the final d3rlpy dimensions are 464 for PointMaze and 423 for AntMaze;
+the corresponding GCRL state and goal dimensions are 460 and 419. The
 offline adapter recomputes sensing from each variant's recorded coordinates
 and map, while rollout uses the live CrossMaze layout. The complete vector is
 then handled by the same training-fitted `StandardObservationScaler` as the
 legacy observation. CRL/HIQL use one observation normalizer for every
-observation-like tensor. Their static map is stored once per variant.
-A relabeled goal reuses the complete target state row byte for byte. No prompt
-or sensing text enters these baselines.
+observation-like tensor. Their static map is stored once per variant, while a
+dynamic map is stored as current/original-desired-goal cell indices and restored
+only for sampled rows. A relabeled goal reuses the target state row byte for
+byte, including its original C/G/S map. No prompt or sensing text enters these
+baselines.
 
 ### BC scaling encoder
 
@@ -165,7 +171,8 @@ full-state tensor, and all state/goal dimensions and schemas are identical.
 Online GCRL evaluation forces `continuing_task=false` and `reset_target=false`.
 At reset it performs a seeded preliminary reset, five seeded random actions,
 captures a full observation after teleporting only qpos xy to the target, then
-repeats the same reset for the real episode.
+repeats the same reset for the real episode; the captured goal dynamic map has
+`S` at the target.
 
 Local variants honor top-level `reward_type: sparse | dense` and select the
 corresponding reward-typed dataset directory. Remote Minari variants have fixed

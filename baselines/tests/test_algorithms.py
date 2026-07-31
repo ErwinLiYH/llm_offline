@@ -17,7 +17,8 @@ class AlgorithmSmokeTest(unittest.TestCase):
         for _ in range(3):
             episodes.append(
                 MinariTransitionEpisode(
-                    observations=rng.normal(size=(9, 6)).astype(np.float32),
+                    # PointMaze base 6D + one 15x15 dynamic-map slot.
+                    observations=rng.normal(size=(9, 231)).astype(np.float32),
                     actions=np.tanh(rng.normal(size=(8, 2))).astype(np.float32),
                     rewards=rng.normal(size=8).astype(np.float32),
                     terminated=True,
@@ -39,6 +40,7 @@ class AlgorithmSmokeTest(unittest.TestCase):
                         "n_steps": 1,
                         "n_steps_per_epoch": 1,
                         "show_progress": False,
+                        "observation": {"include_dynamic_map": True},
                         "network": {"hidden_units": [16, 16]},
                         "algorithm_config": {"batch_size": 4},
                     }
@@ -53,7 +55,7 @@ class AlgorithmSmokeTest(unittest.TestCase):
                     save_interval=2,
                 )
                 self.assertEqual(len(history), 1)
-                action = algo.predict(np.zeros((1, 6), dtype=np.float32))
+                action = algo.predict(np.zeros((1, 231), dtype=np.float32))
                 self.assertEqual(action.shape, (1, 2))
                 validation = evaluate_validation(
                     algo, buffer, algorithm=algorithm

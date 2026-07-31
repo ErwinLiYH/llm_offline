@@ -67,6 +67,7 @@ class ScalingProtocolConfigTest(unittest.TestCase):
             config["observation"],
             {
                 "include_map": True,
+                "include_dynamic_map": False,
                 "include_location_sensing": True,
                 "include_wall_sensing": True,
                 "wall_sensing_version": "v3",

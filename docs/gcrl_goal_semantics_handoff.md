@@ -1,7 +1,9 @@
 # GCRL full-state goal 语义修复交接
 
 > 实施状态（2026-07-31）：本文描述的迁移已落地为唯一协议
-> `full_observation_v1`。当前实现包含同一 observation normalizer、在线双 reset goal capture 和 checkpoint metadata sidecar。下文“当前实现”的 compact-goal
+> `full_observation_v1`。当前实现同时加入 baseline `include_dynamic_map`、
+> GCRL static/dynamic map 紧凑恢复、同一 observation normalizer、在线双 reset
+> goal capture 和 checkpoint metadata sidecar。下文“当前实现”的 compact-goal
 > 描述保留为迁移前问题记录，不再代表仓库现状。
 
 ## 0. 给新 session 的任务结论

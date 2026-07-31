@@ -184,6 +184,7 @@ _NETWORK_DEFAULTS = {
 
 _OBSERVATION_DEFAULTS = {
     "include_map": False,
+    "include_dynamic_map": False,
     "include_location_sensing": False,
     "include_wall_sensing": False,
     "wall_sensing_version": None,
@@ -364,6 +365,7 @@ def _normalize_observation(value) -> dict:
     config.update(raw)
     for field in (
         "include_map",
+        "include_dynamic_map",
         "include_location_sensing",
         "include_wall_sensing",
     ):

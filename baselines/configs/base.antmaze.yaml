@@ -27,6 +27,7 @@ experiment_id: null
 # original 31-dimensional AntMaze observation.
 observation:
   include_map: false
+  include_dynamic_map: false
   include_location_sensing: false
   include_wall_sensing: false
   wall_sensing_version: v3

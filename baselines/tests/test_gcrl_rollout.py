@@ -8,6 +8,7 @@ from baselines.config import normalize_baseline_config
 from baselines.data.observation import (
     GOAL_CONDITIONED_STATE_DIMS,
     GoalConditionedObservationWrapper,
+    family_map_shape,
 )
 from baselines.evaluation import _make_evaluation_env
 
@@ -22,6 +23,7 @@ class GCRLRolloutObservationTest(unittest.TestCase):
                 "device": "cpu",
                 "observation": {
                     "include_map": True,
+                    "include_dynamic_map": True,
                     "include_location_sensing": True,
                     "include_wall_sensing": True,
                 },
@@ -36,8 +38,8 @@ class GCRLRolloutObservationTest(unittest.TestCase):
             goal_conditioned=True,
         )
 
-    def test_point_and_ant_full_goal_capture_is_repeatable(self):
-        expected_dims = {"pointmaze": 235, "antmaze": 227}
+    def test_point_and_ant_full_goal_capture_is_repeatable_and_contains_success_map(self):
+        expected_dims = {"pointmaze": 460, "antmaze": 419}
         for env_family in ("pointmaze", "antmaze"):
             with self.subTest(env_family=env_family):
                 env = self._env(env_family)
@@ -55,6 +57,15 @@ class GCRLRolloutObservationTest(unittest.TestCase):
                     if env_family == "antmaze":
                         self.assertEqual(first["goal"][:29].shape, (29,))
 
+                    rows, cols = family_map_shape(env_family)
+                    map_dim = rows * cols
+                    dynamic_start = GOAL_CONDITIONED_STATE_DIMS[env_family] + map_dim
+                    dynamic_map = first["goal"][
+                        dynamic_start : dynamic_start + map_dim
+                    ]
+                    self.assertEqual(np.count_nonzero(dynamic_map == 4), 1)
+                    self.assertEqual(np.count_nonzero(dynamic_map == 2), 0)
+                    self.assertEqual(np.count_nonzero(dynamic_map == 3), 0)
 
                     base_env = env.env.unwrapped
                     agent_env = (

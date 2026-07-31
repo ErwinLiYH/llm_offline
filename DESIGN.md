@@ -894,8 +894,9 @@ micromamba run -n llm_offline python estimate_dataset.py \
 
 ### Conventional baseline observation / GCRL goal 协议
 
-- d3rlpy 保留 PointMaze 6D 与 AntMaze 31D base。GCRL 使用唯一协议 `full_observation_v1`：PointMaze 的 state/goal base 都是 4D `observation`，AntMaze 都是 v4 的 29D `[achieved_goal, observation]`；对任意 relabel index `j`，`goal(j)` 必须逐元素等于完整 `state(j)`。
-- GCRL 只保存一个 state 数组。state 与 goal 共用同一组 observation mean/std，并统一处理 observations、goals 和 HIQL `high_actor_targets`。
+- 六种 baseline 共享四个独立 observation 开关：`include_map`、`include_dynamic_map`、`include_location_sensing`、`include_wall_sensing`，均默认关闭。静态图和动态图可单独或同时开启；两者都按 family 最大形状 row-major flatten，padding 为 `-1`。动态图保持 `0=open, 1=wall, 2=C, 3=G, 4=S`，其中 G/S 的 goal 是环境原始 `desired_goal`。
+- d3rlpy 保留 PointMaze 6D 与 AntMaze 31D base。GCRL 使用唯一协议 `full_observation_v1`：PointMaze 的 state/goal base 都是 4D `observation`，AntMaze 都是 v4 的 29D `[achieved_goal, observation]`；对任意 relabel index `j`，`goal(j)` 必须逐元素等于完整 `state(j)`。因此目标 state 的 dmap 直接复用原行，不按当前 observation-goal pair 重算。
+- GCRL 只保存一个 state 数组。variant-static map 只保存一次；dmap 只保存每个 state 的 current/original-goal cell index，采样时恢复完整矩阵。normalizer 直接从 compact index 计算精确一阶/二阶矩，并用同一组 observation mean/std 处理 observations、goals 和 HIQL `high_actor_targets`。
 - 在线 GCRL reset 固定为单目标 `continuing_task=false/reset_target=false`。同一实例先以 episode seed/options reset、固定 action-space seed 后执行 5 个随机动作稳定姿态，只把 qpos xy 传送到 desired target 并取得 full goal observation，再以相同 seed/options 真正 reset；两次真实起点/目标必须逐元素一致，首次 success 结束 episode。
 - resolved config、dataset manifest、normalizer、Flax checkpoint metadata sidecar 和 summary 都记录 `gcrl_goal_semantics: full_observation_v1`。缺失 metadata 或旧 `compact_xy` artifact 明确拒绝加载。
 

@@ -97,6 +97,20 @@ class RunnerResumeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "network"):
                 _load_resume_context(config)
 
+    def test_legacy_missing_dynamic_map_flag_is_equivalent_to_false(self) -> None:
+        config = _config()
+        source_config = dict(config)
+        source_config["observation"] = dict(config["observation"])
+        source_config["observation"].pop("include_dynamic_map")
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint, trainer_state = self._source_run(directory, source_config)
+            config["resume"] = {
+                "checkpoint": str(checkpoint),
+                "trainer_state": str(trainer_state),
+            }
+            context = _load_resume_context(config)
+        self.assertIsNotNone(context)
+
 
 if __name__ == "__main__":
     unittest.main()

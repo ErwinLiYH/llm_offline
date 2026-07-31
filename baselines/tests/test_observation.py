@@ -21,6 +21,7 @@ class ObservationTest(unittest.TestCase):
     def _structured_config(self, **overrides):
         config = {
             "include_map": False,
+            "include_dynamic_map": False,
             "include_location_sensing": False,
             "include_wall_sensing": False,
             "wall_sensing_version": "v5",
@@ -90,6 +91,12 @@ class ObservationTest(unittest.TestCase):
         )
         self.assertEqual(
             observation_dim(
+                "pointmaze", self._structured_config(include_dynamic_map=True)
+            ),
+            231,
+        )
+        self.assertEqual(
+            observation_dim(
                 "pointmaze",
                 self._structured_config(include_location_sensing=True),
             ),
@@ -106,22 +113,36 @@ class ObservationTest(unittest.TestCase):
                 "pointmaze",
                 self._structured_config(
                     include_map=True,
+                    include_dynamic_map=True,
                     include_location_sensing=True,
                     include_wall_sensing=True,
                 ),
             ),
-            239,
+            464,
         )
         self.assertEqual(
             observation_dim(
                 "antmaze",
                 self._structured_config(
                     include_map=True,
+                    include_dynamic_map=True,
                     include_location_sensing=True,
                     include_wall_sensing=True,
                 ),
             ),
-            231,
+            423,
+        )
+        self.assertEqual(
+            goal_conditioned_observation_dims(
+                "pointmaze",
+                self._structured_config(
+                    include_map=True,
+                    include_dynamic_map=True,
+                    include_location_sensing=True,
+                    include_wall_sensing=True,
+                ),
+            ),
+            (460, 460),
         )
 
     def test_map_location_and_wall_features_match_crossmaze(self):
@@ -204,6 +225,7 @@ class ObservationTest(unittest.TestCase):
         }
         config = self._structured_config(
             include_map=True,
+            include_dynamic_map=True,
             include_location_sensing=True,
             include_wall_sensing=True,
         )
@@ -219,6 +241,24 @@ class ObservationTest(unittest.TestCase):
             observation_config=config,
         )
         np.testing.assert_array_equal(offline, online)
+
+        map_dim = 15 * 15
+        first_dynamic = offline[0, 6 + map_dim : 6 + 2 * map_dim].reshape(15, 15)
+        position_cell = compute_sensing_state(
+            observations["observation"][0],
+            observations["desired_goal"][0],
+            {
+                "maze_map": facts["maze_map"],
+                "maze_size_scaling": facts["maze_size_scaling"],
+                "wall_sensing_version": "v5",
+                "map_sensing_boundary_risk_threshold": 0.1,
+            },
+        )
+        pr, pc = position_cell["position_cell"]
+        gr, gc = position_cell["goal_cell"]
+        self.assertEqual(first_dynamic[pr, pc], 2)
+        self.assertEqual(first_dynamic[gr, gc], 3)
+        self.assertTrue(np.all(first_dynamic[5:, :] == MAP_PADDING_VALUE))
 
 
 if __name__ == "__main__":

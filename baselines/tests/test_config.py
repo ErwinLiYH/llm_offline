@@ -18,6 +18,7 @@ class BaselineConfigTest(unittest.TestCase):
         self.assertEqual(config["n_steps"], 1_000_000)
         self.assertEqual(config["evaluation"]["every_epochs"], 10)
         self.assertFalse(config["observation"]["include_map"])
+        self.assertFalse(config["observation"]["include_dynamic_map"])
         self.assertFalse(config["observation"]["include_location_sensing"])
         self.assertFalse(config["observation"]["include_wall_sensing"])
         self.assertEqual(config["observation"]["wall_sensing_version"], "v3")
@@ -125,6 +126,7 @@ class BaselineConfigTest(unittest.TestCase):
                 "train_variants": ["umaze"],
                 "observation": {
                     "include_map": True,
+                    "include_dynamic_map": True,
                     "include_location_sensing": False,
                     "include_wall_sensing": True,
                     "wall_sensing_version": "v5",
@@ -133,6 +135,7 @@ class BaselineConfigTest(unittest.TestCase):
             }
         )
         self.assertTrue(config["observation"]["include_map"])
+        self.assertTrue(config["observation"]["include_dynamic_map"])
         self.assertFalse(config["observation"]["include_location_sensing"])
         self.assertTrue(config["observation"]["include_wall_sensing"])
         self.assertEqual(config["observation"]["wall_sensing_version"], "v5")

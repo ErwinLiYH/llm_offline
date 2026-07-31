@@ -1784,8 +1784,16 @@ type: project
 
 ## GCRL full-observation goal protocol（2026-07-31）
 
-- CRL/HIQL 从历史 `compact_xy` goal 迁移到 OGBench state-based `full_observation_v1`；PointMaze goal 使用完整 4D state，AntMaze goal 使用严格 v4 的 29D `[achieved_goal, observation]`，可选 map、cell 与 wall component 均和 state 同构
+- CRL/HIQL 从历史 `compact_xy` goal 迁移到 OGBench state-based `full_observation_v1`；PointMaze goal 使用完整 4D state，AntMaze goal 使用严格 v4 的 29D `[achieved_goal, observation]`，可选 map、dmap、cell 与 wall component 均和 state 同构
 - 删除独立 compact goal 数组；`value_goals`、`actor_goals`、`low_actor_goals`、`high_actor_goals` 和 `high_actor_targets` 均从同一 state 数组按采样索引恢复，HIQL high loss 恢复为 `V(high_actor_targets, high_actor_goals)`
 - 在线 goal 使用同一环境实例预 reset、5 个 seeded random action 稳定、仅把 qpos xy 传送到 desired target 拍摄 full observation，再以相同 seed/options 真正 reset；CRL/HIQL 强制 `continuing_task=false`、`reset_target=false`，并在首次 success 时结束 episode
 - state 与 goal 共用一套 observation mean/std；resolved config、dataset manifest、normalizer、Flax checkpoint metadata sidecar 和 summary 都记录 `full_observation_v1`，缺失 metadata 或旧 `compact_xy` artifact 会被明确拒绝
 - 共享 rollout 的 PyTorch 与 trainer-state 依赖改为 d3rlpy 路径内惰性加载，使未安装 torch 的 `llm_offline_gcrl` 环境能够导入 runner 并执行 evaluation
+
+## Baseline dynamic map observation（2026-07-31）
+
+- MLP-BC、TD3+BC、IQL、ReBRAC、CRL 和 HIQL 新增独立的 `observation.include_dynamic_map`，默认值为 `false`；它与静态 `include_map` 互不隐含，可单独开启或同时开启
+- d3rlpy observation 保留 PointMaze 6D、AntMaze 31D base；动态图按 family 最大地图尺寸做 row-major flatten，以 `-1` padding，并保持 `0=open`、`1=wall`、`2=current`、`3=goal`、`4=current+goal` 的 CrossMaze 契约
+- GCRL state/goal 使用相同的动态图 component 顺序；relabel 后的 goal 逐元素复用目标 state 原有 dmap，不根据当前 state 与 relabel target 重新计算 pair-conditioned map
+- GCRL 数据按 variant 仅保存一次静态底图，每个 state 只保存 current 与环境原始 desired-goal 的 cell index；采样时恢复完整 dmap，normalizer 直接从紧凑索引计算精确一阶、二阶统计，避免 AntMaze 大语料常驻重复地图
+- observation schema 记录动态图 shape、flatten 顺序、padding、状态码和 goal 语义；旧 d3rlpy run 缺少 `include_dynamic_map` 时按等价 `false` 处理，启用动态图的 checkpoint 仍按不同 observation schema 拒绝混接

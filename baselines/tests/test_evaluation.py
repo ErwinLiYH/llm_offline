@@ -100,8 +100,15 @@ class _EpisodeRecordEnv(gym.Env):
             [1, 0, 0, 0, 1],
             [1] * 5,
         ]
+        dynamic_map = [row[:] for row in maze_map]
+        if position_cell == goal_cell:
+            dynamic_map[3][1] = 4
+        else:
+            dynamic_map[position_cell[0]][position_cell[1]] = 2
+            dynamic_map[3][1] = 3
         observation["crossmaze"] = {
             "maze_map": maze_map,
+            "dynamic_map": dynamic_map,
             "maze_size_scaling": 1.0,
             "position_cell": position_cell,
             "goal_cell": goal_cell,
