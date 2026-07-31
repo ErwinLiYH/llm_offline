@@ -1,0 +1,11 @@
+# 仅供通过 slow-start gate 的同 checkpoint range 延长；最终稳定标准不变。
+n_steps: 100000
+n_steps_per_epoch: 5000
+save_interval_epochs: 2
+show_progress: true
+evaluation:
+  enabled: true
+  every_epochs: 2
+  num_episodes: 30
+  seed: 0
+  env_config: {}

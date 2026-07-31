@@ -1,0 +1,3 @@
+# R256/W256 稳定性筛选：主配方 3e-4 与 1e-4 均动作塌缩后，测试更低学习率。
+algorithm_config:
+  learning_rate: 0.00003

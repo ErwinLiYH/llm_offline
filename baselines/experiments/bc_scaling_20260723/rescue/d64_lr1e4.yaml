@@ -1,0 +1,3 @@
+# R64/W256 的冻结正式学习率：主配方 3e-4 塌缩，而该值已在 50k 诊断中恢复正常动作。
+algorithm_config:
+  learning_rate: 0.0001

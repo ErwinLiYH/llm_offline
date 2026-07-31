@@ -1,0 +1,3 @@
+# W3072+ 宽网络在 1e-4 仍不稳定时测试的下一学习率候选。
+algorithm_config:
+  learning_rate: 0.00003

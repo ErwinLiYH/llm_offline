@@ -1,0 +1,11 @@
+# 单 seed range-finding：只检查稳定性、显存和吞吐，不用于正式统计结论。
+n_steps: 50000
+n_steps_per_epoch: 5000
+save_interval_epochs: 2
+show_progress: true
+evaluation:
+  enabled: true
+  every_epochs: 2
+  num_episodes: 30
+  seed: 0
+  env_config: {}

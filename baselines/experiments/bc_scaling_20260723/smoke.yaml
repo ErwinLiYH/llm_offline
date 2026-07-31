@@ -1,0 +1,14 @@
+# 论文计划中的全地图 1k-update smoke：验证 loss 有限并实际下降，
+# 同时验证数据、输入维度、模型构建、保存与 rollout。它不做性能结论。
+n_steps: 1000
+# 每 100 updates 记录一次 loss；仅在最终 1k checkpoint 保存/rollout。
+n_steps_per_epoch: 100
+save_interval_epochs: 10
+show_progress: true
+evaluation:
+  enabled: true
+  every_epochs: 10
+  num_episodes: 1
+  rollout_batch_size: 1
+  seed: 0
+  env_config: {}

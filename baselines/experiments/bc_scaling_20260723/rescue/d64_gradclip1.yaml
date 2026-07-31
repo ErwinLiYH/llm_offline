@@ -1,0 +1,3 @@
+# 诊断性 rescue：主配方 D64 出现动作塌缩后才运行；不能替代固定配方主点。
+algorithm_config:
+  global_grad_norm_clip: 1.0

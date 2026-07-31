@@ -1,0 +1,10 @@
+# 历史工程锚点；不与新配方的单因素曲线混合比较。
+network:
+  architecture: legacy_mlp
+  hidden_units: [1024, 1024, 1024]
+  activation: relu
+  use_batch_norm: false
+  use_layer_norm: false
+  dropout_rate: null
+algorithm_config:
+  batch_size: 512

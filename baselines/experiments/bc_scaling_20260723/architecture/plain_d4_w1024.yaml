@@ -1,0 +1,9 @@
+network:
+  architecture: plain_mlp
+  width: 1024
+  body_depth: 4
+  block_size: 4
+  activation: swish
+  use_batch_norm: false
+  use_layer_norm: true
+  dropout_rate: null

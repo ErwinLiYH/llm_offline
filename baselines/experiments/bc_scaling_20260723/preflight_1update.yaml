@@ -1,0 +1,12 @@
+# 仅用于接口检查：它不是论文计划中的 1k-update smoke，也不产生性能结论。
+n_steps: 1
+n_steps_per_epoch: 1
+save_interval_epochs: 1
+show_progress: true
+evaluation:
+  enabled: true
+  every_epochs: 1
+  num_episodes: 1
+  rollout_batch_size: 1
+  seed: 0
+  env_config: {}

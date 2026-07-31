@@ -1,0 +1,5 @@
+n_steps: 500000
+n_steps_per_epoch: 25000
+save_interval_epochs: 4
+evaluation:
+  every_epochs: 4

@@ -1,0 +1,7 @@
+# 主配方：固定 Adam learning rate，不随 width/depth/batch 自动缩放。
+algorithm: mlp_bc
+algorithm_config:
+  batch_size: 256
+  learning_rate: 0.0003
+  policy_type: deterministic
+  compile_graph: false

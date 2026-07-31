@@ -1,0 +1,6 @@
+# Post-hoc Ant D256 rescue after lr=1e-5 remains one-dimension saturated at
+# 90k/100k.  This continues the approximately threefold LR ladder; it is not a
+# paper-default setting and must pass the unchanged full 50k range assessment.
+algorithm: mlp_bc
+algorithm_config:
+  learning_rate: 0.000003

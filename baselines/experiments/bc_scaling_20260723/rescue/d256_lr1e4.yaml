@@ -1,0 +1,3 @@
+# 诊断性 rescue：R256 主配方出现边界动作塌缩后才运行；不能替代固定主点。
+algorithm_config:
+  learning_rate: 0.0001

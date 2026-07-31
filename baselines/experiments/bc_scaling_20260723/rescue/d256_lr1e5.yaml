@@ -1,0 +1,3 @@
+# R256/W256 稳定性筛选：与 3e-5 并列的更低学习率候选。
+algorithm_config:
+  learning_rate: 0.00001

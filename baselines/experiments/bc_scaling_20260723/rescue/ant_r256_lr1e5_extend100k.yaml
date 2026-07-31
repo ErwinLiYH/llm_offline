@@ -1,0 +1,5 @@
+# Post-hoc slow-start diagnostic: continue the exact Ant D256/lr=1e-5
+# 50k run from its model, optimizer, scaler, and RNG sidecars.
+resume:
+  checkpoint: baseline_runs/bc-scaling-range-antmaze-r256-w256-s0-lr1e5-50k-20260726/checkpoints/step_50000.d3
+  trainer_state: baseline_runs/bc-scaling-range-antmaze-r256-w256-s0-lr1e5-50k-20260726/checkpoints/trainer_state_step_50000.pt

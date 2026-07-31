@@ -1,0 +1,79 @@
+# CrossMaze-Ant BC scaling 确认实验协议：地图集合与既有多环境设置完全一致。
+train_mode: all
+train_variants:
+  - umaze
+  - medium-diverse
+  - large-diverse
+  - ultra
+  - local-layout-01
+  - local-layout-02
+  - local-layout-03
+  - local-layout-04
+  - local-layout-05
+  - local-layout-06
+  - local-layout-07
+  - local-layout-08
+  - local-layout-09
+  - local-layout-10
+  - local-layout-11
+  - local-layout-12
+
+eval_mode: all
+eval_variants:
+  - umaze
+  - medium-diverse
+  - large-diverse
+  - ultra
+  - local-layout-01
+  - local-layout-02
+  - local-layout-03
+  - local-layout-04
+  - local-layout-05
+  - local-layout-06
+  - local-layout-07
+  - local-layout-08
+  - local-layout-09
+  - local-layout-10
+  - local-layout-11
+  - local-layout-12
+  - test-layout-01
+  - test-layout-02
+  - test-layout-03
+  - test-layout-04
+
+reward_type: sparse
+allow_mixed_reward_types: false
+seed: 0
+sampling_seed: 0
+episode_keep_num: 300
+episode_keep_per_variant: {}
+balance_variant_episode_count: true
+train_data_ratio: 0.9
+output_root: baseline_runs
+
+observation:
+  include_map: true
+  include_location_sensing: true
+  include_wall_sensing: true
+  wall_sensing_version: v3
+  map_sensing_boundary_risk_threshold: 0.10
+
+n_steps: 500000
+n_steps_per_epoch: 25000
+save_interval_epochs: 4
+show_progress: true
+evaluation:
+  enabled: true
+  every_epochs: 4
+  num_episodes: 30
+  # 保持逐 episode 的 seed/记录，只批量执行 policy.predict。
+  rollout_batch_size: 30
+  seed: 0
+  env_config:
+    eval_start_goal_mode: fix-start-goal
+
+# 正式 run 每个 epoch 写入训练诊断；probe 仅来自训练 episodes，不读取测试图。
+training_diagnostics:
+  enabled: true
+  gradient_sample_interval_updates: 1000
+  action_probe_size: 1024
