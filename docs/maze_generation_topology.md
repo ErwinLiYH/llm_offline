@@ -365,6 +365,24 @@ defaults to `TARGET_EPISODES=2000`, `MIN_SUCCESS_RATE=1.0`, `HARD_RETRY=5`,
 `HARD_SAMPLE_ALPHA=1.0`, `HARD_SAMPLE_TOP_N=400`, and
 `HARD_SAMPLE_MAX_PATH_LEN=25`.
 
+Every DataGen Slurm entry has a same-named local-shell counterpart:
+
+```bash
+bash sbatch/dataGen.sh
+bash sbatch/dataGen.point.hard.sh
+bash sbatch/dataGen.ant.sh
+bash sbatch/dataGen.ant.hard.sh
+```
+
+The local scripts call `python local_*_gen.py` directly and assume the user has
+already activated the data-generation environment. Former array entries pass
+their full default variant list to one Python process; override it with a
+space-separated `VARIANTS` value, for example
+`VARIANTS="local-layout-04" bash sbatch/dataGen.ant.hard.sh`. Their generation
+defaults match the corresponding `.slurm` scripts, except that `DATASET_ROOT`
+is empty by default so the Python generator resolves its normal
+registered/derived output path.
+
 The pre-hard-sample initial AntMaze local datasets are backed up under:
 
 ```text
