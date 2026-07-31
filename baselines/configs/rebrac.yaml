@@ -1,0 +1,15 @@
+algorithm: rebrac
+algorithm_config:
+  batch_size: 1024
+  gamma: 0.99
+  actor_learning_rate: 0.001
+  critic_learning_rate: 0.001
+  tau: 0.005
+  n_critics: 2
+  target_smoothing_sigma: 0.2
+  target_smoothing_clip: 0.5
+  actor_beta: 0.001
+  critic_beta: 0.01
+  update_actor_interval: 2
+  reward_scaler: null
+  compile_graph: false

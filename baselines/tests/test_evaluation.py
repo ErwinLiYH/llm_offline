@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import gymnasium as gym
 import numpy as np
 
-from baselines.evaluation import evaluate_rollouts
+from baselines.evaluation import BaselineEpochCallback, evaluate_rollouts
+from baselines.trainer_state import load_trainer_state
 
 
 class _PredictZero:
@@ -20,6 +23,22 @@ class _PredictGoalConditionedZero:
         assert observations["state"].ndim == 2
         assert observations["goal"].ndim == 2
         return np.zeros((len(observations["state"]), 2), dtype=np.float32)
+
+
+class _PredictRecordingZero:
+    def __init__(self):
+        self.batch_sizes = []
+
+    def predict(self, observations):
+        self.batch_sizes.append(len(observations))
+        return np.zeros((len(observations), 2), dtype=np.float32)
+
+
+class _SaveOnlyAlgo:
+    def save(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"checkpoint")
 
 
 class _EpisodeRecordEnv(gym.Env):
@@ -85,6 +104,57 @@ class _FixedEpisodeRecordEnv(_EpisodeRecordEnv):
 
 
 class EvaluationRecordTest(unittest.TestCase):
+    def test_epoch_callback_saves_matching_trainer_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            callback = BaselineEpochCallback(
+                config={
+                    "save_interval_epochs": 1,
+                    "evaluation": {"enabled": False},
+                },
+                selections=None,
+                validation_buffer=None,
+                action_probe=None,
+                run_dir=Path(directory),
+                total_epochs=1,
+            )
+            callback(_SaveOnlyAlgo(), epoch=1, total_step=25_000)
+
+            checkpoint = Path(directory) / "checkpoints/step_25000.d3"
+            trainer_state_path = (
+                Path(directory) / "checkpoints/trainer_state_step_25000.pt"
+            )
+            self.assertTrue(checkpoint.is_file())
+            self.assertTrue(trainer_state_path.is_file())
+            trainer_state = load_trainer_state(trainer_state_path)
+            self.assertEqual(trainer_state["epoch"], 1)
+            self.assertEqual(trainer_state["step"], 25_000)
+
+    def test_epoch_callback_applies_resume_offsets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            callback = BaselineEpochCallback(
+                config={
+                    "save_interval_epochs": 4,
+                    "evaluation": {"enabled": False},
+                },
+                selections=None,
+                validation_buffer=None,
+                action_probe=None,
+                run_dir=Path(directory),
+                total_epochs=4,
+                epoch_offset=40,
+                step_offset=1_000_000,
+            )
+            callback(_SaveOnlyAlgo(), epoch=4, total_step=100_000)
+
+            checkpoint = Path(directory) / "checkpoints/step_1100000.d3"
+            trainer_state = load_trainer_state(
+                Path(directory)
+                / "checkpoints/trainer_state_step_1100000.pt"
+            )
+            self.assertTrue(checkpoint.is_file())
+            self.assertEqual(trainer_state["epoch"], 44)
+            self.assertEqual(trainer_state["step"], 1_100_000)
+
     @patch("baselines.evaluation.crossmaze.make", return_value=_EpisodeRecordEnv())
     def test_episode_start_goal_and_first_success_step_are_recorded(self, _make):
         result = evaluate_rollouts(
@@ -181,6 +251,38 @@ class EvaluationRecordTest(unittest.TestCase):
             goal_conditioned=True,
         )
         self.assertEqual(result["aggregate"]["num_episodes"], 1)
+
+    @patch(
+        "baselines.evaluation.crossmaze.make",
+        side_effect=lambda *_args, **_kwargs: _EpisodeRecordEnv(),
+    )
+    def test_rollout_batch_keeps_per_episode_records(self, _make):
+        policy = _PredictRecordingZero()
+        result = evaluate_rollouts(
+            policy,
+            env_family="pointmaze",
+            variants=["umaze"],
+            reward_types={"umaze": "sparse"},
+            evaluation_config={
+                "seed": 10,
+                "num_episodes": 2,
+                "rollout_batch_size": 2,
+                "env_config": {},
+            },
+            observation_config={
+                "include_map": False,
+                "include_location_sensing": False,
+                "include_wall_sensing": False,
+                "wall_sensing_version": "v3",
+                "map_sensing_boundary_risk_threshold": 0.1,
+            },
+        )
+
+        self.assertEqual(policy.batch_sizes, [2, 2, 2])
+        episodes = result["variants"]["umaze"]["episodes"]
+        self.assertEqual([episode["seed"] for episode in episodes], [10, 11])
+        self.assertTrue(episodes[0]["success"])
+        self.assertFalse(episodes[1]["success"])
 
 
 if __name__ == "__main__":

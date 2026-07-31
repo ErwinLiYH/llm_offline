@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from crossmaze.reward import normalize_reward_type
 from crossmaze.sensing_config import resolve_sensing_config
 
-from baselines import SUPPORTED_ALGORITHMS
+from baselines import D3RLPY_ALGORITHMS, SUPPORTED_ALGORITHMS
 
 
 _TOP_LEVEL_KEYS = {
@@ -39,13 +39,15 @@ _TOP_LEVEL_KEYS = {
     "algorithm_config",
     "evaluation",
     "logging",
+    "training_diagnostics",
+    "resume",
 }
 
 _COMMON_ALGORITHM_FIELDS = {"batch_size", "compile_graph"}
 _Q_ALGORITHM_FIELDS = _COMMON_ALGORITHM_FIELDS | {"gamma"}
 _ALGORITHM_FIELDS = {
     "mlp_bc": _COMMON_ALGORITHM_FIELDS
-    | {"learning_rate", "policy_type"},
+    | {"learning_rate", "policy_type", "global_grad_norm_clip"},
     "td3_bc": _Q_ALGORITHM_FIELDS
     | {
         "actor_learning_rate",
@@ -67,6 +69,19 @@ _ALGORITHM_FIELDS = {
         "expectile",
         "weight_temp",
         "max_weight",
+        "reward_scaler",
+    },
+    "rebrac": _Q_ALGORITHM_FIELDS
+    | {
+        "actor_learning_rate",
+        "critic_learning_rate",
+        "tau",
+        "n_critics",
+        "target_smoothing_sigma",
+        "target_smoothing_clip",
+        "actor_beta",
+        "critic_beta",
+        "update_actor_interval",
         "reward_scaler",
     },
     "crl": {
@@ -179,6 +194,10 @@ _EVALUATION_DEFAULTS = {
     "enabled": True,
     "every_epochs": 10,
     "num_episodes": 10,
+    # Number of independent environments stepped together for one variant.
+    # The policy sees one batched predict call; each episode keeps its own
+    # environment, reset seed, and result record.
+    "rollout_batch_size": 1,
     "seed": 0,
     "env_config": {},
 }
@@ -188,6 +207,19 @@ _LOGGING_DEFAULTS = {
         "enabled": False,
         "project": "llm-offline-baselines",
     }
+}
+
+# Lightweight metrics captured at epoch boundaries.  They are intentionally
+# opt-in because recording a gradient norm requires a CUDA synchronisation.
+_TRAINING_DIAGNOSTICS_DEFAULTS = {
+    "enabled": False,
+    "gradient_sample_interval_updates": 1000,
+    "action_probe_size": 1024,
+}
+
+_RESUME_DEFAULTS = {
+    "checkpoint": None,
+    "trainer_state": None,
 }
 
 
@@ -418,8 +450,14 @@ def _normalize_algorithm_config(algorithm: str, value) -> dict:
         "max_weight",
         "low_alpha",
         "high_alpha",
+        "global_grad_norm_clip",
     }
-    nonnegative_fields = {"target_smoothing_sigma", "target_smoothing_clip"}
+    nonnegative_fields = {
+        "target_smoothing_sigma",
+        "target_smoothing_clip",
+        "actor_beta",
+        "critic_beta",
+    }
     unit_interval_fields = {"gamma", "tau"}
     for field in positive_fields & set(config):
         config[field] = _float(config[field], f"algorithm_config.{field}")
@@ -480,6 +518,13 @@ def _normalize_algorithm_config(algorithm: str, value) -> dict:
             raise ValueError("crl requires algorithm_config.batch_size >= 2")
     if algorithm == "mlp_bc" and config.get("policy_type", "deterministic") != "deterministic":
         raise ValueError("mlp_bc only supports policy_type='deterministic' in this baseline")
+    if config.get("global_grad_norm_clip") is not None:
+        if algorithm != "mlp_bc":
+            raise ValueError("global_grad_norm_clip is supported only by mlp_bc")
+        if config.get("compile_graph", False):
+            raise ValueError(
+                "global_grad_norm_clip requires algorithm_config.compile_graph=false"
+            )
     if "reward_scaler" in config:
         config["reward_scaler"] = _normalize_reward_scaler(config["reward_scaler"])
     return config
@@ -494,6 +539,9 @@ def _normalize_evaluation(value) -> dict:
     config["enabled"] = _bool(config["enabled"], "evaluation.enabled")
     config["every_epochs"] = _positive_int(config["every_epochs"], "evaluation.every_epochs")
     config["num_episodes"] = _positive_int(config["num_episodes"], "evaluation.num_episodes")
+    config["rollout_batch_size"] = _positive_int(
+        config["rollout_batch_size"], "evaluation.rollout_batch_size"
+    )
     if isinstance(config["seed"], bool) or not isinstance(config["seed"], int):
         raise ValueError("evaluation.seed must be an int")
     env_config = _mapping(config["env_config"], "evaluation.env_config")
@@ -538,6 +586,50 @@ def _normalize_logging(value) -> dict:
     if not isinstance(project, str) or not project.strip():
         raise ValueError("logging.wandb.project must be a non-empty string")
     config["wandb"]["project"] = project.strip()
+    return config
+
+
+def _normalize_training_diagnostics(value) -> dict:
+    config = copy.deepcopy(_TRAINING_DIAGNOSTICS_DEFAULTS)
+    config.update(_mapping(value, "training_diagnostics"))
+    unknown = sorted(set(config) - set(_TRAINING_DIAGNOSTICS_DEFAULTS))
+    if unknown:
+        raise ValueError(f"Unknown training_diagnostics keys: {unknown}")
+    config["enabled"] = _bool(
+        config["enabled"], "training_diagnostics.enabled"
+    )
+    config["gradient_sample_interval_updates"] = _positive_int(
+        config["gradient_sample_interval_updates"],
+        "training_diagnostics.gradient_sample_interval_updates",
+    )
+    config["action_probe_size"] = _positive_int(
+        config["action_probe_size"], "training_diagnostics.action_probe_size"
+    )
+    return config
+
+
+def _normalize_resume(value, *, algorithm: str) -> dict:
+    config = copy.deepcopy(_RESUME_DEFAULTS)
+    config.update(_mapping(value, "resume"))
+    unknown = sorted(set(config) - set(_RESUME_DEFAULTS))
+    if unknown:
+        raise ValueError(f"Unknown resume keys: {unknown}")
+    for field in ("checkpoint", "trainer_state"):
+        path = config[field]
+        if path is not None:
+            if not isinstance(path, (str, os.PathLike)) or not os.fspath(path):
+                raise ValueError(f"resume.{field} must be a non-empty path or null")
+            config[field] = os.fspath(path)
+    configured = [config[field] is not None for field in config]
+    if any(configured) and not all(configured):
+        raise ValueError(
+            "resume.checkpoint and resume.trainer_state must be configured together"
+        )
+    if all(configured) and algorithm not in D3RLPY_ALGORITHMS:
+        raise ValueError(
+            "resume is supported only by d3rlpy algorithms: "
+            + ", ".join(D3RLPY_ALGORITHMS)
+        )
     return config
 
 
@@ -644,6 +736,22 @@ def normalize_baseline_config(raw_config: dict) -> dict:
                 "CRL/HIQL network.activation must be relu, gelu, tanh, or swish"
             )
 
+    training_diagnostics = _normalize_training_diagnostics(
+        raw.get("training_diagnostics")
+    )
+    if training_diagnostics["enabled"] and algorithm != "mlp_bc":
+        raise ValueError("training_diagnostics is currently supported only by mlp_bc")
+    normalized_algorithm_config = _normalize_algorithm_config(
+        algorithm, raw.get("algorithm_config")
+    )
+    if (
+        training_diagnostics["enabled"]
+        and normalized_algorithm_config.get("compile_graph", False)
+    ):
+        raise ValueError(
+            "training_diagnostics requires algorithm_config.compile_graph=false"
+        )
+
     return {
         "algorithm": algorithm,
         "env_family": env_family,
@@ -678,9 +786,9 @@ def normalize_baseline_config(raw_config: dict) -> dict:
         "experiment_id": experiment_id.strip() if experiment_id else None,
         "observation": _normalize_observation(raw.get("observation")),
         "network": normalized_network,
-        "algorithm_config": _normalize_algorithm_config(
-            algorithm, raw.get("algorithm_config")
-        ),
+        "algorithm_config": normalized_algorithm_config,
         "evaluation": _normalize_evaluation(raw.get("evaluation")),
         "logging": _normalize_logging(raw.get("logging")),
+        "training_diagnostics": training_diagnostics,
+        "resume": _normalize_resume(raw.get("resume"), algorithm=algorithm),
     }

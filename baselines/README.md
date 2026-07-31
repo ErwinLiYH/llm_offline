@@ -10,10 +10,11 @@ Implemented algorithms:
 - `mlp_bc`: d3rlpy deterministic continuous BC with an MLP encoder.
 - `td3_bc`: d3rlpy TD3+BC.
 - `iql`: d3rlpy IQL.
+- `rebrac`: d3rlpy ReBRAC.
 - `crl`: JAX/Flax Contrastive RL with the DDPG+BC actor objective.
 - `hiql`: JAX/Flax Hierarchical Implicit Q-Learning.
 
-BC, TD3+BC, and IQL use the MIT-licensed
+BC, TD3+BC, IQL, and ReBRAC use the MIT-licensed
 [d3rlpy project](https://github.com/takuseno/d3rlpy), pinned to 2.8.1. CRL and
 HIQL adapt the state-based MIT reference implementations from OGBench 1.2.1;
 the exact source commit, local adaptations, and upstream license are recorded
@@ -22,7 +23,7 @@ runtime package versions are recorded in every run.
 
 ## Environment
 
-Create or update the d3rlpy environment for BC/IQL/TD3+BC:
+Create or update the d3rlpy environment for BC/IQL/TD3+BC/ReBRAC:
 
 ```bash
 bash baselines/setup_env.sh
@@ -60,6 +61,9 @@ micromamba run -n llm_offline_baselines python baseline_train.py \
 micromamba run -n llm_offline_baselines python baseline_train.py \
   --config baselines/configs/base.antmaze.yaml baselines/configs/iql.yaml
 
+micromamba run -n llm_offline_baselines python baseline_train.py \
+  --config baselines/configs/base.antmaze.yaml baselines/configs/rebrac.yaml
+
 micromamba run -n llm_offline_gcrl python baseline_train.py \
   --config baselines/configs/base.pointmaze.yaml baselines/configs/crl.yaml
 
@@ -72,6 +76,21 @@ groups updates for logging, checkpoints, and evaluation; it does not mean a
 full pass through the offline dataset. The defaults perform 1,000,000 updates,
 group 10,000 updates as one logical epoch, and run rollout evaluation every 10
 epochs (100,000 updates), plus the final epoch.
+
+All four d3rlpy algorithms support checkpoint-boundary continuation by layering
+a `resume` block over a larger target `n_steps`. Both paths are required:
+
+```yaml
+resume:
+  checkpoint: baseline_runs/<source>/checkpoints/step_1000000.d3
+  trainer_state: baseline_runs/<source>/checkpoints/trainer_state_step_1000000.pt
+```
+
+The `.d3` file restores networks, target networks, optimizers, schedulers, and
+fitted scalers. The trainer-state sidecar restores Python/NumPy/PyTorch RNG,
+and the runner restores d3rlpy's absolute gradient-step counter so delayed
+TD3+BC/ReBRAC actor updates retain their original schedule. The source and
+target recipes must match apart from the larger total budget.
 
 PointMaze base observations are `[observation, desired_goal]` (6 values).
 AntMaze base observations are `[achieved_goal, observation, desired_goal]` (31

@@ -71,6 +71,53 @@ class BaselineConfigTest(unittest.TestCase):
                 }
             )
 
+    def test_resume_is_available_to_all_d3rlpy_algorithms(self):
+        resume = {
+            "checkpoint": "/tmp/step_100000.d3",
+            "trainer_state": "/tmp/trainer_state_step_100000.pt",
+        }
+        for algorithm in ("mlp_bc", "td3_bc", "iql", "rebrac"):
+            with self.subTest(algorithm=algorithm):
+                config = normalize_baseline_config(
+                    {
+                        "algorithm": algorithm,
+                        "train_variants": ["umaze"],
+                        "resume": resume,
+                    }
+                )
+                self.assertEqual(config["resume"], resume)
+
+    def test_resume_rejects_jax_algorithms(self):
+        with self.assertRaisesRegex(ValueError, "d3rlpy algorithms"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "crl",
+                    "train_variants": ["umaze"],
+                    "resume": {
+                        "checkpoint": "/tmp/step_100000.msgpack",
+                        "trainer_state": "/tmp/trainer_state_step_100000.pt",
+                    },
+                }
+            )
+
+    def test_rebrac_regularization_coefficients_must_be_nonnegative(self):
+        config = normalize_baseline_config(
+            {
+                "algorithm": "rebrac",
+                "train_variants": ["umaze"],
+                "algorithm_config": {"actor_beta": 0.0, "critic_beta": 0.01},
+            }
+        )
+        self.assertEqual(config["algorithm_config"]["actor_beta"], 0.0)
+        with self.assertRaisesRegex(ValueError, "actor_beta"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "rebrac",
+                    "train_variants": ["umaze"],
+                    "algorithm_config": {"actor_beta": -1.0},
+                }
+            )
+
     def test_observation_components_are_independent(self):
         config = normalize_baseline_config(
             {

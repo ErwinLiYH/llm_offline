@@ -29,7 +29,7 @@ class AlgorithmSmokeTest(unittest.TestCase):
 
     def test_each_authoritative_algorithm_updates_and_predicts(self):
         buffer = self._buffer()
-        for algorithm in ("mlp_bc", "td3_bc", "iql"):
+        for algorithm in ("mlp_bc", "td3_bc", "iql", "rebrac"):
             with self.subTest(algorithm=algorithm):
                 config = normalize_baseline_config(
                     {
@@ -59,7 +59,7 @@ class AlgorithmSmokeTest(unittest.TestCase):
                     algo, buffer, algorithm=algorithm
                 )
                 self.assertTrue(np.isfinite(validation["action_mse_sum"]))
-                if algorithm in {"td3_bc", "iql"}:
+                if algorithm in {"td3_bc", "iql", "rebrac"}:
                     self.assertTrue(np.isfinite(validation["td_error"]))
 
 

@@ -7,7 +7,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from baselines.algorithms import create_algorithm, load_algorithm
+from baselines.algorithms import create_algorithm, load_algorithm, resume_algorithm
+from baselines.algorithms.d3rlpy_factory import GradientClippedBC, InstrumentedBC
 from baselines.algorithms.scaling_mlp import (
     DenseLayerNormSwish,
     PaperResidualBlock,
@@ -17,6 +18,7 @@ from baselines.algorithms.scaling_mlp import (
 from baselines.config import normalize_baseline_config
 from baselines.data.transitions import MinariTransitionEpisode, build_replay_buffer
 from baselines.runner import model_metadata
+from baselines.trainer_state import capture_trainer_state, restore_trainer_state
 
 
 class ScalingMLPEncoderTest(unittest.TestCase):
@@ -78,6 +80,31 @@ class ScalingMLPEncoderTest(unittest.TestCase):
                 body_type="residual_mlp", width=8, body_depth=6
             ).create((6,))
 
+    def test_planned_width_and_depth_extensions_are_structurally_supported(self):
+        plain_parameter_counts = []
+        for width in (8, 12, 16):
+            encoder = ScalingMLPEncoderFactory(
+                body_type="plain_mlp", width=width, body_depth=4
+            ).create((6,))
+            plain_parameter_counts.append(
+                sum(parameter.numel() for parameter in encoder.parameters())
+            )
+        self.assertEqual(
+            plain_parameter_counts, sorted(plain_parameter_counts)
+        )
+        self.assertEqual(len(set(plain_parameter_counts)), 3)
+
+        # The conditional endpoint mirrors D1024/W256 structurally while using
+        # a tiny width to keep the unit test cheap.
+        deep_encoder = ScalingMLPEncoderFactory(
+            body_type="residual_mlp", width=4, body_depth=1024
+        ).create((6,))
+        self.assertEqual(deep_encoder.body_dense_count, 1024)
+        self.assertEqual(len(deep_encoder.body), 256)
+        self.assertTrue(
+            all(len(block.units) == 4 for block in deep_encoder.body)
+        )
+
 
 class ScalingMLPIntegrationTest(unittest.TestCase):
     def _buffer(self):
@@ -130,6 +157,16 @@ class ScalingMLPIntegrationTest(unittest.TestCase):
             raw["algorithm"] = "iql"
             normalize_baseline_config(raw)
 
+    def test_resume_paths_must_be_configured_together(self):
+        raw = self._config()
+        raw["resume"] = {"checkpoint": "/tmp/step_100000.d3"}
+        with self.assertRaisesRegex(ValueError, "configured together"):
+            normalize_baseline_config(raw)
+
+        raw["resume"]["trainer_state"] = "/tmp/trainer_state_step_100000.pt"
+        config = normalize_baseline_config(raw)
+        self.assertEqual(config["resume"], raw["resume"])
+
     def test_d3rlpy_bc_updates_and_checkpoint_roundtrips(self):
         config = self._config()
         algo = create_algorithm(config)
@@ -173,6 +210,173 @@ class ScalingMLPIntegrationTest(unittest.TestCase):
             algo.save(path)
             loaded = load_algorithm(path, device=False)
             np.testing.assert_allclose(loaded.predict(action_input), before)
+
+    def test_gradient_clip_is_an_explicit_opt_in_rescue_path(self):
+        raw = self._config()
+        raw["algorithm_config"]["global_grad_norm_clip"] = 1.0
+        config = normalize_baseline_config(raw)
+        algo = create_algorithm(config)
+        self.assertIsInstance(algo, GradientClippedBC)
+        self.assertEqual(algo.global_grad_norm_clip, 1.0)
+        history = algo.fit(
+            self._buffer(),
+            n_steps=1,
+            n_steps_per_epoch=1,
+            show_progress=False,
+            logger_adapter=_NoopLoggerFactory(),
+            save_interval=2,
+        )
+        self.assertTrue(np.isfinite(history[0][1]["loss"]))
+
+        raw["algorithm_config"]["compile_graph"] = True
+        with self.assertRaisesRegex(ValueError, "compile_graph=false"):
+            normalize_baseline_config(raw)
+
+    def test_training_diagnostics_samples_pre_step_gradients(self):
+        raw = self._config()
+        raw["training_diagnostics"] = {
+            "enabled": True,
+            "gradient_sample_interval_updates": 1,
+            "action_probe_size": 8,
+        }
+        config = normalize_baseline_config(raw)
+        algo = create_algorithm(config)
+        self.assertIsInstance(algo, InstrumentedBC)
+        algo.fit(
+            self._buffer(),
+            n_steps=1,
+            n_steps_per_epoch=1,
+            show_progress=False,
+            logger_adapter=_NoopLoggerFactory(),
+            save_interval=2,
+        )
+        metrics = algo.consume_training_diagnostics()
+        self.assertEqual(metrics["gradient_global_norm_sample_count"], 1)
+        self.assertTrue(np.isfinite(metrics["gradient_global_norm_mean"]))
+        self.assertTrue(np.isfinite(metrics["gradient_global_norm_max"]))
+
+        raw["algorithm_config"]["compile_graph"] = True
+        with self.assertRaisesRegex(ValueError, "training_diagnostics requires"):
+            normalize_baseline_config(raw)
+
+    def test_resume_preserves_instrumentation_and_optimizer_state(self):
+        raw = self._config()
+        raw["training_diagnostics"] = {
+            "enabled": True,
+            "gradient_sample_interval_updates": 1,
+            "action_probe_size": 8,
+        }
+        config = normalize_baseline_config(raw)
+        buffer = self._buffer()
+        original = create_algorithm(config)
+        original.fit(
+            buffer,
+            n_steps=1,
+            n_steps_per_epoch=1,
+            show_progress=False,
+            logger_adapter=_NoopLoggerFactory(),
+            save_interval=2,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = f"{directory}/step_1.d3"
+            original.save(checkpoint)
+            resumed = resume_algorithm(
+                config, buffer, checkpoint, resume_step=1
+            )
+
+        self.assertIsInstance(resumed, InstrumentedBC)
+        self.assertEqual(resumed._update_count, 1)
+        resumed.fit(
+            buffer,
+            n_steps=1,
+            n_steps_per_epoch=1,
+            show_progress=False,
+            logger_adapter=_NoopLoggerFactory(),
+            save_interval=2,
+        )
+        self.assertEqual(resumed._update_count, 2)
+        self.assertEqual(
+            resumed.consume_training_diagnostics()[
+                "gradient_global_norm_sample_count"
+            ],
+            1,
+        )
+
+    def test_resume_matches_uninterrupted_training_bitwise(self):
+        raw = self._config()
+        raw["training_diagnostics"] = {
+            "enabled": True,
+            "gradient_sample_interval_updates": 1,
+            "action_probe_size": 8,
+        }
+        config = normalize_baseline_config(raw)
+        buffer = self._buffer()
+        np.random.seed(17)
+        torch.manual_seed(17)
+        uninterrupted = create_algorithm(config)
+
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = f"{directory}/step_1.d3"
+            saved_trainer_state = None
+
+            def save_boundary(algo, epoch, total_step):
+                nonlocal saved_trainer_state
+                if total_step == 1:
+                    algo.save(checkpoint)
+                    saved_trainer_state = capture_trainer_state(
+                        epoch=epoch, step=total_step
+                    )
+
+            uninterrupted.fit(
+                buffer,
+                n_steps=2,
+                n_steps_per_epoch=1,
+                show_progress=False,
+                logger_adapter=_NoopLoggerFactory(),
+                save_interval=3,
+                epoch_callback=save_boundary,
+            )
+            self.assertIsNotNone(saved_trainer_state)
+
+            resumed = resume_algorithm(
+                config, buffer, checkpoint, resume_step=1
+            )
+            restore_trainer_state(saved_trainer_state)
+            resumed.fit(
+                buffer,
+                n_steps=1,
+                n_steps_per_epoch=1,
+                show_progress=False,
+                logger_adapter=_NoopLoggerFactory(),
+                save_interval=2,
+            )
+
+        assert uninterrupted.impl is not None
+        assert resumed.impl is not None
+        for expected, actual in zip(
+            uninterrupted.impl.policy.parameters(),
+            resumed.impl.policy.parameters(),
+            strict=True,
+        ):
+            torch.testing.assert_close(expected, actual, rtol=0, atol=0)
+
+        expected_optim = uninterrupted.impl.policy_optim.state_dict()
+        actual_optim = resumed.impl.policy_optim.state_dict()
+        self.assertEqual(expected_optim["param_groups"], actual_optim["param_groups"])
+        self.assertEqual(
+            sorted(expected_optim["state"]), sorted(actual_optim["state"])
+        )
+        for parameter_id in expected_optim["state"]:
+            expected_state = expected_optim["state"][parameter_id]
+            actual_state = actual_optim["state"][parameter_id]
+            self.assertEqual(set(expected_state), set(actual_state))
+            for field, expected in expected_state.items():
+                actual = actual_state[field]
+                if torch.is_tensor(expected):
+                    torch.testing.assert_close(expected, actual, rtol=0, atol=0)
+                else:
+                    self.assertEqual(expected, actual)
 
 
 class _NoopLogger:

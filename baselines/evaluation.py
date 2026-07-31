@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import resource
+import time
 from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
+import torch
 
 import crossmaze
 from crossmaze.eval_position import (
@@ -15,6 +18,7 @@ from baselines.data.observation import (
     BaselineObservationWrapper,
     GoalConditionedObservationWrapper,
 )
+from baselines.trainer_state import save_trainer_state
 
 
 def _mean(values: list[float]) -> float:
@@ -61,6 +65,180 @@ def _actual_start_goal_record(
     }
 
 
+def _make_evaluation_env(
+    *,
+    env_family: str,
+    variant: str,
+    reward_type: str,
+    env_config: dict,
+    observation_config: dict,
+    goal_conditioned: bool,
+):
+    wrapper_class = (
+        GoalConditionedObservationWrapper
+        if goal_conditioned
+        else BaselineObservationWrapper
+    )
+    return wrapper_class(
+        crossmaze.make(
+            env_family,
+            variant,
+            mode="eval",
+            config=env_config,
+        ),
+        env_family=env_family,
+        observation_config=observation_config,
+    )
+
+
+def _batch_policy_observation(observations: list):
+    """Stack independent rollout observations without changing their ordering."""
+
+    first = observations[0]
+    if isinstance(first, Mapping):
+        keys = set(first)
+        if any(not isinstance(item, Mapping) or set(item) != keys for item in observations):
+            raise ValueError("Goal-conditioned rollout observations have inconsistent keys")
+        return {
+            key: np.stack([np.asarray(item[key]) for item in observations], axis=0)
+            for key in first
+        }
+    return np.stack([np.asarray(item) for item in observations], axis=0)
+
+
+def _episode_record(state: dict) -> dict:
+    first_success_step = state["first_success_step"]
+    return {
+        "episode_index": int(state["episode_index"]),
+        "seed": int(state["seed"]),
+        "start_goal": state["start_goal"],
+        "success": bool(state["success"]),
+        "first_success_step": (
+            int(first_success_step) if first_success_step is not None else None
+        ),
+        "return": float(state["return"]),
+        "length": int(state["length"]),
+        "terminated": bool(state["terminated"]),
+        "truncated": bool(state["truncated"]),
+    }
+
+
+def _evaluate_variant_batched(
+    algo,
+    *,
+    env_family: str,
+    variant: str,
+    reward_type: str,
+    evaluation_config: dict,
+    observation_config: dict,
+    goal_conditioned: bool,
+) -> list[dict]:
+    """Roll out one variant in independent env slots with batched policy calls.
+
+    Only observations reach the policy in a batch.  Resets, environment steps,
+    seed assignment, action validation, and per-episode output records remain
+    exactly episode-local, which makes this a throughput change rather than an
+    evaluation-protocol change.
+    """
+
+    base_seed = evaluation_config["seed"]
+    batch_size = min(
+        evaluation_config.get("rollout_batch_size", 1),
+        evaluation_config["num_episodes"],
+    )
+    env_config = dict(evaluation_config["env_config"])
+    env_config["reward_type"] = reward_type
+    env_config["seed"] = base_seed
+    env_config["wall_sensing_version"] = observation_config["wall_sensing_version"]
+    env_config["map_sensing_boundary_risk_threshold"] = observation_config[
+        "map_sensing_boundary_risk_threshold"
+    ]
+    episodes: list[dict | None] = [None] * evaluation_config["num_episodes"]
+
+    for batch_start in range(0, evaluation_config["num_episodes"], batch_size):
+        active = []
+        try:
+            batch_stop = min(batch_start + batch_size, evaluation_config["num_episodes"])
+            for episode_index in range(batch_start, batch_stop):
+                env = _make_evaluation_env(
+                    env_family=env_family,
+                    variant=variant,
+                    reward_type=reward_type,
+                    env_config=env_config,
+                    observation_config=observation_config,
+                    goal_conditioned=goal_conditioned,
+                )
+                episode_seed = base_seed + episode_index
+                observation, _ = env.reset(seed=episode_seed)
+                active.append(
+                    {
+                        "env": env,
+                        "episode_index": episode_index,
+                        "seed": episode_seed,
+                        "observation": observation,
+                        "start_goal": _actual_start_goal_record(
+                            env,
+                            env_family=env_family,
+                            variant=variant,
+                            env_config=env_config,
+                            base_seed=base_seed,
+                        ),
+                        "return": 0.0,
+                        "length": 0,
+                        "success": False,
+                        "first_success_step": None,
+                        "terminated": False,
+                        "truncated": False,
+                    }
+                )
+            while active:
+                policy_observation = _batch_policy_observation(
+                    [state["observation"] for state in active]
+                )
+                actions = np.asarray(algo.predict(policy_observation))
+                if actions.shape[0] != len(active):
+                    raise ValueError(
+                        f"Policy returned batch size {actions.shape[0]}, expected {len(active)}"
+                    )
+                next_active = []
+                for state, action in zip(active, actions, strict=True):
+                    env = state["env"]
+                    action = np.asarray(action)
+                    if action.shape != env.action_space.shape:
+                        raise ValueError(
+                            f"Policy action shape mismatch for {variant!r}: "
+                            f"expected {env.action_space.shape}, got {action.shape}"
+                        )
+                    if not np.all(np.isfinite(action)):
+                        raise ValueError(f"Policy produced a non-finite action for {variant!r}")
+                    action = np.clip(
+                        action, env.action_space.low, env.action_space.high
+                    ).astype(env.action_space.dtype, copy=False)
+                    observation, reward, terminated, truncated, info = env.step(action)
+                    state["observation"] = observation
+                    state["return"] += float(reward)
+                    state["length"] += 1
+                    step_success = bool(info.get("success", False))
+                    if step_success and state["first_success_step"] is None:
+                        state["first_success_step"] = state["length"]
+                    state["success"] = state["success"] or step_success
+                    state["terminated"] = bool(terminated)
+                    state["truncated"] = bool(truncated)
+                    if terminated or truncated:
+                        episodes[state["episode_index"]] = _episode_record(state)
+                        env.close()
+                    else:
+                        next_active.append(state)
+                active = next_active
+        finally:
+            for state in active:
+                state["env"].close()
+
+    if any(record is None for record in episodes):
+        raise RuntimeError(f"Batched rollout did not finish every episode for {variant!r}")
+    return [record for record in episodes if record is not None]
+
+
 def evaluate_rollouts(
     algo,
     *,
@@ -78,106 +256,23 @@ def evaluate_rollouts(
     all_success_steps = []
     base_seed = evaluation_config["seed"]
     for variant in variants:
-        env_config = dict(evaluation_config["env_config"])
-        env_config["reward_type"] = reward_types[variant]
-        env_config["seed"] = base_seed
-        env_config["wall_sensing_version"] = observation_config[
-            "wall_sensing_version"
-        ]
-        env_config["map_sensing_boundary_risk_threshold"] = observation_config[
-            "map_sensing_boundary_risk_threshold"
-        ]
-        wrapper_class = (
-            GoalConditionedObservationWrapper
-            if goal_conditioned
-            else BaselineObservationWrapper
-        )
-        env = wrapper_class(
-            crossmaze.make(
-                env_family,
-                variant,
-                mode="eval",
-                config=env_config,
-            ),
+        episodes = _evaluate_variant_batched(
+            algo,
             env_family=env_family,
+            variant=variant,
+            reward_type=reward_types[variant],
+            evaluation_config=evaluation_config,
             observation_config=observation_config,
+            goal_conditioned=goal_conditioned,
         )
-        successes = []
-        returns = []
-        lengths = []
-        success_steps = []
-        episodes = []
-        try:
-            for episode_index in range(evaluation_config["num_episodes"]):
-                episode_seed = base_seed + episode_index
-                observation, _ = env.reset(seed=episode_seed)
-                start_goal = _actual_start_goal_record(
-                    env,
-                    env_family=env_family,
-                    variant=variant,
-                    env_config=env_config,
-                    base_seed=base_seed,
-                )
-                episode_return = 0.0
-                episode_length = 0
-                episode_success = False
-                first_success_step = None
-                terminated = False
-                truncated = False
-                while not (terminated or truncated):
-                    if isinstance(observation, Mapping):
-                        policy_observation = {
-                            key: np.asarray(value)[None]
-                            for key, value in observation.items()
-                        }
-                    else:
-                        policy_observation = observation[None]
-                    action = np.asarray(algo.predict(policy_observation)[0])
-                    if action.shape != env.action_space.shape:
-                        raise ValueError(
-                            f"Policy action shape mismatch for {variant!r}: "
-                            f"expected {env.action_space.shape}, got {action.shape}"
-                        )
-                    if not np.all(np.isfinite(action)):
-                        raise ValueError(
-                            f"Policy produced a non-finite action for {variant!r}"
-                        )
-                    action = np.clip(
-                        action, env.action_space.low, env.action_space.high
-                    ).astype(env.action_space.dtype, copy=False)
-                    observation, reward, terminated, truncated, info = env.step(action)
-                    episode_return += float(reward)
-                    episode_length += 1
-                    step_success = bool(info.get("success", False))
-                    if step_success and first_success_step is None:
-                        # One-based number of transitions executed before the
-                        # first successful state is observed.
-                        first_success_step = episode_length
-                    episode_success = episode_success or step_success
-                successes.append(float(episode_success))
-                returns.append(episode_return)
-                lengths.append(float(episode_length))
-                if first_success_step is not None:
-                    success_steps.append(float(first_success_step))
-                episodes.append(
-                    {
-                        "episode_index": int(episode_index),
-                        "seed": int(episode_seed),
-                        "start_goal": start_goal,
-                        "success": bool(episode_success),
-                        "first_success_step": (
-                            int(first_success_step)
-                            if first_success_step is not None
-                            else None
-                        ),
-                        "return": float(episode_return),
-                        "length": int(episode_length),
-                        "terminated": bool(terminated),
-                        "truncated": bool(truncated),
-                    }
-                )
-        finally:
-            env.close()
+        successes = [float(episode["success"]) for episode in episodes]
+        returns = [episode["return"] for episode in episodes]
+        lengths = [float(episode["length"]) for episode in episodes]
+        success_steps = [
+            float(episode["first_success_step"])
+            for episode in episodes
+            if episode["first_success_step"] is not None
+        ]
         success_step_mean, success_step_std = _mean_std_or_none(success_steps)
         unique_start_goals = {
             (
@@ -225,9 +320,26 @@ def evaluate_validation(algo, validation_buffer, *, algorithm: str) -> dict:
     metrics = {
         "action_mse_sum": ContinuousActionDiffEvaluator()(algo, validation_buffer)
     }
-    if algorithm in {"td3_bc", "iql"}:
+    if algorithm in {"td3_bc", "iql", "rebrac"}:
         metrics["td_error"] = TDErrorEvaluator()(algo, validation_buffer)
     return metrics
+
+
+def _policy_parameter_global_norm(algo) -> float:
+    assert algo.impl is not None
+    squared_norms = [
+        parameter.detach().float().pow(2).sum()
+        for parameter in algo.impl.policy.parameters()
+        if parameter.requires_grad
+    ]
+    if not squared_norms:
+        raise RuntimeError("BC policy has no trainable parameters")
+    return float(torch.stack(squared_norms).sum().sqrt().item())
+
+
+def _process_peak_rss_bytes() -> int:
+    # Linux reports ru_maxrss in KiB. The baseline environments are Linux-only.
+    return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024)
 
 
 class BaselineEpochCallback:
@@ -237,25 +349,108 @@ class BaselineEpochCallback:
         config: dict,
         selections,
         validation_buffer,
+        action_probe: np.ndarray | None,
         run_dir: Path,
         total_epochs: int,
+        epoch_offset: int = 0,
+        step_offset: int = 0,
     ):
         self._config = config
         self._selections = selections
         self._validation_buffer = validation_buffer
+        self._action_probe = action_probe
         self._run_dir = run_dir
         self._total_epochs = total_epochs
+        self._epoch_offset = int(epoch_offset)
+        self._step_offset = int(step_offset)
         self.history: list[dict] = []
+        self.diagnostics_history: list[dict] = []
+        self._start_time = time.perf_counter()
+        self._last_epoch_time = self._start_time
+
+    def _record_training_diagnostics(self, algo, epoch: int, total_step: int) -> dict | None:
+        if self._action_probe is None:
+            return None
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        actions = np.asarray(algo.predict(self._action_probe), dtype=np.float64)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        now = time.perf_counter()
+        if not np.all(np.isfinite(actions)):
+            raise FloatingPointError("BC diagnostic action probe contains NaN or Inf")
+        consume = getattr(algo, "consume_training_diagnostics", None)
+        if consume is None:
+            raise RuntimeError("Enabled training diagnostics require InstrumentedBC")
+        gradient_metrics = consume()
+        batch_size = self._config["algorithm_config"]["batch_size"]
+        epoch_seconds = now - self._last_epoch_time
+        elapsed_seconds = now - self._start_time
+        record = {
+            "epoch": int(epoch),
+            "step": int(total_step),
+            "processed_examples": int(total_step * batch_size),
+            "epoch_wall_time_seconds": float(epoch_seconds),
+            "wall_time_seconds": float(elapsed_seconds),
+            "updates_per_second": float(
+                self._config["n_steps_per_epoch"] / epoch_seconds
+            ),
+            "examples_per_second": float(
+                self._config["n_steps_per_epoch"] * batch_size / epoch_seconds
+            ),
+            "parameter_global_norm": _policy_parameter_global_norm(algo),
+            "action_probe_count": int(len(actions)),
+            "action_mean": [float(value) for value in actions.mean(axis=0)],
+            "action_std": [float(value) for value in actions.std(axis=0)],
+            "action_min": [float(value) for value in actions.min(axis=0)],
+            "action_max": [float(value) for value in actions.max(axis=0)],
+            "action_abs_mean": float(np.abs(actions).mean()),
+            "process_peak_rss_bytes": _process_peak_rss_bytes(),
+            "gpu_peak_allocated_bytes": (
+                int(torch.cuda.max_memory_allocated())
+                if torch.cuda.is_available()
+                else None
+            ),
+            **gradient_metrics,
+        }
+        self.diagnostics_history.append(record)
+        append_jsonl(self._run_dir / "training_diagnostics.jsonl", record)
+        return record
 
     def __call__(self, algo, epoch: int, total_step: int) -> None:
-        final_epoch = epoch == self._total_epochs
-        if epoch % self._config["save_interval_epochs"] == 0 or final_epoch:
+        local_epoch = epoch
+        epoch += self._epoch_offset
+        total_step += self._step_offset
+        diagnostic_record = self._record_training_diagnostics(algo, epoch, total_step)
+        final_epoch = local_epoch == self._total_epochs
+        checkpoint_saved = (
+            epoch % self._config["save_interval_epochs"] == 0 or final_epoch
+        )
+        if checkpoint_saved:
             algo.save(self._run_dir / "checkpoints" / f"step_{total_step}.d3")
 
         evaluation = self._config["evaluation"]
         if not evaluation["enabled"]:
+            if checkpoint_saved:
+                save_trainer_state(
+                    self._run_dir
+                    / "checkpoints"
+                    / f"trainer_state_step_{total_step}.pt",
+                    epoch=epoch,
+                    step=total_step,
+                )
+            self._last_epoch_time = time.perf_counter()
             return
         if epoch % evaluation["every_epochs"] != 0 and not final_epoch:
+            if checkpoint_saved:
+                save_trainer_state(
+                    self._run_dir
+                    / "checkpoints"
+                    / f"trainer_state_step_{total_step}.pt",
+                    epoch=epoch,
+                    step=total_step,
+                )
+            self._last_epoch_time = time.perf_counter()
             return
 
         validation = evaluate_validation(
@@ -277,6 +472,8 @@ class BaselineEpochCallback:
             "validation": validation,
             "rollout": rollout,
         }
+        if diagnostic_record is not None:
+            result["training_diagnostics"] = diagnostic_record
         self.history.append(result)
         append_jsonl(self._run_dir / "evaluation.jsonl", result)
         aggregate = rollout["aggregate"]
@@ -302,3 +499,14 @@ class BaselineEpochCallback:
                 },
                 step=total_step,
             )
+        if checkpoint_saved:
+            # Capture after validation/rollout because evaluators can consume
+            # RNG state even though they do not update policy parameters.
+            save_trainer_state(
+                self._run_dir
+                / "checkpoints"
+                / f"trainer_state_step_{total_step}.pt",
+                epoch=epoch,
+                step=total_step,
+            )
+        self._last_epoch_time = time.perf_counter()
