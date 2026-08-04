@@ -39,8 +39,10 @@ _RESUME_COMPATIBILITY_FIELDS = (
     "env_family",
     "train_mode",
     "train_variants",
+    "seed_map_train",
     "eval_mode",
     "eval_variants",
+    "seed_map_eval",
     "reward_type",
     "allow_mixed_reward_types",
     "local_dataset_root",
@@ -252,6 +254,7 @@ def train_baseline(config: dict) -> Path:
         config,
         selections.train.selected_variants,
         selections.train_reward_types,
+        seed_map_selection=selections.seed_map_train,
     )
     write_json(run_dir / "dataset_manifest.json", prepared.manifest)
     for warning in prepared.manifest["warnings"]:

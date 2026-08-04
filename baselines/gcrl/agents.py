@@ -22,6 +22,21 @@ from baselines.gcrl.networks import (
 )
 
 
+def _safe_exp_mean(values):
+    """Return a finite float32 exp mean plus its diagnostic clip fraction."""
+    # jnp.mean may reduce by summing before division. Keep the worst-case sum
+    # below the dtype maximum while preserving the upstream exp(value) metric
+    # everywhere it is representable. This is logging-only and never enters a
+    # loss or parameter update.
+    max_log = (
+        jnp.log(jnp.finfo(values.dtype).max)
+        - jnp.log(values.size)
+        - 1.0
+    )
+    clipped = jnp.minimum(values, max_log)
+    return jnp.exp(clipped).mean(), jnp.mean(values > max_log)
+
+
 class CRLAgent(flax.struct.PyTreeNode):
     rng: Any
     network: TrainState
@@ -51,9 +66,11 @@ class CRLAgent(flax.struct.PyTreeNode):
         mean_logits = logits.mean(axis=-1)
         positive = (mean_logits * labels).sum() / labels.sum()
         negative = (mean_logits * (1.0 - labels)).sum() / (1.0 - labels).sum()
+        v_mean, v_clip_fraction = _safe_exp_mean(values)
         return loss, {
             "critic/contrastive_loss": loss,
-            "critic/v_mean": jnp.exp(values).mean(),
+            "critic/v_mean": v_mean,
+            "critic/v_clip_fraction": v_clip_fraction,
             "critic/binary_accuracy": jnp.mean((mean_logits > 0) == labels),
             "critic/categorical_accuracy": jnp.mean(
                 jnp.argmax(mean_logits, axis=1) == jnp.arange(batch_size)

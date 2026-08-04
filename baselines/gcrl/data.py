@@ -5,7 +5,12 @@ from typing import Any
 
 import numpy as np
 
-from baselines.data.loader import episode_field, select_episode_splits
+from baselines.data.loader import (
+    episode_field,
+    episode_observations_with_seed_map_layout,
+    select_episode_splits,
+)
+from data.seed_map_corpus import SeedMapSelection
 from baselines.data.observation import (
     GCRL_GOAL_SEMANTICS,
     GOAL_CONDITIONED_STATE_DIMS,
@@ -588,7 +593,7 @@ def _convert_episode(
     variant: str,
     observation_config: dict,
 ) -> GCRLEpisode:
-    observations = episode_field(episode, "observations")
+    observations = episode_observations_with_seed_map_layout(episode)
     if not isinstance(observations, dict):
         try:
             observations = dict(observations)
@@ -613,7 +618,7 @@ def _convert_episode(
     )
     if include_map or include_dynamic_map:
         base_dim = GOAL_CONDITIONED_STATE_DIMS[env_family]
-        rows, cols = family_map_shape(env_family)
+        rows, cols = family_map_shape(env_family, observation_config)
         map_dim = rows * cols
         removal_ranges = []
         if include_map:
@@ -707,8 +712,15 @@ def prepare_gcrl_datasets(
     config: dict,
     selected_variants: list[str],
     reward_types: dict[str, str],
+    *,
+    seed_map_selection: SeedMapSelection | None = None,
 ) -> PreparedGCRLDatasets:
-    selected = select_episode_splits(config, selected_variants, reward_types)
+    selected = select_episode_splits(
+        config,
+        selected_variants,
+        reward_types,
+        seed_map_selection=seed_map_selection,
+    )
     train_episodes = []
     validation_episodes = []
     manifest_variants = {}
@@ -778,6 +790,9 @@ def prepare_gcrl_datasets(
         "variants": manifest_variants,
         "warnings": selected.warnings,
     }
+    if selected.seed_map_selection is not None:
+        manifest["seed_map_selection"] = selected.seed_map_selection
+        manifest["seed_map_manifest"] = selected.seed_map_manifest
     return PreparedGCRLDatasets(
         train=train,
         validation=validation,

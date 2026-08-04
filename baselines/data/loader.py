@@ -14,8 +14,14 @@ import minari
 import numpy as np
 from minari import MinariDataset
 
-from crossmaze import get_env_facts, list_variants
+from crossmaze import CROSSMAZE_OBS_KEY, get_env_facts, list_variants
 from crossmaze.reward import normalize_reward_type, reward_typed_dataset_path
+from data.seed_map_corpus import (
+    SeedMapSelection,
+    build_seed_map_episode_selection,
+    load_seed_map_manifest,
+)
+from utils.seed_map_eval import seed_map_eval_variant
 
 from baselines.data.observation import observation_schema, vectorize_observation
 
@@ -53,6 +59,8 @@ class SelectedEpisodeSplits:
     variants: dict[str, VariantEpisodeSplit]
     balanced_episode_target: int | None
     warnings: list[str]
+    seed_map_selection: dict | None = None
+    seed_map_manifest: dict | None = None
 
 
 def _read_hdf5_tree(node):
@@ -236,6 +244,34 @@ def episode_field(episode, name: str, default=None):
     return getattr(episode, name, default)
 
 
+def episode_observations_with_seed_map_layout(episode):
+    """Attach procedural layout facts to raw observations when available.
+
+    Minari stores only the environment observation arrays.  The aggregate
+    seed-map loader separately attaches versioned prompt/layout metadata to
+    each episode; baseline numeric observation adapters consume the same
+    ``crossmaze`` layout contract used by online environments.
+    """
+
+    observations = episode_field(episode, "observations")
+    if not isinstance(observations, Mapping):
+        return observations
+    if CROSSMAZE_OBS_KEY in observations:
+        return observations
+    prompt_vars = episode_field(episode, "seed_map_prompt_vars")
+    if not isinstance(prompt_vars, Mapping):
+        return observations
+    maze_map = prompt_vars.get("maze_map")
+    if maze_map is None:
+        raise ValueError("Seed-map episode prompt vars are missing maze_map")
+    attached = dict(observations)
+    attached[CROSSMAZE_OBS_KEY] = {
+        "maze_map": [list(row) for row in maze_map],
+        "maze_size_scaling": float(prompt_vars.get("maze_size_scaling", 1.0)),
+    }
+    return attached
+
+
 # Compatibility alias for the original d3rlpy conversion path.
 _episode_field = episode_field
 
@@ -249,7 +285,7 @@ def _convert_episode(
 ):
     from baselines.data.transitions import MinariTransitionEpisode
 
-    observations = _episode_field(episode, "observations")
+    observations = episode_observations_with_seed_map_layout(episode)
     if not isinstance(observations, Mapping):
         raise ValueError(
             f"{env_family} baseline requires dict observations, got {type(observations).__name__}"
@@ -315,12 +351,111 @@ def _sampled_target(total_episodes: int, keep: int | None) -> int:
     return total_episodes if keep is None else min(total_episodes, keep)
 
 
+def _select_seed_map_episode_splits(
+    config: dict,
+    selected_variants: list[str],
+    reward_types: dict[str, str],
+    selection: SeedMapSelection,
+) -> SelectedEpisodeSplits:
+    expected_variants = [
+        seed_map_eval_variant(seed) for seed in selection.selected_seeds
+    ]
+    if selected_variants != expected_variants:
+        raise ValueError(
+            "Resolved seed-map training variants do not match the corpus "
+            f"selection: expected={expected_variants}, actual={selected_variants}"
+        )
+    manifest = load_seed_map_manifest(
+        selection.dataset_path,
+        require_complete=True,
+    )
+    split_payload = build_seed_map_episode_selection(
+        selection,
+        train_data_ratio=config["train_data_ratio"],
+    )
+    episodes = split_payload["episodes"]
+    records = split_payload["records"]
+    train_global = set(split_payload["train_indices"])
+    validation_global = set(split_payload["val_indices"])
+    grouped_indices: dict[int, list[int]] = {
+        int(seed): [] for seed in selection.selected_seeds
+    }
+    for index, record in enumerate(records):
+        grouped_indices[int(record["map_seed"])].append(index)
+
+    splits = {}
+    for map_seed in selection.selected_seeds:
+        variant = seed_map_eval_variant(map_seed)
+        global_indices = grouped_indices[int(map_seed)]
+        local_episodes = [episodes[index] for index in global_indices]
+        train_indices = [
+            local_index
+            for local_index, global_index in enumerate(global_indices)
+            if global_index in train_global
+        ]
+        validation_indices = [
+            local_index
+            for local_index, global_index in enumerate(global_indices)
+            if global_index in validation_global
+        ]
+        if len(train_indices) + len(validation_indices) != len(local_episodes):
+            raise RuntimeError(
+                f"Seed-map split lost episodes for map_seed={map_seed}"
+            )
+        splits[variant] = VariantEpisodeSplit(
+            loaded=LoadedVariant(
+                variant=variant,
+                source=(
+                    f"seed-map:{selection.dataset_path}#map_seed={int(map_seed)}"
+                ),
+                reward_type=reward_types[variant],
+                episodes=local_episodes,
+                dataset_path=selection.dataset_path,
+                warnings=[],
+            ),
+            initial_sampled_target=len(local_episodes),
+            sampled_target=len(local_episodes),
+            train_indices=train_indices,
+            validation_indices=validation_indices,
+        )
+
+    warnings = []
+    if config.get("episode_keep_num") is not None or config.get(
+        "episode_keep_per_variant"
+    ):
+        warnings.append(
+            "seed_map_train controls map/trajectory selection; episode_keep_num "
+            "and episode_keep_per_variant were ignored"
+        )
+    if config.get("balance_variant_episode_count"):
+        warnings.append(
+            "seed_map_train controls equal trajectory capacity per selected map; "
+            "balance_variant_episode_count was ignored"
+        )
+    return SelectedEpisodeSplits(
+        variants=splits,
+        balanced_episode_target=None,
+        warnings=warnings,
+        seed_map_selection=selection.to_dict(),
+        seed_map_manifest=manifest,
+    )
+
+
 def select_episode_splits(
     config: dict,
     selected_variants: list[str],
     reward_types: dict[str, str],
+    *,
+    seed_map_selection: SeedMapSelection | None = None,
 ) -> SelectedEpisodeSplits:
     """Load and deterministically split raw episodes for any baseline backend."""
+    if seed_map_selection is not None:
+        return _select_seed_map_episode_splits(
+            config,
+            selected_variants,
+            reward_types,
+            seed_map_selection,
+        )
     available = set(list_variants(config["env_family"]))
     unknown_keep_variants = sorted(
         set(config["episode_keep_per_variant"]) - available
@@ -400,10 +535,17 @@ def prepare_datasets(
     config: dict,
     selected_variants: list[str],
     reward_types: dict[str, str],
+    *,
+    seed_map_selection: SeedMapSelection | None = None,
 ) -> PreparedDatasets:
     from baselines.data.transitions import build_replay_buffer
 
-    selected = select_episode_splits(config, selected_variants, reward_types)
+    selected = select_episode_splits(
+        config,
+        selected_variants,
+        reward_types,
+        seed_map_selection=seed_map_selection,
+    )
 
     train_episodes = []
     validation_episodes = []
@@ -471,6 +613,9 @@ def prepare_datasets(
         "variants": manifest_variants,
         "warnings": selected.warnings,
     }
+    if selected.seed_map_selection is not None:
+        manifest["seed_map_selection"] = selected.seed_map_selection
+        manifest["seed_map_manifest"] = selected.seed_map_manifest
     return PreparedDatasets(
         train_buffer=train_buffer,
         validation_buffer=validation_buffer,

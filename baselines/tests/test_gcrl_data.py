@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import numpy as np
 
 from baselines.data.observation import vectorize_gcrl_state_observation
+from baselines.config import normalize_baseline_config
 from baselines.gcrl.data import (
     GCRLDataset,
     GCRLEpisode,
     GCRLNormalizer,
     _convert_episode,
+    prepare_gcrl_datasets,
 )
+from baselines.registry import resolve_baseline_selections
+from baselines.tests.seed_map_fixture import make_seed_map_corpus
+from crossmaze.seed_map import SeedMapSpec
 
 
 def _episode(variant: str, value: float, length: int = 5) -> GCRLEpisode:
@@ -229,6 +236,85 @@ class GCRLDatasetTest(unittest.TestCase):
             variant="umaze",
         )
         np.testing.assert_array_equal(restored, expected)
+
+    def test_seed_map_corpora_build_point_and_ant_dmap_datasets(self):
+        cases = (
+            (
+                "pointmaze",
+                SeedMapSpec(size_mode="fixed", fixed_rows=7, fixed_cols=7),
+                [15, 15],
+                4 + 15 * 15,
+            ),
+            (
+                "antmaze",
+                SeedMapSpec(size_mode="random", min_size=9, max_size=13),
+                [13, 16],
+                29 + 13 * 16,
+            ),
+        )
+        for env_family, spec, expected_shape, expected_state_dim in cases:
+            with (
+                self.subTest(env_family=env_family),
+                TemporaryDirectory() as directory,
+            ):
+                corpus = make_seed_map_corpus(
+                    Path(directory),
+                    env_family=env_family,
+                    seed_map_spec=spec,
+                )
+                config = normalize_baseline_config(
+                    {
+                        "algorithm": "crl",
+                        "env_family": env_family,
+                        "train_variants": ["umaze"],
+                        "train_data_ratio": 0.5,
+                        "seed_map_train": {
+                            "enabled": True,
+                            "dataset_path": str(corpus),
+                            "seed_ranges": [[1, 3]],
+                            "seed_count": 2,
+                            "trajectories_per_seed": 2,
+                            "selection_seed": 0,
+                            "split_unit": "seed",
+                        },
+                        "observation": {
+                            "include_map": False,
+                            "include_dynamic_map": True,
+                            "include_location_sensing": False,
+                            "include_wall_sensing": False,
+                        },
+                    }
+                )
+                selections = resolve_baseline_selections(config)
+                prepared = prepare_gcrl_datasets(
+                    config,
+                    selections.train.selected_variants,
+                    selections.train_reward_types,
+                    seed_map_selection=selections.seed_map_train,
+                )
+
+                self.assertEqual(config["observation"]["map_shape"], expected_shape)
+                self.assertEqual(prepared.train.state_dim, expected_state_dim)
+                self.assertEqual(prepared.validation.state_dim, expected_state_dim)
+                self.assertEqual(
+                    sorted(prepared.manifest["variants"]),
+                    ["seed-map-1", "seed-map-2"],
+                )
+                self.assertEqual(
+                    prepared.manifest["seed_map_selection"]["seed_count"], 2
+                )
+                self.assertTrue(prepared.manifest["seed_map_manifest"]["complete"])
+                for dataset in (prepared.train, prepared.validation):
+                    for arrays in dataset.variants.values():
+                        self.assertEqual(
+                            len(arrays.map_features),
+                            expected_shape[0] * expected_shape[1],
+                        )
+                        restored = dataset._restore_observation_features(
+                            arrays,
+                            np.arange(len(arrays.states), dtype=np.int64),
+                        )
+                        self.assertEqual(restored.shape[-1], expected_state_dim)
 
 
 if __name__ == "__main__":

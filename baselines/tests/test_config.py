@@ -23,6 +23,46 @@ class BaselineConfigTest(unittest.TestCase):
         self.assertFalse(config["observation"]["include_wall_sensing"])
         self.assertEqual(config["observation"]["wall_sensing_version"], "v3")
 
+    def test_seed_map_sections_and_explicit_map_shape_are_preserved(self):
+        seed_map_train = {
+            "enabled": True,
+            "dataset_path": "/tmp/seed-map-corpus",
+            "seed_ranges": [[1, 101]],
+            "seed_count": 100,
+            "trajectories_per_seed": 50,
+            "selection_seed": 0,
+            "split_unit": "trajectory",
+        }
+        seed_map_eval = {
+            "enabled": True,
+            "seed_ranges": [[1, 101], [1001, 1051]],
+            "seed_count": 150,
+            "episodes_per_seed": 1,
+            "seed_map_size_mode": "random",
+            "seed_map_min_size": 9,
+            "seed_map_max_size": 13,
+        }
+        config = normalize_baseline_config(
+            {
+                "algorithm": "crl",
+                "seed_map_train": seed_map_train,
+                "seed_map_eval": seed_map_eval,
+                "observation": {"map_shape": [13, 16]},
+            }
+        )
+        self.assertEqual(config["seed_map_train"], seed_map_train)
+        self.assertEqual(config["seed_map_eval"], seed_map_eval)
+        self.assertEqual(config["observation"]["map_shape"], [13, 16])
+
+    def test_seed_map_enabled_must_be_boolean(self):
+        with self.assertRaisesRegex(ValueError, "seed_map_train.enabled"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "crl",
+                    "seed_map_train": {"enabled": 1},
+                }
+            )
+
     def test_rejects_unknown_keys(self):
         with self.assertRaisesRegex(ValueError, "Unknown baseline config keys"):
             normalize_baseline_config(
@@ -98,6 +138,49 @@ class BaselineConfigTest(unittest.TestCase):
                         "checkpoint": "/tmp/step_100000.msgpack",
                         "trainer_state": "/tmp/trainer_state_step_100000.pt",
                     },
+                }
+            )
+
+    def test_gcrl_early_stopping_is_normalized(self):
+        config = normalize_baseline_config(
+            {
+                "algorithm": "crl",
+                "train_variants": ["umaze"],
+                "n_steps": 2_000_000,
+                "early_stopping": {
+                    "enabled": True,
+                    "min_steps": 1_000_000,
+                    "patience_evaluations": 4,
+                    "min_delta": 0.02,
+                },
+            }
+        )
+        self.assertEqual(
+            config["early_stopping"],
+            {
+                "enabled": True,
+                "min_steps": 1_000_000,
+                "patience_evaluations": 4,
+                "min_delta": 0.02,
+            },
+        )
+
+    def test_early_stopping_rejects_non_gcrl_and_disabled_eval(self):
+        with self.assertRaisesRegex(ValueError, "only by CRL/HIQL"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "mlp_bc",
+                    "train_variants": ["umaze"],
+                    "early_stopping": {"enabled": True},
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "evaluation.enabled=true"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "hiql",
+                    "train_variants": ["umaze"],
+                    "evaluation": {"enabled": False},
+                    "early_stopping": {"enabled": True},
                 }
             )
 

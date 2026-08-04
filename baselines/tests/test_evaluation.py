@@ -9,6 +9,8 @@ import gymnasium as gym
 import numpy as np
 
 from baselines.evaluation import BaselineEpochCallback, evaluate_rollouts
+from crossmaze.seed_map import generate_seed_map, seed_map_hash
+from utils.seed_map_eval import resolve_seed_map_eval_selection
 
 try:
     from baselines.trainer_state import load_trainer_state
@@ -335,6 +337,60 @@ class EvaluationRecordTest(unittest.TestCase):
         self.assertEqual([episode["seed"] for episode in episodes], [10, 11])
         self.assertTrue(episodes[0]["success"])
         self.assertFalse(episodes[1]["success"])
+
+    @patch(
+        "baselines.evaluation.crossmaze.make_seed_map",
+        side_effect=lambda *_args, **_kwargs: _EpisodeRecordEnv(),
+    )
+    def test_seed_map_rollout_builds_synthetic_env_and_records_provenance(
+        self, make
+    ):
+        selection = resolve_seed_map_eval_selection(
+            {
+                "enabled": True,
+                "seed_ranges": [[1001, 1002]],
+                "seed_count": 1,
+                "episodes_per_seed": 1,
+                "seed_map_size_mode": "fixed",
+                "seed_map_fixed_rows": 7,
+                "seed_map_fixed_cols": 7,
+                "reward_type": "sparse",
+                "max_episode_steps": 3,
+            },
+            env_family="pointmaze",
+        )
+        result = evaluate_rollouts(
+            _PredictZero(),
+            env_family="pointmaze",
+            variants=selection.selected_variants,
+            reward_types={"seed-map-1001": "sparse"},
+            evaluation_config={"seed": 10, "num_episodes": 1, "env_config": {}},
+            observation_config={
+                "include_map": False,
+                "include_dynamic_map": False,
+                "include_location_sensing": False,
+                "include_wall_sensing": False,
+                "wall_sensing_version": "v3",
+                "map_sensing_boundary_risk_threshold": 0.1,
+            },
+            seed_map_eval=selection,
+        )
+
+        make.assert_called_once()
+        args, kwargs = make.call_args
+        self.assertEqual(args[:2], ("pointmaze", 1001))
+        self.assertEqual(kwargs["seed_map_spec"]["fixed_rows"], 7)
+        self.assertEqual(kwargs["config"]["max_episode_steps"], 3)
+        variant = result["variants"]["seed-map-1001"]
+        self.assertEqual(variant["seed_map"]["map_seed"], 1001)
+        self.assertEqual(
+            variant["seed_map"]["map_hash"],
+            seed_map_hash(generate_seed_map(1001, selection.seed_map_spec)),
+        )
+        self.assertEqual(
+            variant["episodes"][0]["start_goal"]["sampling_mode"],
+            "random-start-goal",
+        )
 
 
 if __name__ == "__main__":

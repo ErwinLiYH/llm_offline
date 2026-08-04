@@ -132,6 +132,64 @@ only for sampled rows. A relabeled goal reuses the target state row byte for
 byte, including its original C/G/S map. No prompt or sensing text enters these
 baselines.
 
+### Procedural seed-map data and rollout
+
+Baselines accept the same aggregate seed-map corpus and selection sections as
+the LLM pipeline. An enabled `seed_map_train` takes priority over
+`train_mode`/`train_variants`; each selected map becomes a synthetic
+`seed-map-<N>` variant so GCRL relabeling and CRL in-batch negatives remain
+within one layout. The explicit map/trajectory selection is deterministic and
+is written, together with the corpus manifest and content hash, to the run's
+resolved config and `dataset_manifest.json`.
+
+```yaml
+seed_map_train:
+  enabled: true
+  dataset_path: local_datasets/pointmaze-seed-map-v1-random-size9-15-sparse/1-501-50
+  seed_ranges: [[1, 101]]       # half-open: map seeds 1 through 100
+  seed_count: 100
+  trajectories_per_seed: 50
+  selection_seed: 0
+  split_unit: trajectory
+```
+
+`split_unit: seed` is the default and keeps whole maps out of either train or
+validation. `split_unit: trajectory` splits the selected trajectories globally
+and allows different trajectories from one map to occur on the two sides; it
+does not promise a nonempty per-map validation subset. Legacy episode-keep and
+variant-balancing controls do not override this explicit n-map/m-trajectory
+selection.
+
+An enabled `seed_map_eval` independently takes priority over
+`eval_mode`/`eval_variants`. It can inherit the generator spec from a corpus or
+generate fresh held-out maps directly from ranges; `episodes_per_seed` becomes
+the per-map rollout count.
+
+```yaml
+seed_map_eval:
+  enabled: true
+  seed_ranges: [[1, 101], [1001, 1051]]
+  seed_count: 150
+  episodes_per_seed: 1
+  selection_seed: 0
+  reward_type: sparse
+  seed_map_version: v1
+  seed_map_size_mode: random
+  seed_map_min_size: 9
+  seed_map_max_size: 15
+```
+
+Procedural maps default to `random-start-goal`; existing hard-sample eval
+settings are also supported, while `fix-start-goal` is rejected because a
+generated map has no canonical pair. For baselines these settings live under
+`evaluation.env_config`. Offline and online observations share one
+resolved padded map slot. It remains `15x15` for PointMaze and expands to
+`13x16` for an AntMaze random-size-9-to-13 selection, avoiding an offline/
+rollout schema mismatch. Each rollout variant records `map_seed`, generator
+spec, actual topology `map_hash`, reward type, and horizon as provenance. See
+[`../docs/seed_map.md`](../docs/seed_map.md) for the corpus format, half-open
+range rules, and data-generation commands.
+
 ### BC scaling encoder
 
 `mlp_bc` also supports the paper-style scaling encoders used by Wang et al.,

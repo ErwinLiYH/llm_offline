@@ -15,6 +15,7 @@ from baselines.data.observation import (
     vectorize_observation,
 )
 from crossmaze import compute_sensing_state, get_env_facts
+from crossmaze.seed_map import SeedMapSpec, generate_seed_map
 
 
 class ObservationTest(unittest.TestCase):
@@ -259,6 +260,49 @@ class ObservationTest(unittest.TestCase):
         self.assertEqual(first_dynamic[pr, pc], 2)
         self.assertEqual(first_dynamic[gr, gc], 3)
         self.assertTrue(np.all(first_dynamic[5:, :] == MAP_PADDING_VALUE))
+
+    def test_ant_seed_map_dynamic_map_uses_resolved_padding_shape(self):
+        maze_map = generate_seed_map(
+            7,
+            SeedMapSpec(size_mode="fixed", fixed_rows=13, fixed_cols=13),
+        )
+        free_cells = [
+            (row, col)
+            for row, values in enumerate(maze_map)
+            for col, value in enumerate(values)
+            if value == 0
+        ]
+
+        def center(cell):
+            row, col = cell
+            return np.asarray(
+                [(col + 0.5) * 4.0 - 26.0, 26.0 - (row + 0.5) * 4.0],
+                dtype=np.float32,
+            )
+
+        observation = {
+            "achieved_goal": center(free_cells[0]),
+            "observation": np.zeros(27, dtype=np.float32),
+            "desired_goal": center(free_cells[-1]),
+            "crossmaze": {
+                "maze_map": maze_map,
+                "maze_size_scaling": 4.0,
+            },
+        }
+        config = self._structured_config(
+            include_dynamic_map=True,
+            map_shape=[13, 16],
+        )
+        vector = vectorize_gcrl_state_observation(
+            observation,
+            "antmaze",
+            observation_config=config,
+        )
+        self.assertEqual(family_map_shape("antmaze", config), (13, 16))
+        self.assertEqual(vector.shape, (29 + 13 * 16,))
+        dynamic_map = vector[29:].reshape(13, 16)
+        self.assertTrue(np.all(dynamic_map[:, 13:] == MAP_PADDING_VALUE))
+        self.assertEqual(np.count_nonzero(np.isin(dynamic_map, [2, 3, 4])), 2)
 
 
 if __name__ == "__main__":

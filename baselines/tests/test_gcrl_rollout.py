@@ -85,6 +85,79 @@ class GCRLRolloutObservationTest(unittest.TestCase):
                 finally:
                     env.close()
 
+    def test_point_and_ant_fresh_seed_maps_use_resolved_dmap_slots(self):
+        cases = {
+            "pointmaze": {
+                "map_shape": [15, 15],
+                "state_dim": 229,
+                "spec": {
+                    "version": "v1",
+                    "size_mode": "random",
+                    "min_size": 9,
+                    "max_size": 15,
+                    "fixed_rows": None,
+                    "fixed_cols": None,
+                },
+            },
+            "antmaze": {
+                "map_shape": [13, 16],
+                "state_dim": 237,
+                "spec": {
+                    "version": "v1",
+                    "size_mode": "random",
+                    "min_size": 9,
+                    "max_size": 13,
+                    "fixed_rows": None,
+                    "fixed_cols": None,
+                },
+            },
+        }
+        for env_family, case in cases.items():
+            with self.subTest(env_family=env_family):
+                config = normalize_baseline_config(
+                    {
+                        "algorithm": "crl",
+                        "env_family": env_family,
+                        "train_variants": ["umaze"],
+                        "observation": {
+                            "include_dynamic_map": True,
+                            "map_shape": case["map_shape"],
+                        },
+                    }
+                )
+                env = _make_evaluation_env(
+                    env_family=env_family,
+                    variant="seed-map-1001",
+                    reward_type="sparse",
+                    env_config={"eval_start_goal_mode": "random-start-goal"},
+                    observation_config=config["observation"],
+                    goal_conditioned=True,
+                    seed_map_target={
+                        "map_seed": 1001,
+                        "seed_map_spec": case["spec"],
+                        "reward_type": "sparse",
+                        "max_episode_steps": 20,
+                    },
+                )
+                try:
+                    observation, _ = env.reset(seed=0)
+                    self.assertEqual(
+                        observation["state"].shape,
+                        (case["state_dim"],),
+                    )
+                    self.assertEqual(
+                        observation["goal"].shape,
+                        observation["state"].shape,
+                    )
+                    self.assertTrue(np.all(np.isfinite(observation["state"])))
+                    self.assertTrue(np.all(np.isfinite(observation["goal"])))
+                    base_dim = GOAL_CONDITIONED_STATE_DIMS[env_family]
+                    goal_dmap = observation["goal"][base_dim:]
+                    self.assertEqual(len(goal_dmap), np.prod(case["map_shape"]))
+                    self.assertEqual(np.count_nonzero(goal_dmap == 4), 1)
+                finally:
+                    env.close()
+
 
 if __name__ == "__main__":
     unittest.main()

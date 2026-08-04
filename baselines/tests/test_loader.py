@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,6 +10,8 @@ import numpy as np
 
 from baselines.config import normalize_baseline_config
 from baselines.data.loader import LoadedVariant, prepare_datasets
+from baselines.registry import resolve_baseline_selections
+from baselines.tests.seed_map_fixture import make_seed_map_corpus
 
 
 def _raw_episode(seed: int, length: int = 3):
@@ -89,6 +93,45 @@ class LoaderTest(unittest.TestCase):
         prepared = prepare_datasets(config, list(reward_types), reward_types)
         self.assertFalse(prepared.manifest["balance_variant_episode_count"])
         self.assertIn("was ignored", prepared.manifest["warnings"][0])
+
+    def test_seed_map_corpus_builds_d3rlpy_buffers_with_layout_metadata(self):
+        with TemporaryDirectory() as directory:
+            corpus = make_seed_map_corpus(
+                Path(directory), env_family="pointmaze"
+            )
+            config = self._config(
+                train_variants=["umaze"],
+                train_data_ratio=0.5,
+                seed_map_train={
+                    "enabled": True,
+                    "dataset_path": str(corpus),
+                    "seed_ranges": [[1, 3]],
+                    "seed_count": 2,
+                    "trajectories_per_seed": 2,
+                    "selection_seed": 0,
+                    "split_unit": "seed",
+                },
+                observation={
+                    "include_map": False,
+                    "include_dynamic_map": True,
+                    "include_location_sensing": False,
+                    "include_wall_sensing": False,
+                },
+            )
+            selections = resolve_baseline_selections(config)
+            prepared = prepare_datasets(
+                config,
+                selections.train.selected_variants,
+                selections.train_reward_types,
+                seed_map_selection=selections.seed_map_train,
+            )
+
+        self.assertEqual(prepared.manifest["observation_schema"]["dimension"], 231)
+        self.assertEqual(prepared.manifest["train_episode_count"], 2)
+        self.assertEqual(prepared.manifest["validation_episode_count"], 2)
+        self.assertEqual(prepared.train_buffer.transition_count, 6)
+        self.assertEqual(prepared.validation_buffer.transition_count, 6)
+        self.assertEqual(prepared.manifest["seed_map_selection"]["seed_count"], 2)
 
 
 if __name__ == "__main__":

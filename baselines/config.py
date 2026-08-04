@@ -16,8 +16,10 @@ _TOP_LEVEL_KEYS = {
     "env_family",
     "train_mode",
     "train_variants",
+    "seed_map_train",
     "eval_mode",
     "eval_variants",
+    "seed_map_eval",
     "reward_type",
     "allow_mixed_reward_types",
     "local_dataset_root",
@@ -40,6 +42,7 @@ _TOP_LEVEL_KEYS = {
     "evaluation",
     "logging",
     "training_diagnostics",
+    "early_stopping",
     "resume",
 }
 
@@ -218,6 +221,16 @@ _TRAINING_DIAGNOSTICS_DEFAULTS = {
     "action_probe_size": 1024,
 }
 
+# CRL/HIQL can be given a deliberately generous update ceiling and stop only
+# after a complete checkpoint evaluation shows a sustained train-map plateau.
+# The held-out variants are never consulted by this rule.
+_EARLY_STOPPING_DEFAULTS = {
+    "enabled": False,
+    "min_steps": 1_000_000,
+    "patience_evaluations": 4,
+    "min_delta": 0.02,
+}
+
 _RESUME_DEFAULTS = {
     "checkpoint": None,
     "trainer_state": None,
@@ -230,6 +243,24 @@ def _mapping(value, field_name: str) -> dict:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be a mapping")
     return copy.deepcopy(dict(value))
+
+
+def _optional_config_section(value, field_name: str) -> dict | None:
+    """Preserve an optional feature section for its domain resolver.
+
+    Seed-map sections are resolved only after the environment family and the
+    corpus are known.  The top-level baseline normalizer still validates the
+    shared enabled contract so a disabled/malformed section cannot silently
+    change selection behavior.
+    """
+
+    if value is None:
+        return None
+    section = _mapping(value, field_name)
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"{field_name}.enabled must be true or false")
+    return section
 
 
 def _positive_int(value, field_name: str) -> int:
@@ -358,9 +389,10 @@ def _normalize_network(value) -> dict:
 
 def _normalize_observation(value) -> dict:
     raw = _mapping(value, "observation")
-    unknown = sorted(set(raw) - set(_OBSERVATION_DEFAULTS))
+    unknown = sorted(set(raw) - (set(_OBSERVATION_DEFAULTS) | {"map_shape"}))
     if unknown:
         raise ValueError(f"Unknown observation keys: {unknown}")
+    map_shape = raw.pop("map_shape", None)
     config = copy.deepcopy(_OBSERVATION_DEFAULTS)
     config.update(raw)
     for field in (
@@ -370,6 +402,19 @@ def _normalize_observation(value) -> dict:
         "include_wall_sensing",
     ):
         config[field] = _bool(config[field], f"observation.{field}")
+    if map_shape is not None:
+        if (
+            not isinstance(map_shape, (list, tuple))
+            or len(map_shape) != 2
+            or any(
+                isinstance(item, bool) or not isinstance(item, int) or item < 1
+                for item in map_shape
+            )
+        ):
+            raise ValueError(
+                "observation.map_shape must be [rows, cols] with positive integers"
+            )
+        config["map_shape"] = [int(map_shape[0]), int(map_shape[1])]
     config.update(resolve_sensing_config(config))
     return config
 
@@ -635,6 +680,41 @@ def _normalize_resume(value, *, algorithm: str) -> dict:
     return config
 
 
+def _normalize_early_stopping(
+    value,
+    *,
+    algorithm: str,
+    n_steps: int,
+    evaluation_enabled: bool,
+) -> dict:
+    config = copy.deepcopy(_EARLY_STOPPING_DEFAULTS)
+    config.update(_mapping(value, "early_stopping"))
+    unknown = sorted(set(config) - set(_EARLY_STOPPING_DEFAULTS))
+    if unknown:
+        raise ValueError(f"Unknown early_stopping keys: {unknown}")
+    config["enabled"] = _bool(config["enabled"], "early_stopping.enabled")
+    config["min_steps"] = _positive_int(
+        config["min_steps"], "early_stopping.min_steps"
+    )
+    config["patience_evaluations"] = _positive_int(
+        config["patience_evaluations"],
+        "early_stopping.patience_evaluations",
+    )
+    config["min_delta"] = _float(
+        config["min_delta"], "early_stopping.min_delta"
+    )
+    if not 0.0 <= config["min_delta"] <= 1.0:
+        raise ValueError("early_stopping.min_delta must satisfy 0 <= value <= 1")
+    if config["enabled"]:
+        if algorithm not in _GCRL_DEFAULTS:
+            raise ValueError("early_stopping is currently supported only by CRL/HIQL")
+        if not evaluation_enabled:
+            raise ValueError("early_stopping requires evaluation.enabled=true")
+        if config["min_steps"] > n_steps:
+            raise ValueError("early_stopping.min_steps must be <= n_steps")
+    return config
+
+
 def normalize_baseline_config(raw_config: dict) -> dict:
     if not isinstance(raw_config, Mapping):
         raise ValueError("Baseline config must be a mapping")
@@ -652,6 +732,13 @@ def normalize_baseline_config(raw_config: dict) -> dict:
     if env_family not in {"pointmaze", "antmaze"}:
         raise ValueError("env_family must be 'pointmaze' or 'antmaze'")
 
+    seed_map_train = _optional_config_section(
+        raw.get("seed_map_train"), "seed_map_train"
+    )
+    seed_map_eval = _optional_config_section(
+        raw.get("seed_map_eval"), "seed_map_eval"
+    )
+
     train_mode = raw.get("train_mode", "single")
     if train_mode not in {"single", "all", "except"}:
         raise ValueError("train_mode must be single, all, or except")
@@ -659,7 +746,11 @@ def normalize_baseline_config(raw_config: dict) -> dict:
     if eval_mode is not None and eval_mode not in {"single", "all", "except"}:
         raise ValueError("eval_mode must be single, all, except, or null")
     eval_variants = _string_list(raw.get("eval_variants"), "eval_variants")
-    if eval_mode is None and eval_variants:
+    if (
+        eval_mode is None
+        and eval_variants
+        and not (seed_map_eval is not None and seed_map_eval.get("enabled") is True)
+    ):
         raise ValueError("eval_variants requires an explicit eval_mode")
 
     reward_type = raw.get("reward_type")
@@ -777,7 +868,14 @@ def normalize_baseline_config(raw_config: dict) -> dict:
             env_kwargs[field] = required
         env_config["env_kwargs"] = env_kwargs
 
-    return {
+    early_stopping = _normalize_early_stopping(
+        raw.get("early_stopping"),
+        algorithm=algorithm,
+        n_steps=n_steps,
+        evaluation_enabled=normalized_evaluation["enabled"],
+    )
+
+    normalized = {
         "algorithm": algorithm,
         "env_family": env_family,
         "train_mode": train_mode,
@@ -815,5 +913,11 @@ def normalize_baseline_config(raw_config: dict) -> dict:
         "evaluation": normalized_evaluation,
         "logging": _normalize_logging(raw.get("logging")),
         "training_diagnostics": training_diagnostics,
+        "early_stopping": early_stopping,
         "resume": _normalize_resume(raw.get("resume"), algorithm=algorithm),
     }
+    if seed_map_train is not None:
+        normalized["seed_map_train"] = seed_map_train
+    if seed_map_eval is not None:
+        normalized["seed_map_eval"] = seed_map_eval
+    return normalized

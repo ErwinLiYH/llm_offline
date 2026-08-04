@@ -9,14 +9,19 @@ import numpy as np
 
 import crossmaze
 from crossmaze.eval_position import (
+    build_seed_map_eval_position_config,
     eval_position_selection_policy,
     resolve_eval_position_mode,
+    resolve_seed_map_eval_position_mode,
+    select_seed_map_eval_position,
 )
+from crossmaze.seed_map import generate_seed_map, seed_map_hash
 from baselines.artifacts import append_jsonl
 from baselines.data.observation import (
     BaselineObservationWrapper,
     GoalConditionedObservationWrapper,
 )
+from utils.seed_map_eval import SeedMapEvalSelection, seed_map_eval_target
 
 
 def _mean(values: list[float]) -> float:
@@ -36,6 +41,7 @@ def _actual_start_goal_record(
     variant: str,
     env_config: dict,
     base_seed: int,
+    seed_map_target: dict | None = None,
 ) -> dict:
     state = env.last_crossmaze_state
     if not isinstance(state, Mapping):
@@ -48,14 +54,21 @@ def _actual_start_goal_record(
         raise ValueError(
             f"CrossMaze reset observation for {variant!r} is missing: {missing}"
         )
+    if seed_map_target is None:
+        sampling_mode = resolve_eval_position_mode(env_family, env_config)
+        selection_policy = eval_position_selection_policy(
+            env_family, variant, config=env_config, seed=base_seed
+        )
+    else:
+        sampling_mode = resolve_seed_map_eval_position_mode(env_config)
+        selection_policy = (
+            "seeded_weighted_hard_sample_permutation_cycle"
+            if sampling_mode == "hard-sample"
+            else "env_default_random"
+        )
     return {
-        "sampling_mode": resolve_eval_position_mode(env_family, env_config),
-        "selection_policy": eval_position_selection_policy(
-            env_family,
-            variant,
-            config=env_config,
-            seed=base_seed,
-        ),
+        "sampling_mode": sampling_mode,
+        "selection_policy": selection_policy,
         "start_cell": [int(value) for value in state["position_cell"]],
         "goal_cell": [int(value) for value in state["goal_cell"]],
         "start_xy": [float(value) for value in state["position_xy"]],
@@ -71,6 +84,7 @@ def _make_evaluation_env(
     env_config: dict,
     observation_config: dict,
     goal_conditioned: bool,
+    seed_map_target: dict | None = None,
 ):
     env_config = dict(env_config)
     if goal_conditioned:
@@ -93,13 +107,24 @@ def _make_evaluation_env(
         if goal_conditioned
         else BaselineObservationWrapper
     )
-    return wrapper_class(
-        crossmaze.make(
+    if seed_map_target is None:
+        env = crossmaze.make(
+            env_family, variant, mode="eval", config=env_config
+        )
+    else:
+        seed_map_config = dict(env_config)
+        seed_map_config["reward_type"] = seed_map_target["reward_type"]
+        seed_map_config["max_episode_steps"] = seed_map_target[
+            "max_episode_steps"
+        ]
+        env = crossmaze.make_seed_map(
             env_family,
-            variant,
-            mode="eval",
-            config=env_config,
-        ),
+            seed_map_target["map_seed"],
+            seed_map_spec=seed_map_target["seed_map_spec"],
+            config=seed_map_config,
+        )
+    return wrapper_class(
+        env,
         env_family=env_family,
         observation_config=observation_config,
     )
@@ -146,6 +171,7 @@ def _evaluate_variant_batched(
     evaluation_config: dict,
     observation_config: dict,
     goal_conditioned: bool,
+    seed_map_target: dict | None = None,
 ) -> list[dict]:
     """Roll out one variant in independent env slots with batched policy calls.
 
@@ -167,6 +193,19 @@ def _evaluate_variant_batched(
     env_config["map_sensing_boundary_risk_threshold"] = observation_config[
         "map_sensing_boundary_risk_threshold"
     ]
+    seed_map_position_config = None
+    if seed_map_target is not None:
+        maze_map = generate_seed_map(
+            seed_map_target["map_seed"],
+            seed_map_target["seed_map_spec"],
+        )
+        seed_map_position_config = build_seed_map_eval_position_config(
+            env_family,
+            seed_map_target["map_seed"],
+            maze_map,
+            seed=base_seed,
+            config=env_config,
+        )
     episodes: list[dict | None] = [None] * evaluation_config["num_episodes"]
 
     for batch_start in range(0, evaluation_config["num_episodes"], batch_size):
@@ -181,9 +220,32 @@ def _evaluate_variant_batched(
                     env_config=env_config,
                     observation_config=observation_config,
                     goal_conditioned=goal_conditioned,
+                    seed_map_target=seed_map_target,
                 )
                 episode_seed = base_seed + episode_index
-                observation, _ = env.reset(seed=episode_seed)
+                reset_options = None
+                if seed_map_target is not None:
+                    eval_position = select_seed_map_eval_position(
+                        env_family,
+                        seed_map_target["map_seed"],
+                        episode_index=episode_index,
+                        seed=base_seed,
+                        position_config=seed_map_position_config,
+                        config=env_config,
+                    )
+                    if eval_position is not None:
+                        reset_options = {
+                            "reset_cell": np.asarray(
+                                eval_position["start_cell"], dtype=np.int64
+                            ),
+                            "goal_cell": np.asarray(
+                                eval_position["goal_cell"], dtype=np.int64
+                            ),
+                        }
+                observation, _ = env.reset(
+                    seed=episode_seed,
+                    options=reset_options,
+                )
                 active.append(
                     {
                         "env": env,
@@ -196,6 +258,7 @@ def _evaluate_variant_batched(
                             variant=variant,
                             env_config=env_config,
                             base_seed=base_seed,
+                            seed_map_target=seed_map_target,
                         ),
                         "return": 0.0,
                         "length": 0,
@@ -262,6 +325,7 @@ def evaluate_rollouts(
     evaluation_config: dict,
     observation_config: dict,
     goal_conditioned: bool = False,
+    seed_map_eval: SeedMapEvalSelection | Mapping | None = None,
 ) -> dict:
     variant_metrics = {}
     all_successes = []
@@ -269,7 +333,21 @@ def evaluate_rollouts(
     all_lengths = []
     all_success_steps = []
     base_seed = evaluation_config["seed"]
+    if isinstance(seed_map_eval, SeedMapEvalSelection):
+        resolved_seed_map_eval = seed_map_eval.to_dict()
+    elif isinstance(seed_map_eval, Mapping):
+        resolved_seed_map_eval = dict(seed_map_eval)
+    else:
+        resolved_seed_map_eval = None
     for variant in variants:
+        target = (
+            seed_map_eval_target(
+                {"resolved_seed_map_eval": resolved_seed_map_eval},
+                variant,
+            )
+            if resolved_seed_map_eval is not None
+            else None
+        )
         episodes = _evaluate_variant_batched(
             algo,
             env_family=env_family,
@@ -278,6 +356,7 @@ def evaluate_rollouts(
             evaluation_config=evaluation_config,
             observation_config=observation_config,
             goal_conditioned=goal_conditioned,
+            seed_map_target=target,
         )
         successes = [float(episode["success"]) for episode in episodes]
         returns = [episode["return"] for episode in episodes]
@@ -308,6 +387,18 @@ def evaluate_rollouts(
             "unique_start_goal_count": len(unique_start_goals),
             "episodes": episodes,
         }
+        if target is not None:
+            maze_map = generate_seed_map(
+                target["map_seed"],
+                target["seed_map_spec"],
+            )
+            variant_metrics[variant]["seed_map"] = {
+                "map_seed": target["map_seed"],
+                "seed_map_spec": target["seed_map_spec"],
+                "map_hash": seed_map_hash(maze_map),
+                "reward_type": target["reward_type"],
+                "max_episode_steps": target["max_episode_steps"],
+            }
         all_successes.extend(successes)
         all_returns.extend(returns)
         all_lengths.extend(lengths)
@@ -485,6 +576,7 @@ class BaselineEpochCallback:
             reward_types=self._selections.eval_reward_types,
             evaluation_config=evaluation,
             observation_config=self._config["observation"],
+            seed_map_eval=self._selections.seed_map_eval,
         )
         result = {
             "epoch": epoch,

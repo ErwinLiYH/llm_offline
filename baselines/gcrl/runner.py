@@ -124,6 +124,50 @@ def _mean_metrics(records: list[dict[str, float]]) -> dict[str, float]:
     return {key: float(np.mean([record[key] for record in records])) for key in keys}
 
 
+def _train_map_success_macro(rollout: dict, train_variants: list[str]) -> float:
+    return float(
+        np.mean(
+            [
+                float(rollout["variants"][variant]["success_rate"])
+                for variant in train_variants
+            ]
+        )
+    )
+
+
+def _update_early_stopping(
+    state: dict,
+    *,
+    config: dict,
+    step: int,
+    train_map_success_macro: float,
+) -> dict:
+    updated = dict(state)
+    if not config["enabled"] or step < config["min_steps"]:
+        return updated
+    updated["eligible_evaluations"] += 1
+    best = updated["best_train_map_success_macro"]
+    if best is None:
+        updated["best_train_map_success_macro"] = train_map_success_macro
+        updated["best_step"] = step
+        return updated
+    if train_map_success_macro >= best + config["min_delta"]:
+        updated["best_train_map_success_macro"] = train_map_success_macro
+        updated["best_step"] = step
+        updated["stale_evaluations"] = 0
+        return updated
+    updated["stale_evaluations"] += 1
+    if updated["stale_evaluations"] >= config["patience_evaluations"]:
+        updated["stop"] = True
+        updated["stop_step"] = step
+        updated["reason"] = (
+            "train_map_success_plateau: no improvement >= "
+            f"{config['min_delta']:.6f} for "
+            f"{config['patience_evaluations']} eligible evaluations"
+        )
+    return updated
+
+
 def _checkpoint_metadata_path(path: Path) -> Path:
     return path.with_suffix(path.suffix + ".metadata.json")
 
@@ -215,10 +259,24 @@ def train_gcrl_baseline(config: dict) -> Path:
         config,
         selections.train.selected_variants,
         selections.train_reward_types,
+        seed_map_selection=selections.seed_map_train,
     )
     write_json(run_dir / "dataset_manifest.json", prepared.manifest)
     for warning in prepared.manifest["warnings"]:
         print(f"[baseline warning] {warning}")
+    train_rollout_variants = [
+        variant
+        for variant, record in prepared.manifest["variants"].items()
+        if int(record["train_episode_count"]) > 0
+    ]
+    missing_train_rollouts = sorted(
+        set(train_rollout_variants) - set(selections.eval.selected_variants)
+    )
+    if config["early_stopping"]["enabled"] and missing_train_rollouts:
+        raise ValueError(
+            "GCRL early_stopping requires every training map in the evaluation "
+            f"selection; missing={missing_train_rollouts}"
+        )
 
     algorithm_config = _agent_config(config)
     if algorithm_config["normalize_observations"]:
@@ -240,6 +298,16 @@ def train_gcrl_baseline(config: dict) -> Path:
     total_epochs = config["n_steps"] // config["n_steps_per_epoch"]
     training_history = []
     evaluation_history = []
+    early_stopping_state = {
+        "enabled": bool(config["early_stopping"]["enabled"]),
+        "eligible_evaluations": 0,
+        "best_train_map_success_macro": None,
+        "best_step": None,
+        "stale_evaluations": 0,
+        "stop": False,
+        "stop_step": None,
+        "reason": None,
+    }
     checkpoint_metadata = {
         "version": 1,
         "gcrl_goal_semantics": GCRL_GOAL_SEMANTICS,
@@ -319,23 +387,55 @@ def train_gcrl_baseline(config: dict) -> Path:
                     evaluation_config=evaluation,
                     observation_config=config["observation"],
                     goal_conditioned=True,
+                    seed_map_eval=selections.seed_map_eval,
                 )
+                train_success = None
+                if not missing_train_rollouts:
+                    train_success = _train_map_success_macro(
+                        rollout, train_rollout_variants
+                    )
+                    early_stopping_state = _update_early_stopping(
+                        early_stopping_state,
+                        config=config["early_stopping"],
+                        step=total_step,
+                        train_map_success_macro=train_success,
+                    )
                 evaluation_record = {
                     "epoch": epoch,
                     "step": total_step,
                     "validation": validation,
                     "rollout": rollout,
+                    "train_map_success_macro": train_success,
+                    "early_stopping": dict(early_stopping_state),
                 }
                 evaluation_history.append(evaluation_record)
                 append_jsonl(run_dir / "evaluation.jsonl", evaluation_record)
                 aggregate = rollout["aggregate"]
+                train_success_text = (
+                    f"{train_success:.4f}" if train_success is not None else "n/a"
+                )
                 print(
                     "[baseline:gcrl eval] "
                     f"epoch={epoch} step={total_step} "
+                    f"train_success={train_success_text} "
                     f"success={aggregate['success_rate']:.4f} "
                     f"return={aggregate['return_mean']:.4f} "
                     f"length={aggregate['length_mean']:.1f}"
                 )
+                if early_stopping_state["stop"]:
+                    # Ensure the exact evaluated policy is recoverable even when
+                    # checkpoint and evaluation cadences differ.
+                    _save_agent(
+                        run_dir / "checkpoints" / f"step_{total_step}.msgpack",
+                        agent,
+                        checkpoint_metadata,
+                    )
+                    print(
+                        "[baseline:gcrl] graceful early stop after completed "
+                        f"checkpoint evaluation at step={total_step}: "
+                        f"{early_stopping_state['reason']}"
+                    )
+                    break
 
         _save_agent(run_dir / "model.msgpack", agent, checkpoint_metadata)
 
@@ -347,9 +447,13 @@ def train_gcrl_baseline(config: dict) -> Path:
         "env_family": config["env_family"],
         "train_variants": selections.train.selected_variants,
         "eval_variants": selections.eval.selected_variants,
-        "n_steps": config["n_steps"],
+        "train_rollout_variants": train_rollout_variants,
+        "configured_n_steps": config["n_steps"],
+        "n_steps": total_step,
         "n_steps_per_epoch": config["n_steps_per_epoch"],
-        "epochs": total_epochs,
+        "epochs": len(training_history),
+        "stopped_early": bool(early_stopping_state["stop"]),
+        "early_stopping": early_stopping_state,
         "dataset": {
             "train_episode_count": prepared.manifest["train_episode_count"],
             "validation_episode_count": prepared.manifest[

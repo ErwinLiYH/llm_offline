@@ -12,8 +12,13 @@ try:
 
     from baselines.config import normalize_baseline_config
     from baselines.evaluation import _make_evaluation_env
-    from baselines.gcrl.agents import create_agent
-    from baselines.gcrl.runner import _save_agent, load_gcrl_checkpoint
+    from baselines.gcrl.agents import _safe_exp_mean, create_agent
+    from baselines.gcrl.runner import (
+        _save_agent,
+        _train_map_success_macro,
+        _update_early_stopping,
+        load_gcrl_checkpoint,
+    )
 
     _JAX_AVAILABLE = True
 except ModuleNotFoundError:
@@ -49,6 +54,62 @@ class GCRLAgentTest(unittest.TestCase):
         goals = jax.random.normal(jax.random.fold_in(key, 1), (8, 229))
         actions = jnp.tanh(jax.random.normal(jax.random.fold_in(key, 2), (8, 2)))
         return observations, goals, actions
+
+    def test_train_only_plateau_early_stopping(self):
+        rollout = {
+            "variants": {
+                "train-a": {"success_rate": 0.4},
+                "train-b": {"success_rate": 0.6},
+                "held-out": {"success_rate": 1.0},
+            }
+        }
+        self.assertEqual(
+            _train_map_success_macro(rollout, ["train-a", "train-b"]), 0.5
+        )
+        config = {
+            "enabled": True,
+            "min_steps": 100,
+            "patience_evaluations": 2,
+            "min_delta": 0.02,
+        }
+        state = {
+            "enabled": True,
+            "eligible_evaluations": 0,
+            "best_train_map_success_macro": None,
+            "best_step": None,
+            "stale_evaluations": 0,
+            "stop": False,
+            "stop_step": None,
+            "reason": None,
+        }
+        state = _update_early_stopping(
+            state,
+            config=config,
+            step=100,
+            train_map_success_macro=0.5,
+        )
+        state = _update_early_stopping(
+            state,
+            config=config,
+            step=200,
+            train_map_success_macro=0.51,
+        )
+        self.assertFalse(state["stop"])
+        state = _update_early_stopping(
+            state,
+            config=config,
+            step=300,
+            train_map_success_macro=0.49,
+        )
+        self.assertTrue(state["stop"])
+        self.assertEqual(state["stop_step"], 300)
+
+    def test_crl_exp_value_diagnostic_stays_finite(self):
+        value, clip_fraction = _safe_exp_mean(
+            jnp.asarray([0.0, 1000.0], dtype=jnp.float32)
+        )
+        self.assertTrue(bool(jnp.isfinite(value)))
+        self.assertGreater(float(clip_fraction), 0.0)
 
     def test_crl_update_predict_and_checkpoint_roundtrip(self):
         observations, goals, actions = self._base_batch()

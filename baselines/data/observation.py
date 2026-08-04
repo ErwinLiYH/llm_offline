@@ -55,8 +55,8 @@ def uses_structured_observation(observation_config: Mapping | None) -> bool:
 
 
 @lru_cache(maxsize=None)
-def family_map_shape(env_family: str) -> tuple[int, int]:
-    """Return the fixed map slot used by every variant in one family."""
+def _registered_family_map_shape(env_family: str) -> tuple[int, int]:
+    """Return the legacy fixed map slot derived from registered variants."""
     if env_family not in BASE_OBSERVATION_DIMS:
         raise ValueError(f"Unsupported env_family: {env_family!r}")
     shapes = []
@@ -66,15 +66,51 @@ def family_map_shape(env_family: str) -> tuple[int, int]:
     return max(rows for rows, _cols in shapes), max(cols for _rows, cols in shapes)
 
 
+def family_map_shape(
+    env_family: str,
+    observation_config: Mapping | None = None,
+) -> tuple[int, int]:
+    """Return the fixed map slot for one resolved baseline observation schema.
+
+    Registered-only runs preserve their historical family dimensions.  A
+    seed-map selection records a possibly larger resolved ``map_shape`` in the
+    observation config so every offline and rollout map uses one isomorphic
+    padded vector without changing old checkpoint schemas.
+    """
+
+    registered = _registered_family_map_shape(env_family)
+    configured = (observation_config or {}).get("map_shape")
+    if configured is None:
+        return registered
+    if (
+        not isinstance(configured, (list, tuple))
+        or len(configured) != 2
+        or any(
+            isinstance(item, bool) or not isinstance(item, int) or item < 1
+            for item in configured
+        )
+    ):
+        raise ValueError(
+            "observation.map_shape must be [rows, cols] with positive integers"
+        )
+    rows, cols = int(configured[0]), int(configured[1])
+    if rows < registered[0] or cols < registered[1]:
+        raise ValueError(
+            f"observation.map_shape {(rows, cols)} is smaller than registered "
+            f"{env_family} slot {registered}"
+        )
+    return rows, cols
+
+
 def observation_dim(env_family: str, observation_config: Mapping | None = None) -> int:
     if env_family not in BASE_OBSERVATION_DIMS:
         raise ValueError(f"Unsupported env_family: {env_family!r}")
     dimension = BASE_OBSERVATION_DIMS[env_family]
     if _enabled(observation_config, "include_map"):
-        rows, cols = family_map_shape(env_family)
+        rows, cols = family_map_shape(env_family, observation_config)
         dimension += rows * cols
     if _enabled(observation_config, "include_dynamic_map"):
-        rows, cols = family_map_shape(env_family)
+        rows, cols = family_map_shape(env_family, observation_config)
         dimension += rows * cols
     if _enabled(observation_config, "include_location_sensing"):
         dimension += LOCATION_SENSING_DIM
@@ -91,7 +127,7 @@ def observation_schema(env_family: str, observation_config: Mapping | None = Non
     )
     components = [{"name": "base", "dimension": BASE_OBSERVATION_DIMS[env_family]}]
     if _enabled(observation_config, "include_map"):
-        rows, cols = family_map_shape(env_family)
+        rows, cols = family_map_shape(env_family, observation_config)
         components.append(
             {
                 "name": "map",
@@ -102,7 +138,7 @@ def observation_schema(env_family: str, observation_config: Mapping | None = Non
             }
         )
     if _enabled(observation_config, "include_dynamic_map"):
-        rows, cols = family_map_shape(env_family)
+        rows, cols = family_map_shape(env_family, observation_config)
         components.append(
             {
                 "name": "dynamic_map",
@@ -155,10 +191,10 @@ def goal_conditioned_observation_dims(
         raise ValueError(f"Unsupported env_family: {env_family!r}")
     state_dim = GOAL_CONDITIONED_STATE_DIMS[env_family]
     if _enabled(observation_config, "include_map"):
-        rows, cols = family_map_shape(env_family)
+        rows, cols = family_map_shape(env_family, observation_config)
         state_dim += rows * cols
     if _enabled(observation_config, "include_dynamic_map"):
-        rows, cols = family_map_shape(env_family)
+        rows, cols = family_map_shape(env_family, observation_config)
         state_dim += rows * cols
     if _enabled(observation_config, "include_location_sensing"):
         state_dim += 2
@@ -186,7 +222,7 @@ def goal_conditioned_observation_schema(
         }
     ]
     if _enabled(observation_config, "include_map"):
-        rows, cols = family_map_shape(env_family)
+        rows, cols = family_map_shape(env_family, observation_config)
         components.append(
             {
                 "name": "map",
@@ -197,7 +233,7 @@ def goal_conditioned_observation_schema(
             }
         )
     if _enabled(observation_config, "include_dynamic_map"):
-        rows, cols = family_map_shape(env_family)
+        rows, cols = family_map_shape(env_family, observation_config)
         components.append(
             {
                 "name": "dynamic_map",
@@ -309,8 +345,9 @@ def _map_features(
     *,
     env_family: str,
     leading_shape: tuple[int, ...],
+    observation_config: Mapping | None = None,
 ) -> np.ndarray:
-    target_rows, target_cols = family_map_shape(env_family)
+    target_rows, target_cols = family_map_shape(env_family, observation_config)
     rows = len(maze_map)
     cols = len(maze_map[0]) if maze_map else 0
     if rows < 1 or cols < 1 or any(len(row) != cols for row in maze_map):
@@ -339,6 +376,7 @@ def _dynamic_map_features(
     env_family: str,
     position_cell: np.ndarray,
     goal_cell: np.ndarray,
+    observation_config: Mapping | None = None,
 ) -> np.ndarray:
     """Build padded C/G/S maps for arbitrary leading batch dimensions."""
     position_cell = np.asarray(position_cell, dtype=np.int64)
@@ -351,11 +389,12 @@ def _dynamic_map_features(
             maze_map,
             env_family=env_family,
             leading_shape=leading_shape,
+            observation_config=observation_config,
         ),
         dtype=np.float32,
         copy=True,
     )
-    target_rows, target_cols = family_map_shape(env_family)
+    target_rows, target_cols = family_map_shape(env_family, observation_config)
     position_indices = position_cell[..., 0] * target_cols + position_cell[..., 1]
     goal_indices = goal_cell[..., 0] * target_cols + goal_cell[..., 1]
     if (
@@ -394,7 +433,7 @@ def gcrl_dynamic_map_indices(
         observation_config=observation_config,
     )
     sensing = compute_sensing_arrays(position, goal, meta)
-    _rows, target_cols = family_map_shape(env_family)
+    _rows, target_cols = family_map_shape(env_family, observation_config)
     position_cell = np.asarray(sensing["position_cell"], dtype=np.int64)
     goal_cell = np.asarray(sensing["goal_cell"], dtype=np.int64)
     return (
@@ -442,6 +481,7 @@ def vectorize_observation(
                     meta["maze_map"],
                     env_family=env_family,
                     leading_shape=vector.shape[:-1],
+                    observation_config=config,
                 )
             )
         if _enabled(config, "include_dynamic_map"):
@@ -452,6 +492,7 @@ def vectorize_observation(
                     env_family=env_family,
                     position_cell=sensing["position_cell"],
                     goal_cell=sensing["goal_cell"],
+                    observation_config=config,
                 )
             )
         if _enabled(config, "include_location_sensing") or _enabled(
@@ -519,6 +560,7 @@ def vectorize_gcrl_state_observation(
                     meta["maze_map"],
                     env_family=env_family,
                     leading_shape=state.shape[:-1],
+                    observation_config=config,
                 )
             )
         sensing = None
@@ -530,6 +572,7 @@ def vectorize_gcrl_state_observation(
                     env_family=env_family,
                     position_cell=sensing["position_cell"],
                     goal_cell=sensing["goal_cell"],
+                    observation_config=config,
                 )
             )
         if _enabled(config, "include_location_sensing") or _enabled(
