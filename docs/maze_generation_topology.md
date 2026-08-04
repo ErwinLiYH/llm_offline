@@ -317,8 +317,9 @@ sample_weight = 1.0 + hard_sample_alpha * rank_score
 difficulty sorting, and `--hard-sample-top-n N` then keeps the top N hardest
 eligible pairs before rank scores and sampling weights are assigned. Thus an
 overlong pair in the original top N is skipped and replaced by the next
-eligible pair below it in the full ranking. AntMaze defaults to `L=25`; `L=0`
-disables the guard. `--hard-sample-top-n 0` keeps every eligible pair.
+eligible pair below it in the full ranking. PointMaze defaults to `L=40` and
+AntMaze defaults to `L=25`; `L=0` disables the guard.
+`--hard-sample-top-n 0` keeps every eligible pair.
 
 `--hard-sample-alpha 0` is uniform over reachable pairs. `alpha=1` makes the
 highest-ranked pair twice as likely as the lowest-ranked pair; `alpha=0.5`
@@ -360,6 +361,7 @@ sbatch sbatch/dataGen.ant.slurm
 sbatch sbatch/dataGen.ant.hard.slurm
 ```
 
+`sbatch/dataGen.point.hard.slurm` defaults `HARD_SAMPLE_MAX_PATH_LEN=40`.
 `sbatch/dataGen.ant.hard.slurm` covers `local-layout-01..09` as an array job and
 defaults to `TARGET_EPISODES=2000`, `MIN_SUCCESS_RATE=1.0`, `HARD_RETRY=5`,
 `HARD_SAMPLE_ALPHA=1.0`, `HARD_SAMPLE_TOP_N=400`, and

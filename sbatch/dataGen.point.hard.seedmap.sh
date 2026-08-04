@@ -22,6 +22,7 @@ POST_SUCCESS_HOLD_NOISE_STD=${POST_SUCCESS_HOLD_NOISE_STD:-0.0}
 HARD_RETRY=${HARD_RETRY:-5}
 HARD_SAMPLE_ALPHA=${HARD_SAMPLE_ALPHA:-0.0}
 HARD_SAMPLE_TOP_N=${HARD_SAMPLE_TOP_N:-200}
+HARD_SAMPLE_MAX_PATH_LEN=${HARD_SAMPLE_MAX_PATH_LEN:-40}
 OVERWRITE=${OVERWRITE:-0}
 
 EXTRA_ARGS=()
@@ -56,4 +57,5 @@ python local_pointmaze_gen.py \
     --hard-retry "${HARD_RETRY}" \
     --hard-sample-alpha "${HARD_SAMPLE_ALPHA}" \
     --hard-sample-top-n "${HARD_SAMPLE_TOP_N}" \
+    --hard-sample-max-path-len "${HARD_SAMPLE_MAX_PATH_LEN}" \
     "${EXTRA_ARGS[@]}"

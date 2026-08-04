@@ -34,6 +34,7 @@ POST_SUCCESS_HOLD_NOISE_STD=${POST_SUCCESS_HOLD_NOISE_STD:-0.0}
 HARD_RETRY=${HARD_RETRY:-5}
 HARD_SAMPLE_ALPHA=${HARD_SAMPLE_ALPHA:-0.0}
 HARD_SAMPLE_TOP_N=${HARD_SAMPLE_TOP_N:-200}
+HARD_SAMPLE_MAX_PATH_LEN=${HARD_SAMPLE_MAX_PATH_LEN:-40}
 OVERWRITE=${OVERWRITE:-0}
 
 EXTRA_ARGS=()
@@ -82,6 +83,7 @@ echo "Post-success hold noise std: ${POST_SUCCESS_HOLD_NOISE_STD}"
 echo "Hard retry: ${HARD_RETRY}"
 echo "Hard sample alpha: ${HARD_SAMPLE_ALPHA}"
 echo "Hard sample top N: ${HARD_SAMPLE_TOP_N}"
+echo "Hard sample max path length: ${HARD_SAMPLE_MAX_PATH_LEN}"
 echo "Overwrite existing corpus: ${OVERWRITE}"
 
 "${CONDA_BIN}" run --no-capture-output -n "${ENV_NAME}" \
@@ -103,6 +105,7 @@ echo "Overwrite existing corpus: ${OVERWRITE}"
     --hard-retry "${HARD_RETRY}" \
     --hard-sample-alpha "${HARD_SAMPLE_ALPHA}" \
     --hard-sample-top-n "${HARD_SAMPLE_TOP_N}" \
+    --hard-sample-max-path-len "${HARD_SAMPLE_MAX_PATH_LEN}" \
     "${EXTRA_ARGS[@]}"
 
 echo "Job ${SLURM_JOB_ID} finished at $(date --iso-8601=seconds)"

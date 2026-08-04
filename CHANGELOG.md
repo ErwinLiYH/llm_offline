@@ -1797,3 +1797,14 @@ type: project
 - GCRL state/goal 使用相同的动态图 component 顺序；relabel 后的 goal 逐元素复用目标 state 原有 dmap，不根据当前 state 与 relabel target 重新计算 pair-conditioned map
 - GCRL 数据按 variant 仅保存一次静态底图，每个 state 只保存 current 与环境原始 desired-goal 的 cell index；采样时恢复完整 dmap，normalizer 直接从紧凑索引计算精确一阶、二阶统计，避免 AntMaze 大语料常驻重复地图
 - observation schema 记录动态图 shape、flatten 顺序、padding、状态码和 goal 语义；旧 d3rlpy run 缺少 `include_dynamic_map` 时按等价 `false` 处理，启用动态图的 checkpoint 仍按不同 observation schema 拒绝混接
+
+## PointMaze hard-sample path-length guard（2026-08-04）
+
+- `local_pointmaze_gen.py` 新增 `--hard-sample-max-path-len`，默认限制 shortest `path_len <= 40`；`path_len` 按 `len(path) - 1` 计算，即网格移动次数，设为 `0` 可关闭限制
+- 与 AntMaze 保持相同过滤顺序：difficulty 仍在完整 reachable pair space 上计算并排序，先跳过超长 pair，再执行 `--hard-sample-top-n`，因此较低排名的 eligible pair 会继续补足目标池
+- 固定-layout 与 seed-map PointMaze hard-sample 均应用该限制；`generation_summary.json` 和 aggregate corpus immutable `collection_config` 记录实际值
+- `dataGen.point.hard.{sh,slurm}` 与 `dataGen.point.hard.seedmap.{sh,slurm}` 新增 `HARD_SAMPLE_MAX_PATH_LEN`，四个入口默认均为 `40`
+
+**验证：**
+- PointMaze 定向测试 7 项通过；共享 AntMaze/seed-map corpus 回归 41 项通过，相关 Python 编译、四个 shell 入口 `bash -n` 和 `git diff --check` 均通过
+- 穷举程序化 PointMaze seed 1–1000：默认过滤后每张地图的 hard top-200 均可补足 200 个 pair，所有池的最大 `path_len` 均不超过 40

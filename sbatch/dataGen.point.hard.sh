@@ -17,6 +17,7 @@ POST_SUCCESS_HOLD_NOISE_STD=${POST_SUCCESS_HOLD_NOISE_STD:-}
 HARD_RETRY=${HARD_RETRY:-5}
 HARD_SAMPLE_ALPHA=${HARD_SAMPLE_ALPHA:-1.0}
 HARD_SAMPLE_TOP_N=${HARD_SAMPLE_TOP_N:-400}
+HARD_SAMPLE_MAX_PATH_LEN=${HARD_SAMPLE_MAX_PATH_LEN:-40}
 OVERWRITE=${OVERWRITE:-1}
 VARIANTS=${VARIANTS:-"local-layoutV2-01 local-layoutV2-02 local-layoutV2-03 local-layoutV2-04 local-layoutV2-05 local-layoutV2-06 local-layoutV2-07 local-layoutV2-08 local-layoutV2-09 local-layoutV2-10 local-layoutV2-11 local-layoutV2-12"}
 
@@ -49,4 +50,5 @@ python local_pointmaze_gen.py \
     --hard-retry "${HARD_RETRY}" \
     --hard-sample-alpha "${HARD_SAMPLE_ALPHA}" \
     --hard-sample-top-n "${HARD_SAMPLE_TOP_N}" \
+    --hard-sample-max-path-len "${HARD_SAMPLE_MAX_PATH_LEN}" \
     "${EXTRA_ARGS[@]}"

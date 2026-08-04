@@ -176,8 +176,9 @@ AntMaze dataset generation.
 preserving the difficulty order. `--hard-sample-top-n N` then keeps the top N
 hardest eligible pairs. This is equivalent to scanning downward from the
 hardest pair, skipping overlong pairs, and continuing past the original top N
-until N eligible pairs have been collected. AntMaze defaults to `L=25`; `L=0`
-disables the path-length guard. `N=0` keeps every eligible reachable pair.
+until N eligible pairs have been collected. PointMaze defaults to `L=40` and
+AntMaze defaults to `L=25`; `L=0` disables the path-length guard. `N=0` keeps
+every eligible reachable pair.
 
 ## Success-Rate Filtering
 

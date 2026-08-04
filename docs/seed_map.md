@@ -55,7 +55,7 @@ sbatch sbatch/dataGen.point.hard.seedmap.slurm
 sbatch sbatch/dataGen.ant.hard.seedmap.slurm
 ```
 
-两者默认生成 `[0, 100)`、每个 map seed 50 条成功轨迹，并从最难的 200 个 reachable start/goal pair 中均匀随机采样（`HARD_SAMPLE_ALPHA=0.0`）。AntMaze 额外默认 `HARD_SAMPLE_MAX_PATH_LEN=25`：先按原 difficulty 排序跳过 `path_len > 25` 的 pair，再继续向较低排名扫描直至补足 200 个 eligible pair；设为 `0` 可关闭该保险。PointMaze 默认最终尺寸为 `9/11/13/15`，AntMaze 为 `9/11/13`。六个 DataGen Slurm 脚本都把 `DATASET_ROOT` 默认设为 HPC 环境变量 `${PROJECTDIR}/local_datasets`；脚本内部的 `PROJECT_ROOT` 仅用于仓库代码路径。seed-map resolver 会继续在该 base root 下加入 family/version/size/reward namespace，避免 PointMaze 和 AntMaze 的同名 `0-100-50` corpus 冲突。脚本默认续写已有 corpus；设置 `OVERWRITE=1` 才会重建。可通过 `SEED_MAP_START`、`SEED_MAP_END`、`TRAJECTORIES_PER_SEED`、`SEED_MAP_MIN_SIZE`、`SEED_MAP_MAX_SIZE`、`MAX_EPISODE_STEPS`、`HARD_SAMPLE_TOP_N`、`HARD_SAMPLE_ALPHA`、`HARD_SAMPLE_MAX_PATH_LEN`、`NUM_WORKERS`、`SEED`、`REWARD_TYPE`、`DATASET_ROOT` 和 `TEMPORARY_DATASET_ROOT` 等环境变量覆盖。
+两者默认生成 `[0, 100)`、每个 map seed 50 条成功轨迹，并从最难的 200 个 reachable start/goal pair 中均匀随机采样（`HARD_SAMPLE_ALPHA=0.0`）。PointMaze/AntMaze 分别默认 `HARD_SAMPLE_MAX_PATH_LEN=40/25`：先在完整 reachable pair space 上计算并排序原 difficulty，跳过超过 family 限制的 pair，再继续向较低排名扫描直至补足 200 个 eligible pair；设为 `0` 可关闭该保险。`path_len` 是 `len(path)-1`，即网格移动次数。PointMaze 默认最终尺寸为 `9/11/13/15`，AntMaze 为 `9/11/13`。六个 DataGen Slurm 脚本都把 `DATASET_ROOT` 默认设为 HPC 环境变量 `${PROJECTDIR}/local_datasets`；脚本内部的 `PROJECT_ROOT` 仅用于仓库代码路径。seed-map resolver 会继续在该 base root 下加入 family/version/size/reward namespace，避免 PointMaze 和 AntMaze 的同名 `0-100-50` corpus 冲突。脚本默认续写已有 corpus；设置 `OVERWRITE=1` 才会重建。可通过 `SEED_MAP_START`、`SEED_MAP_END`、`TRAJECTORIES_PER_SEED`、`SEED_MAP_MIN_SIZE`、`SEED_MAP_MAX_SIZE`、`MAX_EPISODE_STEPS`、`HARD_SAMPLE_TOP_N`、`HARD_SAMPLE_ALPHA`、`HARD_SAMPLE_MAX_PATH_LEN`、`NUM_WORKERS`、`SEED`、`REWARD_TYPE`、`DATASET_ROOT` 和 `TEMPORARY_DATASET_ROOT` 等环境变量覆盖。
 
 不通过 Slurm 时可运行同名 `.sh`：
 
@@ -69,7 +69,7 @@ bash sbatch/dataGen.ant.hard.seedmap.sh
 ```bash
 SEED_MAP_START=1 SEED_MAP_END=501 TRAJECTORIES_PER_SEED=50 \
 SEED_MAP_MIN_SIZE=9 SEED_MAP_MAX_SIZE=15 SEED=42 \
-MAX_EPISODE_STEPS=1350 HARD_SAMPLE_TOP_N=0 \
+MAX_EPISODE_STEPS=1350 HARD_SAMPLE_TOP_N=0 HARD_SAMPLE_MAX_PATH_LEN=40 \
 bash sbatch/dataGen.point.hard.seedmap.sh
 
 SEED_MAP_START=1 SEED_MAP_END=501 TRAJECTORIES_PER_SEED=50 \
@@ -80,7 +80,11 @@ bash sbatch/dataGen.ant.hard.seedmap.sh
 
 范围是半开区间；上例分别生成 seed 1–500。PointMaze 的
 `HARD_SAMPLE_TOP_N=0` 表示保留 explicit reachable-pair reset 与成功过滤，但从
-全部 reachable pair 均匀抽样，而不是只使用 hardest top-N。
+所有 `path_len <= HARD_SAMPLE_MAX_PATH_LEN` 的 reachable pair 均匀抽样，而不是
+只使用 hardest top-N；同时把 `HARD_SAMPLE_MAX_PATH_LEN=0` 才会恢复完整 pair space。
+该值属于 aggregate corpus 的 immutable `collection_config`；旧的 incomplete
+PointMaze corpus 若没有此字段，必须使用新输出路径或 `OVERWRITE=1` 重建，不能把
+两种 pair 分布续写进同一 corpus。
 
 本地 shell 入口直接运行 `python local_*_gen.py`，要求用户提前激活好生成环境，不调用 Conda 或 Slurm。生成参数默认值与对应 `.slurm` 一致，唯一差异是 `DATASET_ROOT` 默认留空、不传 `--dataset-root`，由 Python 生成器使用自身的 derived default path；显式设置 `DATASET_ROOT=/path` 时仍会覆盖。
 
