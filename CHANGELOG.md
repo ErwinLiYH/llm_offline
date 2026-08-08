@@ -1808,3 +1808,14 @@ type: project
 **验证：**
 - PointMaze 定向测试 7 项通过；共享 AntMaze/seed-map corpus 回归 41 项通过，相关 Python 编译、四个 shell 入口 `bash -n` 和 `git diff --check` 均通过
 - 穷举程序化 PointMaze seed 1–1000：默认过滤后每张地图的 hard top-200 均可补足 200 个 pair，所有池的最大 `path_len` 均不超过 40
+
+## LLM seed-map eval episode-count unification（2026-08-08）
+
+- `seed_map_eval` 不再定义独立的 `episodes_per_seed`；该 section 只负责选择或构造程序化地图，旧字段会作为未知配置明确报错
+- training-time seed-map eval 保留顶层 `eval_num_episodes`，standalone seed-map eval 保留顶层 `num_episodes`，与普通 variant rollout 使用相同的 episode-count 配置；`eval_num_episodes: 0` 不再被 seed-map 解析覆盖，可可靠关闭训练期环境 rollout
+- episode 数从 `SeedMapEvalSelection`、resolved metadata、selection hash/tag 和单地图 target provenance 中移除，使地图选择身份不再随 rollout 次数变化
+- 更新 LLM 配置语义文档与回归测试，覆盖训练 episode 数 `0`/正数保持、standalone episode 数保持，以及旧嵌套字段拒绝
+
+**验证：**
+- LLM 配置加载检查确认 PointMaze/AntMaze seedmap32 训练栈均保持 `eval_num_episodes: 0`，standalone eval seed/train-seed 栈分别保持 `num_episodes: 4/25`
+- 相关训练、standalone eval、seed-map resolver 和配置加载测试共 47 项通过，并通过 Python 编译与 `git diff --check`

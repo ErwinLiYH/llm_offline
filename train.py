@@ -425,7 +425,6 @@ def resolve_epoch_eval_selection(
             default_reward_type=config.get("reward_type"),
         )
         config["resolved_seed_map_eval"] = seed_map_eval.to_dict()
-        config["eval_num_episodes"] = seed_map_eval.episodes_per_seed
         return VariantSelection(
             mode="seed_map",
             configured_variants=[],

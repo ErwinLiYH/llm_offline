@@ -35,6 +35,30 @@ class DummyEncoding(dict):
     __getattr__ = dict.__getitem__
 
 
+class SeedMapStandaloneEvalSelectionTest(unittest.TestCase):
+    def test_seed_map_selection_preserves_standard_num_episodes(self):
+        config = {
+            "env_family": "pointmaze",
+            "num_episodes": 4,
+            "seed_map_eval": {
+                "enabled": True,
+                "seed_ranges": [[1001, 1003]],
+                "seed_count": 2,
+                "seed_map_size_mode": "fixed",
+                "seed_map_fixed_rows": 5,
+                "seed_map_fixed_cols": 5,
+            },
+        }
+
+        selection = evaluate.resolve_standalone_eval_selection(config)
+
+        self.assertEqual(config["num_episodes"], 4)
+        self.assertEqual(
+            selection.selected_variants,
+            ["seed-map-1001", "seed-map-1002"],
+        )
+
+
 class DummyTokenizer:
     def __init__(self):
         self.name_or_path = "dummy"

@@ -18,7 +18,6 @@ class SeedMapEvalTests(unittest.TestCase):
             "enabled": True,
             "seed_ranges": [[0, 10], [20, 25]],
             "seed_count": 4,
-            "episodes_per_seed": 3,
             "selection_seed": 7,
             "seed_map_size_mode": "random",
             "seed_map_min_size": 5,
@@ -42,7 +41,23 @@ class SeedMapEvalTests(unittest.TestCase):
             first.selected_variants[0],
         )
         self.assertEqual(target["map_seed"], first.selected_seeds[0])
-        self.assertEqual(target["episodes_per_seed"], 3)
+        self.assertNotIn("episodes_per_seed", target)
+        self.assertNotIn("episodes_per_seed", first.to_dict())
+        self.assertRegex(first.selection_tag, r"^seed-map-eval-n4-[0-9a-f]{10}$")
+
+    def test_selection_rejects_legacy_episode_count(self):
+        with self.assertRaisesRegex(ValueError, "Unknown seed_map_eval fields"):
+            resolve_seed_map_eval_selection(
+                {
+                    "enabled": True,
+                    "seed_ranges": [[0, 1]],
+                    "episodes_per_seed": 3,
+                    "seed_map_size_mode": "fixed",
+                    "seed_map_fixed_rows": 5,
+                    "seed_map_fixed_cols": 5,
+                },
+                env_family="pointmaze",
+            )
 
     def test_eval_defaults_to_random_start_goal_for_antmaze(self):
         self.assertEqual(

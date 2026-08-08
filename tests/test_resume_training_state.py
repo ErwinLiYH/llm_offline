@@ -22,6 +22,7 @@ from train import (
 )
 from utils.distributed import DistributedContext
 from utils.lr_scheduler import lr_scale_for_step
+from utils.variant_selection import VariantSelection
 
 
 class ResumeEpochPlanTest(unittest.TestCase):
@@ -70,6 +71,42 @@ class ResumeEpochPlanTest(unittest.TestCase):
         self.assertEqual(_completed_optimizer_steps_in_epoch(100, 8, 100), 13)
         with self.assertRaisesRegex(ValueError, "mid gradient-accumulation"):
             _completed_optimizer_steps_in_epoch(42, 8, 100)
+
+
+class SeedMapTrainingEvalSelectionTest(unittest.TestCase):
+    def test_seed_map_selection_preserves_training_episode_count(self):
+        train_selection = VariantSelection(
+            mode="seed_map",
+            configured_variants=[],
+            selected_variants=["seed-map-source"],
+            selection_tag="seed-map-source",
+            full_selection_tag="seed-map-source",
+        )
+        for episode_count in (0, 7):
+            with self.subTest(eval_num_episodes=episode_count):
+                config = {
+                    "env_family": "pointmaze",
+                    "eval_num_episodes": episode_count,
+                    "seed_map_eval": {
+                        "enabled": True,
+                        "seed_ranges": [[1001, 1003]],
+                        "seed_count": 2,
+                        "seed_map_size_mode": "fixed",
+                        "seed_map_fixed_rows": 5,
+                        "seed_map_fixed_cols": 5,
+                    },
+                }
+                selection = train.resolve_epoch_eval_selection(
+                    config,
+                    available_variants=[],
+                    train_selection=train_selection,
+                )
+
+                self.assertEqual(config["eval_num_episodes"], episode_count)
+                self.assertEqual(
+                    selection.selected_variants,
+                    ["seed-map-1001", "seed-map-1002"],
+                )
 
 
 class ResumeCompatibilityTest(unittest.TestCase):

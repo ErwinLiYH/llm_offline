@@ -137,29 +137,34 @@ tokenized cache 签名包含 corpus manifest/content hash、地图/轨迹选择 
 ## 评估选择
 
 `seed_map_eval` 独立于训练数据源，并优先于固定 `eval_mode` / `eval_variants`（standalone eval 中优先于 `variant` / `variants`）。
+它只负责选择和构造地图，不单独配置 rollout episode 数。训练期评估沿用顶层
+`eval_num_episodes`，standalone eval 沿用顶层 `num_episodes`，baseline 沿用
+`evaluation.num_episodes`；因此这些入口与普通地图使用完全相同的 episode 数配置。
 
 评估 corpus 内地图：
 
 ```yaml
+num_episodes: 5  # standalone eval；训练配置对应 eval_num_episodes
+
 seed_map_eval:
   enabled: true
   dataset_path: local_datasets/pointmaze-seed-map-v1-random-size5-15-sparse/0-1000-10
   seed_ranges:
     - [900, 1000]
   seed_count: 20
-  episodes_per_seed: 5
   selection_seed: 7
 ```
 
 评估未生成离线数据的新地图时不需要 `dataset_path`，但必须给出 range 和生成器配置：
 
 ```yaml
+num_episodes: 5  # standalone eval；训练配置对应 eval_num_episodes
+
 seed_map_eval:
   enabled: true
   seed_ranges:
     - [1000, 2000]
   seed_count: 100
-  episodes_per_seed: 5
   selection_seed: 7
   reward_type: sparse
 
@@ -171,9 +176,9 @@ seed_map_eval:
 
 每个 map seed 作为一个 synthetic eval variant，可继续使用现有的多 GPU variant 分配和每个 variant 内的 rollout workers。
 
-`baseline_train.py` 也使用相同的 synthetic variant 和 fresh-map 构造路径；
-`episodes_per_seed` 会覆盖 baseline 的 `evaluation.num_episodes`。baseline
-resolved config 会根据 train/eval generator spec 固化 `observation.map_shape`，
+`baseline_train.py` 也使用相同的 synthetic variant 和 fresh-map 构造路径，
+并直接使用 `evaluation.num_episodes`。baseline resolved config 会根据
+train/eval generator spec 固化 `observation.map_shape`，
 因此 AntMaze 13×13 seed map 与旧 12×16 registered-map slot 会统一成 13×16，
 离线 dmap 与 rollout dmap 的维度保持一致。baseline 的逐 variant rollout
 结果还会记录 map seed、generator spec、实际 topology hash、reward type 和

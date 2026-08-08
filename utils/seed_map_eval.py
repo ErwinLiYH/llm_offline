@@ -36,7 +36,6 @@ def seed_map_eval_variant(map_seed: int) -> str:
 class SeedMapEvalSelection:
     seed_ranges: tuple[tuple[int, int], ...]
     seed_count: int
-    episodes_per_seed: int
     selection_seed: int
     selected_seeds: tuple[int, ...]
     seed_map_spec: SeedMapSpec
@@ -51,16 +50,12 @@ class SeedMapEvalSelection:
 
     @property
     def selection_tag(self) -> str:
-        return (
-            f"seed-map-eval-n{self.seed_count}-m{self.episodes_per_seed}-"
-            f"{self.selection_hash[:10]}"
-        )
+        return f"seed-map-eval-n{self.seed_count}-{self.selection_hash[:10]}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "seed_ranges": [list(item) for item in self.seed_ranges],
             "seed_count": self.seed_count,
-            "episodes_per_seed": self.episodes_per_seed,
             "selection_seed": self.selection_seed,
             "selected_seeds": list(self.selected_seeds),
             "selected_variants": self.selected_variants,
@@ -114,7 +109,6 @@ def resolve_seed_map_eval_selection(
         "dataset_path",
         "seed_ranges",
         "seed_count",
-        "episodes_per_seed",
         "selection_seed",
         "reward_type",
         "max_episode_steps",
@@ -244,11 +238,6 @@ def resolve_seed_map_eval_selection(
             f"seed_map_eval.seed_count={seed_count} exceeds "
             f"{len(allowed_seeds)} seeds in seed_ranges"
         )
-    episodes_per_seed = _require_int(
-        raw.get("episodes_per_seed"),
-        field="seed_map_eval.episodes_per_seed",
-        minimum=1,
-    )
     selection_seed = _require_int(
         raw.get("selection_seed", 0),
         field="seed_map_eval.selection_seed",
@@ -279,7 +268,6 @@ def resolve_seed_map_eval_selection(
         "env_family": env_family,
         "seed_ranges": ranges,
         "seed_count": seed_count,
-        "episodes_per_seed": episodes_per_seed,
         "selection_seed": selection_seed,
         "selected_seeds": selected_seeds,
         "seed_map_spec": seed_map_spec.to_dict(),
@@ -301,7 +289,6 @@ def resolve_seed_map_eval_selection(
     return SeedMapEvalSelection(
         seed_ranges=ranges,
         seed_count=seed_count,
-        episodes_per_seed=episodes_per_seed,
         selection_seed=selection_seed,
         selected_seeds=selected_seeds,
         seed_map_spec=seed_map_spec,
@@ -324,7 +311,6 @@ def seed_map_eval_target(config: Mapping[str, Any], variant: str) -> dict[str, A
     return {
         "variant": variant,
         "map_seed": int(selected_seeds[index]),
-        "episodes_per_seed": int(resolved["episodes_per_seed"]),
         "seed_map_spec": dict(resolved["seed_map_spec"]),
         "reward_type": str(resolved["reward_type"]),
         "max_episode_steps": resolved.get("max_episode_steps"),

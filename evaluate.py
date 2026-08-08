@@ -126,7 +126,6 @@ def resolve_standalone_eval_selection(config: dict):
             default_reward_type=config.get("reward_type"),
         )
         config["resolved_seed_map_eval"] = seed_map_eval.to_dict()
-        config["num_episodes"] = seed_map_eval.episodes_per_seed
         selected_variants = seed_map_eval.selected_variants
         internal_subset = config.pop("_seed_map_eval_variant_subset", None)
         if internal_subset is not None:
