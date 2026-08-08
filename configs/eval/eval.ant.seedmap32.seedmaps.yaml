@@ -1,0 +1,24 @@
+# AntMaze seedmap32 evaluation on 50 freshly generated maps.
+# Layer after configs/eval/eval.ant.1.0.0.yaml; override model_path from the CLI.
+
+config_delete_keys:
+  - model_path
+  - eval_mode
+  - variants
+
+prompt_templete_index: ["dmap-minimal"]
+num_episodes: 4
+
+seed_map_eval:
+  enabled: true
+  seed_ranges:
+    - [1001, 1051]
+  seed_count: 50
+  selection_seed: 64
+  reward_type: sparse
+  seed_map_version: v1
+  seed_map_size_mode: random
+  seed_map_min_size: 9
+  seed_map_max_size: 13
+
+eval_start_goal_mode: random-start-goal

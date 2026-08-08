@@ -1,0 +1,22 @@
+# AntMaze seedmap32 evaluation on the registered benchmark map set.
+# medium/large use the diverse variants trained by the scale16 experiment;
+# ultra is the registered experimental extension requested for this evaluation.
+# Layer after configs/eval/eval.ant.1.0.0.yaml; override model_path from the CLI.
+
+# Keep this override safe even if a seed-map eval section was merged earlier.
+config_delete_keys:
+  - model_path
+  - seed_map_eval
+  - resolved_seed_map_eval
+
+prompt_templete_index: ["dmap-minimal"]
+
+eval_mode: all
+variants:
+  - umaze-diverse
+  - medium-diverse
+  - large-diverse
+  - ultra
+num_episodes: 100
+
+eval_start_goal_mode: fix-start-goal

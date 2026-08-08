@@ -1,0 +1,20 @@
+# PointMaze seedmap32 evaluation on the four official sparse maps.
+# Layer after configs/eval/eval.point.2.0.0.yaml; override model_path from the CLI.
+
+# Keep this override safe even if a seed-map eval section was merged earlier.
+config_delete_keys:
+  - model_path
+  - seed_map_eval
+  - resolved_seed_map_eval
+
+prompt_templete_index: ["dmap-minimal"]
+
+eval_mode: all
+variants:
+  - open
+  - umaze
+  - medium
+  - large
+num_episodes: 100
+
+eval_start_goal_mode: random-start-goal
