@@ -350,7 +350,6 @@ class EvaluationRecordTest(unittest.TestCase):
                 "enabled": True,
                 "seed_ranges": [[1001, 1002]],
                 "seed_count": 1,
-                "episodes_per_seed": 1,
                 "seed_map_size_mode": "fixed",
                 "seed_map_fixed_rows": 7,
                 "seed_map_fixed_cols": 7,

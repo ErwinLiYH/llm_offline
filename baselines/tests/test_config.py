@@ -37,7 +37,6 @@ class BaselineConfigTest(unittest.TestCase):
             "enabled": True,
             "seed_ranges": [[1, 101], [1001, 1051]],
             "seed_count": 150,
-            "episodes_per_seed": 1,
             "seed_map_size_mode": "random",
             "seed_map_min_size": 9,
             "seed_map_max_size": 13,

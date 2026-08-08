@@ -61,6 +61,7 @@ class RegistryTest(unittest.TestCase):
                 train_variants=["umaze"],
                 eval_mode="single",
                 eval_variants=["umaze"],
+                evaluation={"num_episodes": 7},
                 seed_map_train={
                     "enabled": True,
                     "dataset_path": str(corpus),
@@ -74,7 +75,6 @@ class RegistryTest(unittest.TestCase):
                     "enabled": True,
                     "seed_ranges": [[1, 3], [1001, 1003]],
                     "seed_count": 4,
-                    "episodes_per_seed": 1,
                     "seed_map_size_mode": "fixed",
                     "seed_map_fixed_rows": 7,
                     "seed_map_fixed_cols": 7,
@@ -90,7 +90,7 @@ class RegistryTest(unittest.TestCase):
             selections.eval.selected_variants,
             ["seed-map-1", "seed-map-2", "seed-map-1001", "seed-map-1002"],
         )
-        self.assertEqual(config["evaluation"]["num_episodes"], 1)
+        self.assertEqual(config["evaluation"]["num_episodes"], 7)
         self.assertEqual(config["observation"]["map_shape"], [15, 15])
         self.assertEqual(config["resolved_seed_map_train"]["seed_count"], 2)
         self.assertEqual(config["resolved_seed_map_eval"]["seed_count"], 4)
@@ -118,7 +118,6 @@ class RegistryTest(unittest.TestCase):
                     "enabled": True,
                     "seed_ranges": [[1001, 1003]],
                     "seed_count": 2,
-                    "episodes_per_seed": 1,
                     "seed_map_size_mode": "random",
                     "seed_map_min_size": 9,
                     "seed_map_max_size": 13,
@@ -189,7 +188,6 @@ class RegistryTest(unittest.TestCase):
                 "enabled": True,
                 "seed_ranges": [[1001, 1003]],
                 "seed_count": 2,
-                "episodes_per_seed": 1,
                 "seed_map_size_mode": "fixed",
                 "seed_map_fixed_rows": 7,
                 "seed_map_fixed_cols": 7,

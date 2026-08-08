@@ -157,7 +157,6 @@ def resolve_baseline_selections(config: dict) -> BaselineSelections:
             default_reward_type=config.get("reward_type"),
         )
         config["resolved_seed_map_eval"] = eval_seed_map.to_dict()
-        config["evaluation"]["num_episodes"] = eval_seed_map.episodes_per_seed
         eval_selection = _seed_map_variant_selection(
             eval_seed_map.selected_seeds,
             selection_tag=eval_seed_map.selection_tag,

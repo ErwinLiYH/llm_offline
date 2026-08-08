@@ -162,15 +162,17 @@ selection.
 
 An enabled `seed_map_eval` independently takes priority over
 `eval_mode`/`eval_variants`. It can inherit the generator spec from a corpus or
-generate fresh held-out maps directly from ranges; `episodes_per_seed` becomes
-the per-map rollout count.
+generate fresh held-out maps directly from ranges. The per-map rollout count
+continues to come from the ordinary `evaluation.num_episodes` setting.
 
 ```yaml
+evaluation:
+  num_episodes: 1
+
 seed_map_eval:
   enabled: true
   seed_ranges: [[1, 101], [1001, 1051]]
   seed_count: 150
-  episodes_per_seed: 1
   selection_seed: 0
   reward_type: sparse
   seed_map_version: v1
