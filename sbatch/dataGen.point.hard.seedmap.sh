@@ -17,11 +17,11 @@ NUM_WORKERS=${NUM_WORKERS:-10}
 SEED=${SEED:-42}
 REWARD_TYPE=${REWARD_TYPE:-sparse}
 MAX_EPISODE_STEPS=${MAX_EPISODE_STEPS:-}
-POST_SUCCESS_HOLD_STEPS=${POST_SUCCESS_HOLD_STEPS:-0}
-POST_SUCCESS_HOLD_NOISE_STD=${POST_SUCCESS_HOLD_NOISE_STD:-0.0}
+POST_SUCCESS_HOLD_STEPS=${POST_SUCCESS_HOLD_STEPS:-100}
+POST_SUCCESS_HOLD_NOISE_STD=${POST_SUCCESS_HOLD_NOISE_STD:-}
 HARD_RETRY=${HARD_RETRY:-5}
-HARD_SAMPLE_ALPHA=${HARD_SAMPLE_ALPHA:-0.0}
-HARD_SAMPLE_TOP_N=${HARD_SAMPLE_TOP_N:-200}
+HARD_SAMPLE_ALPHA=${HARD_SAMPLE_ALPHA:-1.0}
+HARD_SAMPLE_TOP_N=${HARD_SAMPLE_TOP_N:-400}
 HARD_SAMPLE_MAX_PATH_LEN=${HARD_SAMPLE_MAX_PATH_LEN:-40}
 OVERWRITE=${OVERWRITE:-0}
 
@@ -34,6 +34,9 @@ if [[ -n "${TEMPORARY_DATASET_ROOT}" ]]; then
 fi
 if [[ -n "${MAX_EPISODE_STEPS}" ]]; then
     EXTRA_ARGS+=(--max-episode-steps "${MAX_EPISODE_STEPS}")
+fi
+if [[ -n "${POST_SUCCESS_HOLD_NOISE_STD}" ]]; then
+    EXTRA_ARGS+=(--post-success-hold-noise-std "${POST_SUCCESS_HOLD_NOISE_STD}")
 fi
 if [[ "${OVERWRITE}" == "1" || "${OVERWRITE}" == "true" || "${OVERWRITE}" == "yes" ]]; then
     EXTRA_ARGS+=(--overwrite)
@@ -51,7 +54,6 @@ python local_pointmaze_gen.py \
     --num-workers "${NUM_WORKERS}" \
     --reward-type "${REWARD_TYPE}" \
     --post-success-hold-steps "${POST_SUCCESS_HOLD_STEPS}" \
-    --post-success-hold-noise-std "${POST_SUCCESS_HOLD_NOISE_STD}" \
     --seed "${SEED}" \
     --hard-sample \
     --hard-retry "${HARD_RETRY}" \
