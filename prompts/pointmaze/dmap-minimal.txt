@@ -1,0 +1,7 @@
+Navigate the point mass to the target goal position.
+
+Visual map (# = wall, . = open, C = current, G = goal, S = current and goal):
+{dmap}
+
+Current observation:
+{obs_text}
