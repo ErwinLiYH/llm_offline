@@ -101,6 +101,7 @@ from utils.lr_scheduler import (
     resolve_warmup_steps,
     set_optimizer_lr,
 )
+from utils.obs_tag import normalize_random_obs_tag_config
 from utils.prompt_loader import load_template_names
 from utils.resource_monitor import ResourceMonitor, resource_monitor_path
 from utils.seed_map_config import seed_map_section_enabled
@@ -625,6 +626,7 @@ def build_dataset_request(
         ),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
+        random_obs_tag=config.get("random_obs_tag", False),
         wall_sensing_version=config.get("wall_sensing_version"),
         map_sensing_boundary_risk_threshold=config.get(
             "map_sensing_boundary_risk_threshold"
@@ -1365,6 +1367,7 @@ def _build_training_eval_config(config: dict) -> dict:
         "env_kwargs": config.get("eval_env_kwargs", {"continuing_task": False}),
         "history_num": config.get("history_num", 0),
         "history_stride": config.get("history_stride", 1),
+        "random_obs_tag": config.get("random_obs_tag", False),
         "wall_sensing_version": config.get("wall_sensing_version"),
         "map_sensing_boundary_risk_threshold": config.get(
             "map_sensing_boundary_risk_threshold"
@@ -4345,6 +4348,7 @@ def main():
     config["config_sources"] = list(args.config)
     config["tokenize_only"] = bool(args.tokenize_only)
     normalize_sensing_config(config)
+    normalize_random_obs_tag_config(config)
     parallel_backend = resolve_parallel_backend(config, args.parallel_backend)
     dist_context = init_distributed_context(config, parallel_backend)
     resource_monitor = None
@@ -4508,6 +4512,10 @@ def main():
             "[train] Wall sensing: "
             f"version={config['wall_sensing_version']}, "
             f"boundary_risk_threshold={config['map_sensing_boundary_risk_threshold']}",
+        )
+        rank_zero_print(
+            dist_context,
+            f"[train] Random observation tags: enabled={config['random_obs_tag']}",
         )
         if config.get("init_from_checkpoint"):
             rank_zero_print(

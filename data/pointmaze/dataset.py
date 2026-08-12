@@ -48,6 +48,11 @@ from utils.file_progress import (
     MultiWorkerFileProgress,
     get_sub_progress_process,
 )
+from utils.obs_tag import (
+    RANDOM_OBS_TAG_SCHEMA,
+    apply_random_obs_tag_to_prompt_vars,
+    resolve_random_obs_tag,
+)
 from utils.prompt_loader import load_named_templates, load_template_names, render_template
 from utils.sensing_config import (
     apply_sensing_config_to_prompt_vars,
@@ -476,6 +481,7 @@ def _process_pointmaze_episode(payload: dict) -> list[tuple[int, dict | None, di
         payload.get("seed_map_prompt_vars", config["prompt_vars"]),
         config,
     )
+    prompt_vars = apply_random_obs_tag_to_prompt_vars(prompt_vars, config)
     include_text_records = bool(payload.get("include_text_records", False))
     worker_total = int(shared_config["worker_total"])
     split = config["split"]
@@ -1267,6 +1273,7 @@ class PointMazeBuildConfig:
     action_bin_max: float
     new_token: bool
     action_dim: int
+    random_obs_tag: bool = False
     mtp_k: int | None = None
     action_token_schema_hash: str = "text"
     progress_interval_seconds: float = 5.0
@@ -1755,6 +1762,7 @@ class PointMazeDataset(BaseOfflineDataset):
             ),
             history_num=request.history_num,
             history_stride=request.history_stride,
+            random_obs_tag=resolve_random_obs_tag(request.random_obs_tag),
             **resolve_sensing_config(
                 {
                     "wall_sensing_version": request.wall_sensing_version,
@@ -1898,6 +1906,9 @@ class PointMazeDataset(BaseOfflineDataset):
             "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
         }
+        if config.random_obs_tag:
+            payload["random_obs_tag"] = True
+            payload["random_obs_tag_schema"] = RANDOM_OBS_TAG_SCHEMA
         if config.family_data_config is not None:
             payload["family_data_config"] = config.family_data_config
         if config.episode_segments is not None:
@@ -2017,6 +2028,10 @@ class PointMazeDataset(BaseOfflineDataset):
                 meta["prompt_vars"],
                 vars(config),
             )
+        prompt_vars = apply_random_obs_tag_to_prompt_vars(
+            prompt_vars,
+            vars(config),
+        )
 
         all_episodes = selection.get("episodes")
         episode_indices = cls._selected_indices_for_config(config, selection)
@@ -2086,6 +2101,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "prompt_vars": prompt_vars,
             "history_num": config.history_num,
             "history_stride": config.history_stride,
+            "random_obs_tag": config.random_obs_tag,
             "wall_sensing_version": config.wall_sensing_version,
             "map_sensing_boundary_risk_threshold": (
                 config.map_sensing_boundary_risk_threshold
@@ -2110,6 +2126,7 @@ class PointMazeDataset(BaseOfflineDataset):
             "action_dim": config.action_dim,
             "mtp_k": config.mtp_k,
             "action_token_schema_hash": config.action_token_schema_hash,
+            "random_obs_tag": config.random_obs_tag,
             "wall_sensing_version": config.wall_sensing_version,
             "map_sensing_boundary_risk_threshold": (
                 config.map_sensing_boundary_risk_threshold
@@ -2140,6 +2157,7 @@ class PointMazeDataset(BaseOfflineDataset):
             raise ValueError(f"history_num must be >= 0, got {config.history_num}")
         if config.history_stride < 1:
             raise ValueError(f"history_stride must be >= 1, got {config.history_stride}")
+        resolve_random_obs_tag(config.random_obs_tag)
         if config.action_dim != cls.ACTION_DIM:
             raise ValueError(
                 f"{cls.ENV_FAMILY} action_dim must be "
@@ -2209,6 +2227,7 @@ class PointMazeDataset(BaseOfflineDataset):
                 "seed_map_selection",
                 "history_num",
                 "history_stride",
+                "random_obs_tag",
                 "wall_sensing_version",
                 "map_sensing_boundary_risk_threshold",
                 "action_token_mode",

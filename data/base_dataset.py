@@ -89,6 +89,9 @@ class DatasetBuildRequest:
     history_num: int = 0
     history_stride: int = 1
 
+    # Observation-tag corruption ablation.
+    random_obs_tag: bool = False
+
     # Maze sensing prompt behavior.
     wall_sensing_version: str | None = None
     map_sensing_boundary_risk_threshold: float | None = None

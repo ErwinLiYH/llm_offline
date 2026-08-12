@@ -8,6 +8,13 @@ from utils.maze_sensing import (
     obs_xy_to_row_col as _obs_xy_to_row_col,
     sensing_text_from_obs as _sensing_text_from_obs,
 )
+from utils.obs_tag import fixed_obs_tags, resolve_random_obs_tag
+
+
+_OBS_TAGS = ("x", "y", "vx", "vy", "gx", "gy")
+_FIXED_OBS_TAG_ORDER = ("y", "gx", "gy", "x", "vy", "vx")
+_OBS_GROUP_TAGS = ("Position", "Velocity", "Goal")
+_FIXED_OBS_GROUP_TAG_ORDER = ("Goal", "Position", "Velocity")
 
 
 def prepare_eval_prompt_vars(prompt_vars: dict, env) -> dict:
@@ -111,11 +118,30 @@ def format_obs(obs, meta: dict) -> dict:
     goal = obs["desired_goal"].astype(np.float32)
     x, y, vx, vy = obs_vec
     gx, gy = goal
+    value_texts = (
+        f"{x:.4f}",
+        f"{y:.4f}",
+        f"{vx:.4f}",
+        f"{vy:.4f}",
+        f"{gx:.4f}",
+        f"{gy:.4f}",
+    )
+    random_obs_tag = resolve_random_obs_tag(meta.get("random_obs_tag"))
+    x_tag, y_tag, vx_tag, vy_tag, gx_tag, gy_tag = fixed_obs_tags(
+        _OBS_TAGS,
+        _FIXED_OBS_TAG_ORDER,
+        enabled=random_obs_tag,
+    )
+    position_group, velocity_group, goal_group = fixed_obs_tags(
+        _OBS_GROUP_TAGS,
+        _FIXED_OBS_GROUP_TAG_ORDER,
+        enabled=random_obs_tag,
+    )
     return {
         "obs_text": (
-            f"  Position: (x={x:.4f}, y={y:.4f})\n"
-            f"  Velocity: (vx={vx:.4f}, vy={vy:.4f})\n"
-            f"  Goal:     (gx={gx:.4f}, gy={gy:.4f})"
+            f"  {position_group + ':':<10}({x_tag}={value_texts[0]}, {y_tag}={value_texts[1]})\n"
+            f"  {velocity_group + ':':<10}({vx_tag}={value_texts[2]}, {vy_tag}={value_texts[3]})\n"
+            f"  {goal_group + ':':<10}({gx_tag}={value_texts[4]}, {gy_tag}={value_texts[5]})"
         ),
         **_sensing_text_from_obs(obs, obs_vec, goal, meta),
     }

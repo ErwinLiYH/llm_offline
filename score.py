@@ -28,6 +28,7 @@ from utils.pointmaze_score import (
 )
 from utils.prompt_loader import load_named_templates, load_template_names
 from utils.eval_parallel import apply_rollout_config_defaults
+from utils.obs_tag import normalize_random_obs_tag_config
 from utils.rollout.score_runner import run_score_variant
 from utils.sensing_config import normalize_sensing_config
 from utils.variant_selection import get_available_variants, resolve_selection
@@ -278,6 +279,7 @@ def _resolve_score_prompt(config: dict, *, assume_yes: bool) -> tuple[dict, str,
     from evaluate import (
         apply_checkpoint_action_config,
         apply_checkpoint_prompt_config,
+        apply_checkpoint_random_obs_tag_config,
         apply_checkpoint_sensing_config,
     )
 
@@ -287,6 +289,7 @@ def _resolve_score_prompt(config: dict, *, assume_yes: bool) -> tuple[dict, str,
             config.pop(prompt_key)
     config = apply_checkpoint_action_config(config)
     config = apply_checkpoint_sensing_config(config)
+    config = apply_checkpoint_random_obs_tag_config(config)
     config = apply_checkpoint_prompt_config(config, assume_yes=assume_yes)
     prompt_name = config.get("resolved_eval_prompt_name")
     if prompt_name is None:
@@ -328,6 +331,7 @@ def run_score_mode(config: dict, selection, run_results_dir: str, *, assume_yes:
     print(f"[score] Using device: {device}")
     print(f"[score] Loading model from: {config['model_path']}")
     print_sensing_config("[score]", config)
+    print(f"[score] Random observation tags: enabled={config['random_obs_tag']}")
     model, tokenizer = load_from_checkpoint(
         config["model_path"],
         load_in_4bit=config.get("load_in_4bit"),
@@ -409,6 +413,7 @@ def main():
 
     if mode == "reference":
         normalize_sensing_config(config)
+        normalize_random_obs_tag_config(config)
         print_sensing_config("[score]", config)
         results = run_reference_mode(config, selection, run_results_dir)
     elif mode == "score":

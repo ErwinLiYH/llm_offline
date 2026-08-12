@@ -1,6 +1,8 @@
+import re
 import tempfile
 import unittest
 import pickle
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -550,6 +552,10 @@ class AntMazeSupportTest(unittest.TestCase):
                 action_dim=8,
                 wall_sensing_version="v5",
             )
+            ant_random_request = replace(
+                ant_v5_request,
+                random_obs_tag=True,
+            )
 
             base_payload = PointMazeDataset._cache_signature_payload(
                 PointMazeDataset._normalize_request(base_request)
@@ -566,9 +572,12 @@ class AntMazeSupportTest(unittest.TestCase):
             ant_v5_payload = AntMazeDataset._cache_signature_payload(
                 AntMazeDataset._normalize_request(ant_v5_request)
             )
-            ant_v5_config = AntMazeDataset._normalize_request(ant_v5_request)
+            ant_random_payload = AntMazeDataset._cache_signature_payload(
+                AntMazeDataset._normalize_request(ant_random_request)
+            )
+            ant_random_config = AntMazeDataset._normalize_request(ant_random_request)
             tokenization_job = AntMazeDataset._create_tokenization_job(
-                ant_v5_config,
+                ant_random_config,
                 None,
                 {
                     "episodes": _fake_episodes(),
@@ -585,10 +594,19 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertEqual(threshold_payload["map_sensing_boundary_risk_threshold"], 0.25)
         self.assertEqual(ant_base_payload["wall_sensing_version"], "v3")
         self.assertEqual(ant_v5_payload["wall_sensing_version"], "v5")
+        self.assertTrue(ant_random_payload["random_obs_tag"])
+        self.assertEqual(
+            ant_random_payload["random_obs_tag_schema"],
+            "fixed_derangement_v1",
+        )
         self.assertEqual(tokenization_job.worker_config["wall_sensing_version"], "v5")
+        self.assertTrue(tokenization_job.worker_config["random_obs_tag"])
         self.assertEqual(
             tokenization_job.worker_config["prompt_vars"]["wall_sensing_version"],
             "v5",
+        )
+        self.assertTrue(
+            tokenization_job.worker_config["prompt_vars"]["random_obs_tag"]
         )
         self.assertNotEqual(
             PointMazeDataset._hash_json_payload(base_payload),
@@ -601,6 +619,10 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertNotEqual(
             AntMazeDataset._hash_json_payload(ant_base_payload),
             AntMazeDataset._hash_json_payload(ant_v5_payload),
+        )
+        self.assertNotEqual(
+            AntMazeDataset._hash_json_payload(ant_v5_payload),
+            AntMazeDataset._hash_json_payload(ant_random_payload),
         )
 
     def test_local_antmaze_hdf5_fallback_reads_infos_and_terminal_fields(self):
@@ -1298,6 +1320,128 @@ class AntMazeSupportTest(unittest.TestCase):
         self.assertTrue(formatting.validate_action(parsed))
         self.assertFalse(formatting.validate_action(np.zeros(2, dtype=np.float32)))
         self.assertFalse(formatting.parse_action("1,2,3,4,5,6,7,8,9")[1])
+
+    def test_random_obs_tag_uses_fixed_orders_and_preserves_values(self):
+        prompt_vars = ANTMAZE_VARIANTS["umaze"]["prompt_vars"]
+        obs = {
+            "observation": np.arange(27, dtype=np.float32),
+            "achieved_goal": np.asarray([30.0, 31.0], dtype=np.float32),
+            "desired_goal": np.asarray([32.0, 33.0], dtype=np.float32),
+        }
+
+        normal_payload = formatting.format_obs(obs, prompt_vars)
+        randomized_payload = formatting.format_obs(
+            obs,
+            {**prompt_vars, "random_obs_tag": True},
+        )
+        tag_pattern = r"\b(x|y|gx|gy|z|quat|linear|angular|q|dq)="
+        expected_tags = [
+            "x",
+            "y",
+            "gx",
+            "gy",
+            "z",
+            "quat",
+            "linear",
+            "angular",
+            "q",
+            "dq",
+        ]
+        normal_tags = re.findall(tag_pattern, normal_payload["obs_text"])
+        randomized_tags = re.findall(tag_pattern, randomized_payload["obs_text"])
+        group_pattern = r"^  (Position|Goal|Torso|Velocity|Joints|JointVel):"
+        normal_groups = re.findall(
+            group_pattern,
+            normal_payload["obs_text"],
+            flags=re.MULTILINE,
+        )
+        randomized_groups = re.findall(
+            group_pattern,
+            randomized_payload["obs_text"],
+            flags=re.MULTILINE,
+        )
+
+        self.assertEqual(normal_tags, expected_tags)
+        self.assertCountEqual(randomized_tags, expected_tags)
+        self.assertEqual(
+            randomized_tags,
+            ["z", "dq", "linear", "gx", "quat", "q", "y", "gy", "x", "angular"],
+        )
+        self.assertTrue(
+            all(original != randomized for original, randomized in zip(normal_tags, randomized_tags))
+        )
+        self.assertEqual(
+            normal_groups,
+            ["Position", "Goal", "Torso", "Velocity", "Joints", "JointVel"],
+        )
+        self.assertCountEqual(randomized_groups, normal_groups)
+        self.assertEqual(
+            randomized_groups,
+            ["Torso", "Velocity", "JointVel", "Joints", "Goal", "Position"],
+        )
+        self.assertTrue(
+            all(
+                original != randomized
+                for original, randomized in zip(normal_groups, randomized_groups)
+            )
+        )
+        self.assertEqual(
+            re.sub(
+                group_pattern,
+                "  GROUP:",
+                re.sub(tag_pattern, "TAG=", randomized_payload["obs_text"]),
+                flags=re.MULTILINE,
+            ),
+            re.sub(
+                group_pattern,
+                "  GROUP:",
+                re.sub(tag_pattern, "TAG=", normal_payload["obs_text"]),
+                flags=re.MULTILINE,
+            ),
+        )
+        other_randomized_text = formatting.format_obs(
+            {
+                "observation": np.arange(100, 127, dtype=np.float32),
+                "achieved_goal": np.asarray([130.0, 131.0], dtype=np.float32),
+                "desired_goal": np.asarray([132.0, 133.0], dtype=np.float32),
+            },
+            {**prompt_vars, "random_obs_tag": True},
+        )["obs_text"]
+        self.assertEqual(re.findall(tag_pattern, other_randomized_text), randomized_tags)
+        self.assertEqual(
+            re.findall(group_pattern, other_randomized_text, flags=re.MULTILINE),
+            randomized_groups,
+        )
+        self.assertEqual(
+            randomized_payload["obs_text"],
+            formatting.format_obs(
+                obs,
+                {**prompt_vars, "random_obs_tag": True},
+            )["obs_text"],
+        )
+        for key in normal_payload:
+            if key != "obs_text":
+                self.assertEqual(randomized_payload[key], normal_payload[key])
+
+        template = load_template_map("antmaze")["v2-none-dmap-none"]
+        history_payload = formatting.format_history([], prompt_vars)
+        normal_prompt = render_template(
+            template,
+            prompt_vars,
+            **normal_payload,
+            **history_payload,
+        )
+        randomized_prompt = render_template(
+            template,
+            {**prompt_vars, "random_obs_tag": True},
+            **randomized_payload,
+            **history_payload,
+        )
+        self.assertEqual(
+            normal_prompt.replace(normal_payload["obs_text"], "<OBS_TEXT>"),
+            randomized_prompt.replace(randomized_payload["obs_text"], "<OBS_TEXT>"),
+        )
+        self.assertIn("Observation semantics:", randomized_prompt)
 
     def test_all_prompts_render(self):
         prompt_vars = ANTMAZE_VARIANTS["medium-diverse"]["prompt_vars"]

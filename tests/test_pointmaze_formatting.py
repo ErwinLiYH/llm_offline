@@ -141,6 +141,108 @@ class PointMazeFormattingTest(unittest.TestCase):
         self.assertNotIn("G", reached_payload["dmap"])
         self.assertNotEqual(payload["dmap"], reached_payload["dmap"])
 
+    def test_random_obs_tag_uses_fixed_orders_and_preserves_values(self):
+        prompt_vars = POINTMAZE_VARIANTS["large"]["prompt_vars"]
+        obs = {
+            "observation": np.array(
+                [-1.5023, 0.6034, 0.1, -0.2],
+                dtype=np.float32,
+            ),
+            "desired_goal": np.array([-1.5, -0.49], dtype=np.float32),
+        }
+
+        normal_payload = formatting.format_obs(obs, prompt_vars)
+        randomized_payload = formatting.format_obs(
+            obs,
+            {**prompt_vars, "random_obs_tag": True},
+        )
+
+        expected_tags = ["x", "y", "vx", "vy", "gx", "gy"]
+        normal_tags = re.findall(r"\b(x|y|vx|vy|gx|gy)=", normal_payload["obs_text"])
+        randomized_tags = re.findall(
+            r"\b(x|y|vx|vy|gx|gy)=",
+            randomized_payload["obs_text"],
+        )
+        group_pattern = r"^  (Position|Velocity|Goal):"
+        normal_groups = re.findall(
+            group_pattern,
+            normal_payload["obs_text"],
+            flags=re.MULTILINE,
+        )
+        randomized_groups = re.findall(
+            group_pattern,
+            randomized_payload["obs_text"],
+            flags=re.MULTILINE,
+        )
+        normal_values = re.findall(r"=(-?\d+\.\d+)", normal_payload["obs_text"])
+        randomized_values = re.findall(
+            r"=(-?\d+\.\d+)",
+            randomized_payload["obs_text"],
+        )
+
+        self.assertEqual(normal_tags, expected_tags)
+        self.assertCountEqual(randomized_tags, expected_tags)
+        self.assertEqual(randomized_tags, ["y", "gx", "gy", "x", "vy", "vx"])
+        self.assertTrue(
+            all(original != randomized for original, randomized in zip(normal_tags, randomized_tags))
+        )
+        self.assertEqual(normal_groups, ["Position", "Velocity", "Goal"])
+        self.assertCountEqual(randomized_groups, normal_groups)
+        self.assertEqual(randomized_groups, ["Goal", "Position", "Velocity"])
+        self.assertTrue(
+            all(
+                original != randomized
+                for original, randomized in zip(normal_groups, randomized_groups)
+            )
+        )
+        self.assertEqual(randomized_values, normal_values)
+
+        other_randomized_text = formatting.format_obs(
+            {
+                "observation": np.array([9.0, 8.0, 7.0, 6.0], dtype=np.float32),
+                "desired_goal": np.array([5.0, 4.0], dtype=np.float32),
+            },
+            {**prompt_vars, "random_obs_tag": True},
+        )["obs_text"]
+        self.assertEqual(
+            re.findall(r"\b(x|y|vx|vy|gx|gy)=", other_randomized_text),
+            randomized_tags,
+        )
+        self.assertEqual(
+            re.findall(group_pattern, other_randomized_text, flags=re.MULTILINE),
+            randomized_groups,
+        )
+        self.assertEqual(
+            randomized_payload["obs_text"],
+            formatting.format_obs(
+                obs,
+                {**prompt_vars, "random_obs_tag": True},
+            )["obs_text"],
+        )
+        for key in normal_payload:
+            if key != "obs_text":
+                self.assertEqual(randomized_payload[key], normal_payload[key])
+
+        template = load_template_map("pointmaze")["v2-none-dmap-none"]
+        history_payload = formatting.format_history([], prompt_vars)
+        normal_prompt = render_template(
+            template,
+            prompt_vars,
+            **normal_payload,
+            **history_payload,
+        )
+        randomized_prompt = render_template(
+            template,
+            {**prompt_vars, "random_obs_tag": True},
+            **randomized_payload,
+            **history_payload,
+        )
+        self.assertEqual(
+            normal_prompt.replace(normal_payload["obs_text"], "<OBS_TEXT>"),
+            randomized_prompt.replace(randomized_payload["obs_text"], "<OBS_TEXT>"),
+        )
+        self.assertIn("Observation semantics:", randomized_prompt)
+
     def test_pointmaze_templates_render_with_split_sensing_fields(self):
         prompt_vars = POINTMAZE_VARIANTS["large"]["prompt_vars"]
         obs = {
@@ -192,6 +294,7 @@ class PointMazeFormattingTest(unittest.TestCase):
             sampling_seed=0,
             family_data_config=None,
             local_dataset_root=None,
+            seed_map_selection=None,
             history_num=0,
             history_stride=1,
             wall_sensing_version="v3",
@@ -213,9 +316,22 @@ class PointMazeFormattingTest(unittest.TestCase):
         self.assertRegex(cache_name, re.compile(r"^[0-9a-f]{32}\.pkl$"))
         self.assertEqual(payload["variant"], "large")
         self.assertEqual(payload["prompt_names"], ["0"])
+        self.assertNotIn("random_obs_tag", payload)
         self.assertNotIn("max_data_num", payload)
         self.assertNotIn("dataset_partition_count", payload)
         self.assertNotIn("source_hashes", payload)
+
+        randomized_config = replace(config, random_obs_tag=True)
+        randomized_payload = PointMazeDataset._cache_signature_payload(randomized_config)
+        self.assertTrue(randomized_payload["random_obs_tag"])
+        self.assertEqual(
+            randomized_payload["random_obs_tag_schema"],
+            "fixed_derangement_v1",
+        )
+        self.assertNotEqual(
+            PointMazeDataset._cache_path(randomized_config),
+            cache_path,
+        )
 
         partition0 = replace(
             config,

@@ -230,6 +230,7 @@ class IsolatedTrainingEvalTest(unittest.TestCase):
             "student_t_df": 3.0,
             "continuous_mean_l1_weight": 0.2,
             "reward_type": "dense",
+            "random_obs_tag": True,
         }
 
         l1_config = train._build_training_eval_config(base)
@@ -240,6 +241,7 @@ class IsolatedTrainingEvalTest(unittest.TestCase):
         self.assertNotIn("student_t_df", l1_config)
         self.assertNotIn("continuous_mean_l1_weight", l1_config)
         self.assertEqual(l1_config["reward_type"], "dense")
+        self.assertTrue(l1_config["random_obs_tag"])
 
         gaussian_config = train._build_training_eval_config(
             {**base, "action_token_mode": "parallel_gaussian"}

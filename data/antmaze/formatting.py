@@ -5,9 +5,51 @@ import numpy as np
 from crossmaze.layout import format_visual_map as _format_visual_map  # noqa: F401 back-compat name
 from crossmaze.layout import live_env_layout_overrides
 from utils.maze_sensing import build_sensing, obs_xy_to_row_col, sensing_text_from_obs
+from utils.obs_tag import fixed_obs_tags, resolve_random_obs_tag
 
 
 ACTION_DIM = 8
+
+_OBS_TAGS = (
+    "x",
+    "y",
+    "gx",
+    "gy",
+    "z",
+    "quat",
+    "linear",
+    "angular",
+    "q",
+    "dq",
+)
+_FIXED_OBS_TAG_ORDER = (
+    "z",
+    "dq",
+    "linear",
+    "gx",
+    "quat",
+    "q",
+    "y",
+    "gy",
+    "x",
+    "angular",
+)
+_OBS_GROUP_TAGS = (
+    "Position",
+    "Goal",
+    "Torso",
+    "Velocity",
+    "Joints",
+    "JointVel",
+)
+_FIXED_OBS_GROUP_TAG_ORDER = (
+    "Torso",
+    "Velocity",
+    "JointVel",
+    "Joints",
+    "Goal",
+    "Position",
+)
 
 _ACTION_PATTERN = re.compile(
     r"(?<![\d,])[-+]?\d+(?:\s*,\s*[-+]?\d+){7}(?!\s*,\s*[-+]?\d)"
@@ -64,18 +106,58 @@ def format_obs(obs, meta: dict) -> dict:
 
     joint_angles = state[5:13]
     joint_velocities = state[19:27]
+    value_texts = (
+        f"{float(achieved_goal[0]):.2f}",
+        f"{float(achieved_goal[1]):.2f}",
+        f"{float(desired_goal[0]):.2f}",
+        f"{float(desired_goal[1]):.2f}",
+        f"{float(state[0]):.2f}",
+        _format_vector(state[1:5]),
+        _format_vector(state[13:16]),
+        _format_vector(state[16:19]),
+        _format_vector(joint_angles),
+        _format_vector(joint_velocities),
+    )
+    random_obs_tag = resolve_random_obs_tag(meta.get("random_obs_tag"))
+    (
+        x_tag,
+        y_tag,
+        gx_tag,
+        gy_tag,
+        z_tag,
+        quat_tag,
+        linear_tag,
+        angular_tag,
+        q_tag,
+        dq_tag,
+    ) = fixed_obs_tags(
+        _OBS_TAGS,
+        _FIXED_OBS_TAG_ORDER,
+        enabled=random_obs_tag,
+    )
+    (
+        position_group,
+        goal_group,
+        torso_group,
+        velocity_group,
+        joints_group,
+        joint_velocity_group,
+    ) = fixed_obs_tags(
+        _OBS_GROUP_TAGS,
+        _FIXED_OBS_GROUP_TAG_ORDER,
+        enabled=random_obs_tag,
+    )
     return {
         "obs_text": (
-            f"  Position: (x={float(achieved_goal[0]):.2f}, y={float(achieved_goal[1]):.2f})\n"
-            f"  Goal:     (gx={float(desired_goal[0]):.2f}, gy={float(desired_goal[1]):.2f})\n"
-            f"  Torso:   z={float(state[0]):.2f}, "
-            f"quat=[{float(state[1]):.2f}, {float(state[2]):.2f}, "
-            f"{float(state[3]):.2f}, {float(state[4]):.2f}]\n"
-            "  Velocity: "
-            f"linear=[{float(state[13]):.2f}, {float(state[14]):.2f}, {float(state[15]):.2f}], "
-            f"angular=[{float(state[16]):.2f}, {float(state[17]):.2f}, {float(state[18]):.2f}]\n"
-            f"  Joints:   q={_format_vector(joint_angles)}\n"
-            f"  JointVel: dq={_format_vector(joint_velocities)}"
+            f"  {position_group}: ({x_tag}={value_texts[0]}, {y_tag}={value_texts[1]})\n"
+            f"  {goal_group}:     ({gx_tag}={value_texts[2]}, {gy_tag}={value_texts[3]})\n"
+            f"  {torso_group}:   {z_tag}={value_texts[4]}, "
+            f"{quat_tag}={value_texts[5]}\n"
+            f"  {velocity_group}: "
+            f"{linear_tag}={value_texts[6]}, "
+            f"{angular_tag}={value_texts[7]}\n"
+            f"  {joints_group}:   {q_tag}={value_texts[8]}\n"
+            f"  {joint_velocity_group}: {dq_tag}={value_texts[9]}"
         ),
         **sensing_text_from_obs(obs, achieved_goal, desired_goal, meta),
     }

@@ -50,6 +50,9 @@ from utils.eval_parallel import (
     resolve_rollout_worker_num,
 )
 from utils.model_path_glob import resolve_trailing_wildcard_path
+from utils.obs_tag import (
+    apply_checkpoint_random_obs_tag_config as _apply_checkpoint_random_obs_tag_config,
+)
 from utils.prompt_loader import load_named_templates, load_template_names
 from utils.rollout.evaluate_runner import run_evaluate_variant
 from utils.sensing_config import apply_checkpoint_sensing_config as _apply_checkpoint_sensing_config
@@ -286,6 +289,11 @@ def apply_checkpoint_action_config(config: dict) -> dict:
 def apply_checkpoint_sensing_config(config: dict) -> dict:
     saved_config = _load_checkpoint_config(config["model_path"])
     return _apply_checkpoint_sensing_config(config, saved_config)
+
+
+def apply_checkpoint_random_obs_tag_config(config: dict) -> dict:
+    saved_config = _load_checkpoint_config(config["model_path"])
+    return _apply_checkpoint_random_obs_tag_config(config, saved_config)
 
 
 def _normalize_prompt_name_list(value, *, field_name: str, allow_single_string: bool) -> list[str]:
@@ -580,6 +588,7 @@ def main():
         if dist_context.is_main_process:
             config = apply_checkpoint_action_config(config)
             config = apply_checkpoint_sensing_config(config)
+            config = apply_checkpoint_random_obs_tag_config(config)
             config = apply_checkpoint_prompt_config(config, assume_yes=args.yes)
             config.setdefault("seed", 1)
             config = apply_rollout_config_defaults(config)
@@ -651,6 +660,10 @@ def main():
                 "[eval] Wall sensing: "
                 f"version={config['wall_sensing_version']}, "
                 f"boundary_risk_threshold={config['map_sensing_boundary_risk_threshold']}"
+            )
+            print(
+                "[eval] Random observation tags: "
+                f"enabled={config['random_obs_tag']}"
             )
             print(f"[eval] Resolved eval variants: {eval_selection.selected_variants}")
             print(f"[eval] Variant assignments: {assignments}")

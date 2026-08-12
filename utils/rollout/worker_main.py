@@ -23,6 +23,7 @@ from crossmaze.seed_map import (
 from data.pointmaze.variants import POINTMAZE_VARIANTS
 from data.registry import get_formatter, get_variant
 from utils.eval_rollout import render_policy_prompt, validate_history_config
+from utils.obs_tag import apply_random_obs_tag_to_prompt_vars
 from utils.rollout.artifacts import (
     capture_render_frame,
     capture_video_frames,
@@ -193,6 +194,10 @@ class _RolloutWorker:
                 self.prompt_vars,
                 self.config,
             )
+        self.prompt_vars = apply_random_obs_tag_to_prompt_vars(
+            self.prompt_vars,
+            self.config,
+        )
         self.env.assert_meta_consistent(self.prompt_vars)
 
         self.action_shape = tuple(int(value) for value in self.env.action_space.shape)

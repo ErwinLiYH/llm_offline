@@ -1,0 +1,2 @@
+# Enable the fixed observation field/group-tag corruption order.
+random_obs_tag: true

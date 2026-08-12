@@ -1819,3 +1819,16 @@ type: project
 **验证：**
 - LLM 配置加载检查确认 PointMaze/AntMaze seedmap32 训练栈均保持 `eval_num_episodes: 0`，standalone eval seed/train-seed 栈分别保持 `num_episodes: 4/25`
 - 相关训练、standalone eval、seed-map resolver 和配置加载测试共 47 项通过，并通过 Python 编译与 `git diff --check`
+
+## Fixed observation-tag corruption ablation（2026-08-12）
+
+- 新增严格布尔配置 `random_obs_tag`，缺省或 `false` 完全保留原 observation 文本；设为 `true` 时只打乱 `obs_text` 的分组标题和组内字段标签，数值文本、数值与行的顺序、prompt 中的 observation semantics、`dmap`、sensing 和 history 均保持不变
+- PointMaze 与 AntMaze 分别使用代码中显式声明并由测试锁定的两套固定无固定点置换，分组标题和字段标签各自独立映射；映射不依赖 observation、episode、timestep、seed、worker 或重新运行，不会在每一步重新随机抽取
+- PointMaze 分组槽位固定显示为 `Goal/Position/Velocity`，字段槽位固定显示为 `y/gx/gy/x/vy/vx`；AntMaze 分组槽位固定显示为 `Torso/Velocity/JointVel/Joints/Goal/Position`，字段槽位固定显示为 `z/dq/linear/gx/quat/q/y/gy/x/angular`，所有标题和字段标签都离开原数值槽位
+- 该开关已接入训练、tokenization、dataset estimator、training-time eval、standalone eval 和 score；训练运行配置会保存解析后的值，standalone eval/score 未显式配置时继承 checkpoint，显式布尔值可用于 test-time override
+- `true` 路径的 dataset cache signature 新增 `fixed_derangement_v1` schema，防止复用旧的 observation-tag 扰乱缓存；`false` 路径继续沿用原 cache signature，并新增可分层叠加的 `configs/tools/random-obs-tag.yaml`
+- 更新 `AGENTS.md`、`DESIGN.md` 及 PointMaze/AntMaze formatting、缓存和评估配置回归测试
+
+**验证：**
+- 相关定向测试共 35 项通过
+- 相关 Python 文件通过编译检查，并通过 `git diff --check`

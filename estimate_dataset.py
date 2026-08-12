@@ -47,6 +47,7 @@ from utils.episode_keep import (
     has_episode_keep_per_variant,
     resolve_episode_keep_per_variant,
 )
+from utils.obs_tag import normalize_random_obs_tag_config
 from utils.prompt_loader import load_template_names
 from utils.sensing_config import normalize_sensing_config, resolve_sensing_config
 from utils.seed_map_config import seed_map_section_enabled
@@ -335,6 +336,7 @@ def build_dataset_request(
         ),
         history_num=config.get("history_num", 0),
         history_stride=config.get("history_stride", 1),
+        random_obs_tag=config.get("random_obs_tag", False),
         wall_sensing_version=config.get("wall_sensing_version"),
         map_sensing_boundary_risk_threshold=config.get(
             "map_sensing_boundary_risk_threshold"
@@ -356,6 +358,7 @@ def _resolve_training_config(config: dict, world_size: int) -> tuple[dict, Any, 
 
     config = dict(config)
     normalize_sensing_config(config)
+    normalize_random_obs_tag_config(config)
     normalize_prompt_config(config)
     available_variants = get_available_variants(config["env_family"])
     train_selection = resolve_train_selection(config, available_variants)
@@ -907,6 +910,7 @@ def build_estimate(
             "batch_size": int(config["batch_size"]),
             "max_data_num": max_data_num,
             "sample_seed": int(sample_seed),
+            "random_obs_tag": bool(config["random_obs_tag"]),
             "wall_sensing_version": sensing_config["wall_sensing_version"],
             "map_sensing_boundary_risk_threshold": (
                 sensing_config["map_sensing_boundary_risk_threshold"]

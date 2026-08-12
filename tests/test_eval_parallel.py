@@ -245,6 +245,43 @@ class EvalParallelTest(unittest.TestCase):
                     }
                 )
 
+    def test_checkpoint_random_obs_tag_is_inherited_and_can_be_overridden(self):
+        with tempfile.TemporaryDirectory() as checkpoint_dir:
+            (Path(checkpoint_dir) / "config.yaml").write_text(
+                "random_obs_tag: true\n",
+                encoding="utf-8",
+            )
+
+            inherited = evaluate.apply_checkpoint_random_obs_tag_config(
+                {"model_path": checkpoint_dir}
+            )
+            overridden = evaluate.apply_checkpoint_random_obs_tag_config(
+                {
+                    "model_path": checkpoint_dir,
+                    "random_obs_tag": False,
+                }
+            )
+
+        self.assertTrue(inherited["random_obs_tag"])
+        self.assertFalse(overridden["random_obs_tag"])
+
+    def test_random_obs_tag_defaults_false_and_rejects_non_bool(self):
+        with tempfile.TemporaryDirectory() as checkpoint_dir:
+            (Path(checkpoint_dir) / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+            defaulted = evaluate.apply_checkpoint_random_obs_tag_config(
+                {"model_path": checkpoint_dir}
+            )
+            with self.assertRaisesRegex(ValueError, "random_obs_tag must be a bool"):
+                evaluate.apply_checkpoint_random_obs_tag_config(
+                    {
+                        "model_path": checkpoint_dir,
+                        "random_obs_tag": "true",
+                    }
+                )
+
+        self.assertFalse(defaulted["random_obs_tag"])
+
     def test_prepare_eval_prompt_vars_uses_formatter_hook(self):
         formatter = SimpleNamespace(
             prepare_eval_prompt_vars=mock.Mock(return_value={"maze_map": "eval"})
