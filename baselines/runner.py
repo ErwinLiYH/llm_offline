@@ -205,6 +205,19 @@ def _load_resume_context(config: dict) -> dict | None:
             # d3rlpy runs that omit the key are schema-equivalent to false.
             source_value.setdefault("include_dynamic_map", False)
             current_value.setdefault("include_dynamic_map", False)
+        if field == "network":
+            source_value = dict(source_value or {})
+            current_value = dict(current_value or {})
+            # Component-specific LayerNorm overrides were added after the
+            # original baseline runs.  Missing values preserve the historical
+            # shared-network behavior and are equivalent to null.
+            for key in (
+                "actor_use_layer_norm",
+                "critic_use_layer_norm",
+                "value_use_layer_norm",
+            ):
+                source_value.setdefault(key, None)
+                current_value.setdefault(key, None)
         if source_value != current_value:
             mismatches.append(field)
     if mismatches:

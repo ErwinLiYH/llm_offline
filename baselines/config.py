@@ -182,6 +182,12 @@ _NETWORK_DEFAULTS = {
     "activation": "relu",
     "use_batch_norm": False,
     "use_layer_norm": False,
+    # Optional d3rlpy-only component overrides.  They preserve the historical
+    # shared network contract when null, while allowing paper-faithful setups
+    # such as ReBRAC's critic-only LayerNorm.
+    "actor_use_layer_norm": None,
+    "critic_use_layer_norm": None,
+    "value_use_layer_norm": None,
     "dropout_rate": None,
 }
 
@@ -360,6 +366,13 @@ def _normalize_network(value) -> dict:
         )
     for field in ("use_batch_norm", "use_layer_norm"):
         network[field] = _bool(network[field], f"network.{field}")
+    for field in (
+        "actor_use_layer_norm",
+        "critic_use_layer_norm",
+        "value_use_layer_norm",
+    ):
+        if network[field] is not None:
+            network[field] = _bool(network[field], f"network.{field}")
     dropout_rate = network["dropout_rate"]
     if dropout_rate is not None:
         if isinstance(dropout_rate, bool) or not isinstance(dropout_rate, (int, float)):
@@ -369,6 +382,17 @@ def _normalize_network(value) -> dict:
             raise ValueError("network.dropout_rate must be in [0, 1)")
         network["dropout_rate"] = dropout_rate
     if architecture != "legacy_mlp":
+        if any(
+            network[field] is not None
+            for field in (
+                "actor_use_layer_norm",
+                "critic_use_layer_norm",
+                "value_use_layer_norm",
+            )
+        ):
+            raise ValueError(
+                "component LayerNorm overrides require network.architecture=legacy_mlp"
+            )
         if network["block_size"] != 4:
             raise ValueError("paper scaling MLP requires network.block_size=4")
         if (
@@ -832,6 +856,17 @@ def normalize_baseline_config(raw_config: dict) -> dict:
             "plain_mlp/residual_mlp are currently supported only by algorithm=mlp_bc"
         )
     if algorithm in _GCRL_DEFAULTS:
+        if any(
+            normalized_network[field] is not None
+            for field in (
+                "actor_use_layer_norm",
+                "critic_use_layer_norm",
+                "value_use_layer_norm",
+            )
+        ):
+            raise ValueError(
+                "CRL/HIQL do not support component LayerNorm overrides"
+            )
         if normalized_network["use_batch_norm"]:
             raise ValueError("CRL/HIQL do not support network.use_batch_norm")
         if normalized_network["dropout_rate"] is not None:

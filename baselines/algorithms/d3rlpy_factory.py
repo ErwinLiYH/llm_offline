@@ -126,7 +126,7 @@ class GradientClippedBC(InstrumentedBC):
         )
 
 
-def _encoder(network: dict) -> EncoderFactory:
+def _encoder(network: dict, *, component: str | None = None) -> EncoderFactory:
     if network["architecture"] != "legacy_mlp":
         return ScalingMLPEncoderFactory(
             body_type=network["architecture"],
@@ -134,11 +134,16 @@ def _encoder(network: dict) -> EncoderFactory:
             body_depth=network["body_depth"],
             block_size=network["block_size"],
         )
+    use_layer_norm = network["use_layer_norm"]
+    if component is not None:
+        override = network.get(f"{component}_use_layer_norm")
+        if override is not None:
+            use_layer_norm = override
     return VectorEncoderFactory(
         hidden_units=list(network["hidden_units"]),
         activation=network["activation"],
         use_batch_norm=network["use_batch_norm"],
-        use_layer_norm=network["use_layer_norm"],
+        use_layer_norm=use_layer_norm,
         dropout_rate=network["dropout_rate"],
     )
 
@@ -195,23 +200,23 @@ def create_algorithm(config: dict):
             )
     elif algorithm == "td3_bc":
         algo_config = TD3PlusBCConfig(
-            actor_encoder_factory=_encoder(network),
-            critic_encoder_factory=_encoder(network),
+            actor_encoder_factory=_encoder(network, component="actor"),
+            critic_encoder_factory=_encoder(network, component="critic"),
             **common,
             **kwargs,
         )
     elif algorithm == "iql":
         algo_config = IQLConfig(
-            actor_encoder_factory=_encoder(network),
-            critic_encoder_factory=_encoder(network),
-            value_encoder_factory=_encoder(network),
+            actor_encoder_factory=_encoder(network, component="actor"),
+            critic_encoder_factory=_encoder(network, component="critic"),
+            value_encoder_factory=_encoder(network, component="value"),
             **common,
             **kwargs,
         )
     elif algorithm == "rebrac":
         algo_config = ReBRACConfig(
-            actor_encoder_factory=_encoder(network),
-            critic_encoder_factory=_encoder(network),
+            actor_encoder_factory=_encoder(network, component="actor"),
+            critic_encoder_factory=_encoder(network, component="critic"),
             **common,
             **kwargs,
         )

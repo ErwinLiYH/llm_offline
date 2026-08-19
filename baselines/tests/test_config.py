@@ -226,6 +226,31 @@ class BaselineConfigTest(unittest.TestCase):
                 }
             )
 
+    def test_component_layer_norm_overrides_are_normalized(self):
+        config = normalize_baseline_config(
+            {
+                "algorithm": "rebrac",
+                "train_variants": ["umaze"],
+                "network": {
+                    "use_layer_norm": False,
+                    "actor_use_layer_norm": False,
+                    "critic_use_layer_norm": True,
+                },
+            }
+        )
+        self.assertFalse(config["network"]["actor_use_layer_norm"])
+        self.assertTrue(config["network"]["critic_use_layer_norm"])
+        self.assertIsNone(config["network"]["value_use_layer_norm"])
+
+        with self.assertRaisesRegex(ValueError, "CRL/HIQL"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "crl",
+                    "train_variants": ["umaze"],
+                    "network": {"critic_use_layer_norm": True},
+                }
+            )
+
     def test_observation_components_are_independent(self):
         config = normalize_baseline_config(
             {

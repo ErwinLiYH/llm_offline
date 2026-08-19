@@ -64,6 +64,24 @@ class AlgorithmSmokeTest(unittest.TestCase):
                 if algorithm in {"td3_bc", "iql", "rebrac"}:
                     self.assertTrue(np.isfinite(validation["td_error"]))
 
+    def test_rebrac_uses_component_layer_norm_overrides(self):
+        config = normalize_baseline_config(
+            {
+                "algorithm": "rebrac",
+                "train_variants": ["umaze"],
+                "device": False,
+                "network": {
+                    "hidden_units": [16, 16, 16],
+                    "actor_use_layer_norm": False,
+                    "critic_use_layer_norm": True,
+                },
+                "algorithm_config": {"batch_size": 4},
+            }
+        )
+        algo = create_algorithm(config)
+        self.assertFalse(algo.config.actor_encoder_factory.use_layer_norm)
+        self.assertTrue(algo.config.critic_encoder_factory.use_layer_norm)
+
 
 class _NoopLogger:
     def write_params(self, params):
