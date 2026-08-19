@@ -75,9 +75,8 @@ local_references/
 score_results/
 baseline_runs/
 
-# Generated experiment records; retain reproducible configs and scripts only.
-baselines/experiments/**/experiment_log.md
-baselines/experiments/**/report.md
+# Local baseline experiment workspaces
+/baselines/experiments/
 
 *.err
 *.out
