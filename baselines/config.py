@@ -229,6 +229,10 @@ _EARLY_STOPPING_DEFAULTS = {
     "min_steps": 1_000_000,
     "patience_evaluations": 4,
     "min_delta": 0.02,
+    # By default the plateau metric must cover every training map.  The
+    # opt-in subset mode is for large seed-map corpora where evaluation
+    # deliberately monitors one fixed, documented sample of training maps.
+    "evaluation_scope": "full_train",
 }
 
 _RESUME_DEFAULTS = {
@@ -705,6 +709,19 @@ def _normalize_early_stopping(
     )
     if not 0.0 <= config["min_delta"] <= 1.0:
         raise ValueError("early_stopping.min_delta must satisfy 0 <= value <= 1")
+    scope = config["evaluation_scope"]
+    if not isinstance(scope, str) or not scope.strip():
+        raise ValueError(
+            "early_stopping.evaluation_scope must be 'full_train' or "
+            "'evaluated_train_subset'"
+        )
+    scope = scope.strip()
+    if scope not in {"full_train", "evaluated_train_subset"}:
+        raise ValueError(
+            "early_stopping.evaluation_scope must be 'full_train' or "
+            "'evaluated_train_subset'"
+        )
+    config["evaluation_scope"] = scope
     if config["enabled"]:
         if algorithm not in _GCRL_DEFAULTS:
             raise ValueError("early_stopping is currently supported only by CRL/HIQL")

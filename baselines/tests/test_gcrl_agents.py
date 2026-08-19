@@ -15,6 +15,7 @@ try:
     from baselines.gcrl.agents import _safe_exp_mean, create_agent
     from baselines.gcrl.runner import (
         _save_agent,
+        _resolve_train_evaluation_variants,
         _train_map_success_macro,
         _update_early_stopping,
         load_gcrl_checkpoint,
@@ -103,6 +104,24 @@ class GCRLAgentTest(unittest.TestCase):
         )
         self.assertTrue(state["stop"])
         self.assertEqual(state["stop_step"], 300)
+
+    def test_train_evaluation_subset_scope_is_explicit(self):
+        train_variants = ["train-a", "train-b", "train-c"]
+        subset = _resolve_train_evaluation_variants(
+            train_variants,
+            ["train-b", "held-out"],
+            {
+                "enabled": True,
+                "evaluation_scope": "evaluated_train_subset",
+            },
+        )
+        self.assertEqual(subset, ["train-b"])
+        with self.assertRaisesRegex(ValueError, "full_train"):
+            _resolve_train_evaluation_variants(
+                train_variants,
+                ["train-b", "held-out"],
+                {"enabled": True, "evaluation_scope": "full_train"},
+            )
 
     def test_crl_exp_value_diagnostic_stays_finite(self):
         value, clip_fraction = _safe_exp_mean(

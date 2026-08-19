@@ -161,8 +161,33 @@ class BaselineConfigTest(unittest.TestCase):
                 "min_steps": 1_000_000,
                 "patience_evaluations": 4,
                 "min_delta": 0.02,
+                "evaluation_scope": "full_train",
             },
         )
+
+    def test_gcrl_early_stopping_allows_explicit_evaluated_train_subset(self):
+        config = normalize_baseline_config(
+            {
+                "algorithm": "hiql",
+                "train_variants": ["umaze"],
+                "early_stopping": {
+                    "enabled": True,
+                    "evaluation_scope": "evaluated_train_subset",
+                },
+            }
+        )
+        self.assertEqual(
+            config["early_stopping"]["evaluation_scope"],
+            "evaluated_train_subset",
+        )
+        with self.assertRaisesRegex(ValueError, "evaluation_scope"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "crl",
+                    "train_variants": ["umaze"],
+                    "early_stopping": {"evaluation_scope": "typo"},
+                }
+            )
 
     def test_early_stopping_rejects_non_gcrl_and_disabled_eval(self):
         with self.assertRaisesRegex(ValueError, "only by CRL/HIQL"):

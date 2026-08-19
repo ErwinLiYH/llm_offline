@@ -135,6 +135,45 @@ def _train_map_success_macro(rollout: dict, train_variants: list[str]) -> float:
     )
 
 
+def _resolve_train_evaluation_variants(
+    train_rollout_variants: list[str],
+    eval_variants: list[str],
+    early_stopping: dict,
+) -> list[str]:
+    """Choose the train-map macro used for checkpoint monitoring.
+
+    ``full_train`` preserves the original safety contract.  The explicit
+    subset scope is used only when a large seed-map protocol intentionally
+    evaluates a documented fixed subset of its training maps.
+    """
+
+    eval_variant_set = set(eval_variants)
+    evaluated_train_variants = [
+        variant for variant in train_rollout_variants if variant in eval_variant_set
+    ]
+    missing_train_rollouts = sorted(
+        set(train_rollout_variants) - eval_variant_set
+    )
+    scope = early_stopping["evaluation_scope"]
+    if scope == "full_train":
+        if early_stopping["enabled"] and missing_train_rollouts:
+            raise ValueError(
+                "GCRL early_stopping.evaluation_scope=full_train requires every "
+                "training map in the evaluation selection; "
+                f"missing={missing_train_rollouts}"
+            )
+        selected = train_rollout_variants if not missing_train_rollouts else []
+    elif scope == "evaluated_train_subset":
+        selected = evaluated_train_variants
+    else:  # normalize_baseline_config() validates this before the backend runs.
+        raise ValueError(f"Unsupported early_stopping.evaluation_scope: {scope!r}")
+    if early_stopping["enabled"] and not selected:
+        raise ValueError(
+            "GCRL early_stopping requires at least one evaluated training map"
+        )
+    return selected
+
+
 def _update_early_stopping(
     state: dict,
     *,
@@ -269,14 +308,12 @@ def train_gcrl_baseline(config: dict) -> Path:
         for variant, record in prepared.manifest["variants"].items()
         if int(record["train_episode_count"]) > 0
     ]
-    missing_train_rollouts = sorted(
-        set(train_rollout_variants) - set(selections.eval.selected_variants)
+    early_stopping_scope = config["early_stopping"]["evaluation_scope"]
+    train_evaluation_variants = _resolve_train_evaluation_variants(
+        train_rollout_variants,
+        selections.eval.selected_variants,
+        config["early_stopping"],
     )
-    if config["early_stopping"]["enabled"] and missing_train_rollouts:
-        raise ValueError(
-            "GCRL early_stopping requires every training map in the evaluation "
-            f"selection; missing={missing_train_rollouts}"
-        )
 
     algorithm_config = _agent_config(config)
     if algorithm_config["normalize_observations"]:
@@ -390,9 +427,9 @@ def train_gcrl_baseline(config: dict) -> Path:
                     seed_map_eval=selections.seed_map_eval,
                 )
                 train_success = None
-                if not missing_train_rollouts:
+                if train_evaluation_variants:
                     train_success = _train_map_success_macro(
-                        rollout, train_rollout_variants
+                        rollout, train_evaluation_variants
                     )
                     early_stopping_state = _update_early_stopping(
                         early_stopping_state,
@@ -448,6 +485,8 @@ def train_gcrl_baseline(config: dict) -> Path:
         "train_variants": selections.train.selected_variants,
         "eval_variants": selections.eval.selected_variants,
         "train_rollout_variants": train_rollout_variants,
+        "train_evaluation_variants": train_evaluation_variants,
+        "train_evaluation_scope": early_stopping_scope,
         "configured_n_steps": config["n_steps"],
         "n_steps": total_step,
         "n_steps_per_epoch": config["n_steps_per_epoch"],
