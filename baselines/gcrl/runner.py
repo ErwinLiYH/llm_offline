@@ -77,7 +77,7 @@ def _select_device(configured):
             index = 0
         else:
             raise ValueError(
-                "CRL/HIQL device must be cpu, cuda, cuda:<index>, gpu:<index>, "
+                "GCRL device must be cpu, cuda, cuda:<index>, gpu:<index>, "
                 "a GPU index, or a bool"
             )
     else:
@@ -272,7 +272,7 @@ def _validation_metrics(
 
 def train_gcrl_baseline(config: dict) -> Path:
     if config["logging"]["wandb"]["enabled"]:
-        raise ValueError("CRL/HIQL smoke backend currently requires logging.wandb.enabled=false")
+        raise ValueError("GCRL backend currently requires logging.wandb.enabled=false")
     versions = runtime_versions()
     selections = resolve_baseline_selections(config)
     experiment_id, run_dir = create_run_dir(

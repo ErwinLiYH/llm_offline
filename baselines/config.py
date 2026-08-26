@@ -126,6 +126,27 @@ _ALGORITHM_FIELDS = {
         "actor_p_randomgoal",
         "actor_geom_sample",
     },
+    "qrl": {
+        "batch_size",
+        "learning_rate",
+        "discount",
+        "quasimetric_type",
+        "latent_dim",
+        "iqe_dim_per_component",
+        "eps",
+        "actor_loss",
+        "alpha",
+        "const_std",
+        "normalize_observations",
+        "value_p_curgoal",
+        "value_p_trajgoal",
+        "value_p_randomgoal",
+        "value_geom_sample",
+        "actor_p_curgoal",
+        "actor_p_trajgoal",
+        "actor_p_randomgoal",
+        "actor_geom_sample",
+    },
 }
 
 _GCRL_DEFAULTS = {
@@ -162,6 +183,27 @@ _GCRL_DEFAULTS = {
         "value_p_curgoal": 0.2,
         "value_p_trajgoal": 0.5,
         "value_p_randomgoal": 0.3,
+        "value_geom_sample": True,
+        "actor_p_curgoal": 0.0,
+        "actor_p_trajgoal": 1.0,
+        "actor_p_randomgoal": 0.0,
+        "actor_geom_sample": False,
+    },
+    "qrl": {
+        "batch_size": 1024,
+        "learning_rate": 3e-4,
+        "discount": 0.99,
+        "quasimetric_type": "iqe",
+        "latent_dim": 512,
+        "iqe_dim_per_component": 8,
+        "eps": 0.05,
+        "actor_loss": "ddpgbc",
+        "alpha": 0.003,
+        "const_std": True,
+        "normalize_observations": True,
+        "value_p_curgoal": 0.0,
+        "value_p_trajgoal": 0.0,
+        "value_p_randomgoal": 1.0,
         "value_geom_sample": True,
         "actor_p_curgoal": 0.0,
         "actor_p_trajgoal": 1.0,
@@ -227,7 +269,7 @@ _TRAINING_DIAGNOSTICS_DEFAULTS = {
     "action_probe_size": 1024,
 }
 
-# CRL/HIQL can be given a deliberately generous update ceiling and stop only
+# GCRL agents can be given a deliberately generous update ceiling and stop only
 # after a complete checkpoint evaluation shows a sustained train-map plateau.
 # The held-out variants are never consulted by this rule.
 _EARLY_STOPPING_DEFAULTS = {
@@ -509,7 +551,12 @@ def _normalize_algorithm_config(algorithm: str, value) -> dict:
         config["update_actor_interval"] = _positive_int(
             config["update_actor_interval"], "algorithm_config.update_actor_interval"
         )
-    for field in ("latent_dim", "subgoal_steps", "rep_dim"):
+    for field in (
+        "latent_dim",
+        "iqe_dim_per_component",
+        "subgoal_steps",
+        "rep_dim",
+    ):
         if field in config:
             config[field] = _positive_int(
                 config[field], f"algorithm_config.{field}"
@@ -526,6 +573,7 @@ def _normalize_algorithm_config(algorithm: str, value) -> dict:
         "low_alpha",
         "high_alpha",
         "global_grad_norm_clip",
+        "eps",
     }
     nonnegative_fields = {
         "target_smoothing_sigma",
@@ -591,6 +639,27 @@ def _normalize_algorithm_config(algorithm: str, value) -> dict:
             raise ValueError("hiql requires algorithm_config.actor_p_curgoal=0")
         if algorithm == "crl" and config["batch_size"] < 2:
             raise ValueError("crl requires algorithm_config.batch_size >= 2")
+        if algorithm == "qrl":
+            quasimetric_type = config["quasimetric_type"]
+            if quasimetric_type not in {"iqe", "mrn"}:
+                raise ValueError(
+                    "qrl algorithm_config.quasimetric_type must be iqe or mrn"
+                )
+            actor_loss = config["actor_loss"]
+            if actor_loss not in {"awr", "ddpgbc"}:
+                raise ValueError(
+                    "qrl algorithm_config.actor_loss must be awr or ddpgbc"
+                )
+            if config["latent_dim"] % 2 != 0:
+                raise ValueError("qrl algorithm_config.latent_dim must be even")
+            if (
+                quasimetric_type == "iqe"
+                and config["latent_dim"] % config["iqe_dim_per_component"] != 0
+            ):
+                raise ValueError(
+                    "qrl algorithm_config.latent_dim must be divisible by "
+                    "iqe_dim_per_component"
+                )
     if algorithm == "mlp_bc" and config.get("policy_type", "deterministic") != "deterministic":
         raise ValueError("mlp_bc only supports policy_type='deterministic' in this baseline")
     if config.get("global_grad_norm_clip") is not None:
@@ -748,7 +817,7 @@ def _normalize_early_stopping(
     config["evaluation_scope"] = scope
     if config["enabled"]:
         if algorithm not in _GCRL_DEFAULTS:
-            raise ValueError("early_stopping is currently supported only by CRL/HIQL")
+            raise ValueError("early_stopping is supported only by GCRL algorithms")
         if not evaluation_enabled:
             raise ValueError("early_stopping requires evaluation.enabled=true")
         if config["min_steps"] > n_steps:
@@ -865,12 +934,12 @@ def normalize_baseline_config(raw_config: dict) -> dict:
             )
         ):
             raise ValueError(
-                "CRL/HIQL do not support component LayerNorm overrides"
+                "GCRL algorithms do not support component LayerNorm overrides"
             )
         if normalized_network["use_batch_norm"]:
-            raise ValueError("CRL/HIQL do not support network.use_batch_norm")
+            raise ValueError("GCRL algorithms do not support network.use_batch_norm")
         if normalized_network["dropout_rate"] is not None:
-            raise ValueError("CRL/HIQL do not support network.dropout_rate")
+            raise ValueError("GCRL algorithms do not support network.dropout_rate")
         if normalized_network["activation"] not in {
             "relu",
             "gelu",
@@ -878,7 +947,7 @@ def normalize_baseline_config(raw_config: dict) -> dict:
             "swish",
         }:
             raise ValueError(
-                "CRL/HIQL network.activation must be relu, gelu, tanh, or swish"
+                "GCRL network.activation must be relu, gelu, tanh, or swish"
             )
 
     training_diagnostics = _normalize_training_diagnostics(
@@ -913,7 +982,7 @@ def normalize_baseline_config(raw_config: dict) -> dict:
             for name, configured in configured_values:
                 if configured is not required:
                     raise ValueError(
-                        f"CRL/HIQL require {name}={str(required).lower()} for "
+                        f"GCRL algorithms require {name}={str(required).lower()} for "
                         "single-goal evaluation"
                     )
             env_config.pop(field, None)

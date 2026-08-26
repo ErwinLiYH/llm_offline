@@ -168,7 +168,7 @@ class GCRLDataset:
     """Compact episodic arrays with within-variant goal relabeling.
 
     Every sampled batch comes from one variant. This prevents CRL's in-batch
-    negatives and HIQL's random goals from crossing incompatible maze maps.
+    negatives and all GCRL random goals from crossing incompatible maze maps.
     """
 
     def __init__(self, episodes: list[GCRLEpisode], *, seed: int):
@@ -522,7 +522,7 @@ class GCRLDataset:
             "masks": 1.0 - successes,
             "rewards": successes - (1.0 if algorithm == "hiql" else 0.0),
         }
-        if algorithm == "crl":
+        if algorithm in {"crl", "qrl"}:
             actor_goal_indices = self._sample_goal_indices(
                 arrays,
                 anchors,

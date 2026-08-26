@@ -44,6 +44,10 @@ class GCRLAgentTest(unittest.TestCase):
             "high_alpha": 3.0,
             "rep_dim": 4,
             "low_actor_rep_grad": False,
+            "quasimetric_type": "iqe",
+            "iqe_dim_per_component": 8,
+            "eps": 0.05,
+            "actor_loss": "ddpgbc",
         }
         config.update(overrides)
         return config
@@ -200,7 +204,44 @@ class GCRLAgentTest(unittest.TestCase):
         self.assertTrue(bool(jnp.isfinite(info["value/value_loss"])))
         self.assertEqual(updated.predict_actions(observations, goals).shape, (8, 2))
 
-    def test_point_ant_crl_hiql_dynamic_map_update_and_rollout(self):
+    def test_qrl_iqe_ddpgbc_and_mrn_awr_update_predict(self):
+        observations, goals, actions = self._base_batch()
+        for quasimetric_type, actor_loss in (
+            ("iqe", "ddpgbc"),
+            ("mrn", "awr"),
+        ):
+            with self.subTest(
+                quasimetric_type=quasimetric_type,
+                actor_loss=actor_loss,
+            ):
+                agent = create_agent(
+                    "qrl",
+                    seed=1,
+                    example_observations=observations[:2],
+                    example_goals=goals[:2],
+                    example_actions=actions[:2],
+                    config=self._config(
+                        quasimetric_type=quasimetric_type,
+                        actor_loss=actor_loss,
+                    ),
+                )
+                batch = {
+                    "observations": observations,
+                    "next_observations": observations,
+                    "actions": actions,
+                    "value_goals": goals,
+                    "actor_goals": goals,
+                    "rewards": jnp.zeros(8),
+                    "masks": jnp.ones(8),
+                }
+                updated, info = agent.update(batch)
+                self.assertTrue(bool(jnp.isfinite(info["value/value_loss"])))
+                self.assertEqual(
+                    updated.predict_actions(observations, goals).shape,
+                    (8, 2),
+                )
+
+    def test_point_ant_all_gcrl_dynamic_map_update_and_rollout(self):
         for env_family, action_dim in (("pointmaze", 2), ("antmaze", 8)):
             baseline_config = normalize_baseline_config(
                 {
@@ -228,7 +269,7 @@ class GCRLAgentTest(unittest.TestCase):
                 )
                 goals = jnp.stack([goal + index * 1e-3 for index in range(4)])
                 actions = jnp.zeros((4, action_dim), dtype=jnp.float32)
-                for algorithm in ("crl", "hiql"):
+                for algorithm in ("crl", "hiql", "qrl"):
                     with self.subTest(env_family=env_family, algorithm=algorithm):
                         agent = create_agent(
                             algorithm,
@@ -250,9 +291,9 @@ class GCRLAgentTest(unittest.TestCase):
                             ),
                             "masks": jnp.ones(4),
                         }
-                        if algorithm == "crl":
+                        if algorithm in {"crl", "qrl"}:
                             batch["actor_goals"] = goals
-                        else:
+                        if algorithm == "hiql":
                             batch.update(
                                 {
                                     "low_actor_goals": goals,

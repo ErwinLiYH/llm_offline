@@ -190,7 +190,7 @@ class BaselineConfigTest(unittest.TestCase):
             )
 
     def test_early_stopping_rejects_non_gcrl_and_disabled_eval(self):
-        with self.assertRaisesRegex(ValueError, "only by CRL/HIQL"):
+        with self.assertRaisesRegex(ValueError, "only by GCRL"):
             normalize_baseline_config(
                 {
                     "algorithm": "mlp_bc",
@@ -242,7 +242,7 @@ class BaselineConfigTest(unittest.TestCase):
         self.assertTrue(config["network"]["critic_use_layer_norm"])
         self.assertIsNone(config["network"]["value_use_layer_norm"])
 
-        with self.assertRaisesRegex(ValueError, "CRL/HIQL"):
+        with self.assertRaisesRegex(ValueError, "GCRL"):
             normalize_baseline_config(
                 {
                     "algorithm": "crl",
@@ -308,6 +308,35 @@ class BaselineConfigTest(unittest.TestCase):
             config["evaluation"]["env_config"]["env_kwargs"],
             {"continuing_task": False, "reset_target": False},
         )
+
+    def test_qrl_defaults_are_normalized(self):
+        qrl = normalize_baseline_config(
+            {"algorithm": "qrl", "train_variants": ["umaze"]}
+        )
+        self.assertEqual(qrl["algorithm_config"]["quasimetric_type"], "iqe")
+        self.assertEqual(qrl["algorithm_config"]["actor_loss"], "ddpgbc")
+        self.assertEqual(qrl["algorithm_config"]["value_p_randomgoal"], 1.0)
+
+    def test_qrl_parameterization_validation(self):
+        with self.assertRaisesRegex(ValueError, "quasimetric_type"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "qrl",
+                    "train_variants": ["umaze"],
+                    "algorithm_config": {"quasimetric_type": "invalid"},
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "divisible"):
+            normalize_baseline_config(
+                {
+                    "algorithm": "qrl",
+                    "train_variants": ["umaze"],
+                    "algorithm_config": {
+                        "latent_dim": 10,
+                        "iqe_dim_per_component": 8,
+                    },
+                }
+            )
 
     def test_gcrl_rejects_conflicting_multi_goal_rollout_config(self):
         with self.assertRaisesRegex(ValueError, "single-goal"):

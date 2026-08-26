@@ -92,6 +92,33 @@ class LengthNormalize(nn.Module):
         return values / norm * jnp.sqrt(values.shape[-1])
 
 
+class Param(nn.Module):
+    """Scalar parameter module adapted from OGBench."""
+
+    init_value: float = 0.0
+
+    @nn.compact
+    def __call__(self):
+        return self.param(
+            "value",
+            init_fn=lambda key: jnp.full((), self.init_value),
+        )
+
+
+class LogParam(nn.Module):
+    """Positive scalar parameter represented in log space."""
+
+    init_value: float = 1.0
+
+    @nn.compact
+    def __call__(self):
+        log_value = self.param(
+            "log_value",
+            init_fn=lambda key: jnp.full((), jnp.log(self.init_value)),
+        )
+        return jnp.exp(log_value)
+
+
 class GoalConditionedEncoder(nn.Module):
     state_encoder: nn.Module | None = None
     concat_encoder: nn.Module | None = None
@@ -219,4 +246,106 @@ class GoalConditionedBilinearValue(nn.Module):
         values = (phi * psi / jnp.sqrt(self.latent_dim)).sum(axis=-1)
         if info:
             return values, phi, psi
+        return values
+
+
+class GoalConditionedMRNValue(nn.Module):
+    """Metric residual network quasimetric from OGBench QRL."""
+
+    hidden_dims: Sequence[int]
+    latent_dim: int
+    activation: str = "gelu"
+    layer_norm: bool = True
+
+    def setup(self):
+        self.phi = MLP(
+            (*self.hidden_dims, self.latent_dim),
+            activation=self.activation,
+            activate_final=False,
+            layer_norm=self.layer_norm,
+        )
+
+    def __call__(self, observations, goals, *, is_phi: bool = False, info: bool = False):
+        if is_phi:
+            phi_state = observations
+            phi_goal = goals
+        else:
+            phi_state = self.phi(observations)
+            phi_goal = self.phi(goals)
+        symmetric_state = phi_state[..., : self.latent_dim // 2]
+        symmetric_goal = phi_goal[..., : self.latent_dim // 2]
+        asymmetric_state = phi_state[..., self.latent_dim // 2 :]
+        asymmetric_goal = phi_goal[..., self.latent_dim // 2 :]
+        squared_distance = ((symmetric_state - symmetric_goal) ** 2).sum(axis=-1)
+        quasimetric = jax.nn.relu(
+            (asymmetric_state - asymmetric_goal).max(axis=-1)
+        )
+        values = jnp.sqrt(jnp.maximum(squared_distance, 1e-12)) + quasimetric
+        if info:
+            return values, phi_state, phi_goal
+        return values
+
+
+class GoalConditionedIQEValue(nn.Module):
+    """Interval quasimetric embedding from OGBench QRL."""
+
+    hidden_dims: Sequence[int]
+    latent_dim: int
+    dim_per_component: int
+    activation: str = "gelu"
+    layer_norm: bool = True
+
+    def setup(self):
+        self.phi = MLP(
+            (*self.hidden_dims, self.latent_dim),
+            activation=self.activation,
+            activate_final=False,
+            layer_norm=self.layer_norm,
+        )
+        self.alpha = Param()
+
+    def __call__(self, observations, goals, *, is_phi: bool = False, info: bool = False):
+        alpha = jax.nn.sigmoid(self.alpha())
+        if is_phi:
+            phi_state = observations
+            phi_goal = goals
+        else:
+            phi_state = self.phi(observations)
+            phi_goal = self.phi(goals)
+        x = jnp.reshape(
+            phi_state,
+            (*phi_state.shape[:-1], -1, self.dim_per_component),
+        )
+        y = jnp.reshape(
+            phi_goal,
+            (*phi_goal.shape[:-1], -1, self.dim_per_component),
+        )
+        valid = x < y
+        xy = jnp.concatenate(jnp.broadcast_arrays(x, y), axis=-1)
+        interval_order = xy.argsort(axis=-1)
+        sorted_xy = jnp.take_along_axis(xy, interval_order, axis=-1)
+        negative_increment_copies = jnp.take_along_axis(
+            valid,
+            interval_order % self.dim_per_component,
+            axis=-1,
+        ) * jnp.where(interval_order < self.dim_per_component, -1, 1)
+        negative_input_copies = jnp.cumsum(
+            negative_increment_copies,
+            axis=-1,
+        )
+        negative_function = -1.0 * (negative_input_copies < 0)
+        negative_function_increment = jnp.concatenate(
+            [
+                negative_function[..., :1],
+                negative_function[..., 1:] - negative_function[..., :-1],
+            ],
+            axis=-1,
+        )
+        components = (sorted_xy * negative_function_increment).sum(axis=-1)
+        values = (
+            alpha * components.mean(axis=-1)
+            + (1.0 - alpha) * components.max(axis=-1)
+        )
+        if info:
+            return values, phi_state, phi_goal
         return values

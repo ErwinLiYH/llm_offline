@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+from baselines import GCRL_ALGORITHMS
 from baselines.config import normalize_baseline_config
 from utils.config_loader import load_merged_config
 
@@ -33,7 +34,7 @@ def main() -> None:
 
     # Backend imports are delayed so config handling works in either isolated
     # environment without importing the other backend's framework.
-    if config["algorithm"] in {"crl", "hiql"}:
+    if config["algorithm"] in GCRL_ALGORITHMS:
         from baselines.gcrl.runner import train_gcrl_baseline as train_baseline
     else:
         from baselines.runner import train_baseline

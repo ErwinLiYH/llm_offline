@@ -1,3 +1,3 @@
-"""JAX goal-conditioned baseline backend (CRL and HIQL)."""
+"""JAX goal-conditioned baseline backend (CRL, HIQL, and QRL)."""
 
-SUPPORTED_GCRL_ALGORITHMS = ("crl", "hiql")
+SUPPORTED_GCRL_ALGORITHMS = ("crl", "hiql", "qrl")
