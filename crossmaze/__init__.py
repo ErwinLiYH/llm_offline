@@ -18,6 +18,8 @@ Public API:
   split shared with the offline training pipeline.
 - `get_map_difficulty_config` / `path_difficulty_config`: versioned geometric
   path/map difficulty metadata shared by ordinary eval and eval hard-sample.
+- `compute_topology_difficulty`: formal whole-map topology difficulty v3.3,
+  returned with its complete top-level-path metrics in one result object.
 
 Heavy imports (gymnasium, env registries) are deferred until `make` or
 `CrossMazeEnv` is first accessed so that `crossmaze.layout` and
@@ -77,6 +79,18 @@ _LAZY_EXPORTS = {
         "crossmaze.eval_position",
         "path_difficulty_config",
     ),
+    "compute_topology_difficulty": (
+        "crossmaze.topology_difficulty",
+        "compute_topology_difficulty",
+    ),
+    "topology_difficulty_config": (
+        "crossmaze.topology_difficulty",
+        "topology_difficulty_config",
+    ),
+    "TopologyDifficultyResult": (
+        "crossmaze.topology_difficulty",
+        "TopologyDifficultyResult",
+    ),
 }
 
 __all__ = [
@@ -93,12 +107,14 @@ __all__ = [
     "REWARD_TYPES",
     "SEED_MAP_VERSION",
     "SeedMapSpec",
+    "TopologyDifficultyResult",
     "build_seed_map_env_paras",
     "build_seed_map_prompt_vars",
     "build_dynamic_map",
     "build_sensing",
     "compute_sensing_arrays",
     "compute_sensing_state",
+    "compute_topology_difficulty",
     "eval_env_spec",
     "eval_reset_options",
     "format_dynamic_visual_map",
@@ -117,6 +133,7 @@ __all__ = [
     "seed_map_generator_hash",
     "seed_map_hash",
     "seed_map_shape",
+    "topology_difficulty_config",
 ]
 
 

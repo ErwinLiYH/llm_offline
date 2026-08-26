@@ -9,10 +9,12 @@ eval 使用的几何启发式指标，不是 D4RL official normalized score，�
 `crossmaze/eval_position.py`。它只用于普通 eval 的 start-goal 描述、地图
 难度和 eval hard-sample。
 
-本指标与 topology `static_difficulty` 是并列但独立的两类指标：
+仓库中现在有三套并列但独立的难度指标：
 
 - `utils/maze_metrics.py` 的 topology `static_difficulty` 用于地图生成、筛选和
   静态拓扑检查，其公式和文档不受 eval difficulty v2 影响；
+- `crossmaze.compute_topology_difficulty` 提供正式整图拓扑难度 v3.3，完整
+  公式见 `docs/topology_difficulty.md`；
 - 本文档的 path/map difficulty 用于评估。
 
 这里的 hard-sample 仅指 `eval_start_goal_mode: hard-sample`。本地 AntMaze
