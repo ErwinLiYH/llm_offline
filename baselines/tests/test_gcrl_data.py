@@ -94,22 +94,30 @@ class GCRLDatasetTest(unittest.TestCase):
             self.assertEqual(batch[key].shape, (8, 3))
         self.assertEqual(batch["rewards"].shape, (8,))
 
-    def test_qrl_batch_uses_full_state_actor_goals(self):
+    def test_qrl_and_gcbc_batches_use_full_state_actor_goals(self):
         dataset = GCRLDataset(
             [_episode("map-a", 0.2), _episode("map-b", 0.8)],
             seed=3,
         )
-        batch = dataset.sample(
-            16,
-            algorithm="qrl",
-            config=_sampling_config(
-                value_p_trajgoal=0.0,
-                value_p_randomgoal=1.0,
+        for algorithm, overrides in (
+            (
+                "qrl",
+                {
+                    "value_p_trajgoal": 0.0,
+                    "value_p_randomgoal": 1.0,
+                },
             ),
-        )
-        self.assertEqual(batch["actor_goals"].shape, (16, 3))
-        self.assertEqual(batch["value_goals"].shape, (16, 3))
-        self.assertEqual(len(np.unique(batch["actions"])), 1)
+            ("gcbc", {}),
+        ):
+            with self.subTest(algorithm=algorithm):
+                batch = dataset.sample(
+                    16,
+                    algorithm=algorithm,
+                    config=_sampling_config(**overrides),
+                )
+                self.assertEqual(batch["actor_goals"].shape, (16, 3))
+                self.assertEqual(batch["value_goals"].shape, (16, 3))
+                self.assertEqual(len(np.unique(batch["actions"])), 1)
 
     def test_normalizer_handles_constant_features(self):
         dataset = GCRLDataset([_episode("map", 0.2)], seed=3)

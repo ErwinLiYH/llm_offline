@@ -522,7 +522,7 @@ class GCRLDataset:
             "masks": 1.0 - successes,
             "rewards": successes - (1.0 if algorithm == "hiql" else 0.0),
         }
-        if algorithm in {"crl", "qrl"}:
+        if algorithm in {"crl", "qrl", "gcbc"}:
             actor_goal_indices = self._sample_goal_indices(
                 arrays,
                 anchors,

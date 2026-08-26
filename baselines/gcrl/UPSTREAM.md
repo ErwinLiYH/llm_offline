@@ -1,12 +1,12 @@
 # Upstream provenance
 
-The state-based CRL, HIQL, and QRL losses and the small Flax network/train-state
+The state-based CRL, HIQL, QRL, and GCBC losses and the small Flax network/train-state
 subset in this directory are adapted from OGBench's `impls` reference code:
 
 - Repository: <https://github.com/seohongpark/ogbench>
 - Commit: `1d4140997f60c52c6fb0702ec100dc988b18c548`
 - OGBench version at that commit: `1.2.1`
-- Source files: `impls/agents/{crl,hiql,qrl}.py` and
+- Source files: `impls/agents/{crl,hiql,qrl,gcbc}.py` and
   `impls/utils/{datasets,encoders,flax_utils,networks}.py`
 - License: MIT, copyright 2024 OGBench Authors
 

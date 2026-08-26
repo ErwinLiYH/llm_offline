@@ -14,10 +14,11 @@ Implemented algorithms:
 - `crl`: JAX/Flax Contrastive RL with the DDPG+BC actor objective.
 - `hiql`: JAX/Flax Hierarchical Implicit Q-Learning.
 - `qrl`: JAX/Flax Quasimetric RL with IQE/MRN and DDPG+BC/AWR variants.
+- `gcbc`: JAX/Flax goal-conditioned behavioral cloning.
 
 BC, TD3+BC, IQL, and ReBRAC use the MIT-licensed
 [d3rlpy project](https://github.com/takuseno/d3rlpy), pinned to 2.8.1. CRL,
-HIQL, and QRL adapt the state-based MIT reference implementations from OGBench 1.2.1;
+HIQL, QRL, and GCBC adapt the state-based MIT reference implementations from OGBench 1.2.1;
 the exact source commit, local adaptations, and upstream license are recorded
 in [`gcrl/UPSTREAM.md`](gcrl/UPSTREAM.md). Resolved algorithm settings and
 runtime package versions are recorded in every run.
@@ -35,7 +36,7 @@ Gymnasium Robotics 1.4.2, and Minari 0.5.3. The setup script installs the tested
 maze stack explicitly, then installs d3rlpy with `--no-deps`. The training entry
 point verifies the core package versions before loading data.
 
-CRL, HIQL, and QRL use a separate JAX environment so the CUDA/JAX stack cannot alter
+CRL, HIQL, QRL, and GCBC use a separate JAX environment so the CUDA/JAX stack cannot alter
 the pinned PyTorch baseline stack:
 
 ```bash
@@ -73,6 +74,9 @@ micromamba run -n llm_offline_gcrl python baseline_train.py \
 
 micromamba run -n llm_offline_gcrl python baseline_train.py \
   --config baselines/configs/base.pointmaze.yaml baselines/configs/qrl.yaml
+
+micromamba run -n llm_offline_gcrl python baseline_train.py \
+  --config baselines/configs/base.antmaze.yaml baselines/configs/gcbc.yaml
 ```
 
 `n_steps` is the number of minibatch parameter updates. `n_steps_per_epoch` only
@@ -227,7 +231,7 @@ also writes `model_metadata.json` with the instantiated trainable parameter
 count, body depth, residual block count, and total Dense-layer count including
 the action head.
 
-CRL/HIQL/QRL load complete episodes because their goals are relabeled from future
+CRL/HIQL/QRL/GCBC load complete episodes because their goals are relabeled from future
 or random achieved states. Relabeling never crosses a maze variant. Each
 minibatch is also variant-homogeneous, so CRL's in-batch negatives cannot mix
 incompatible maps. HIQL uses the single upstream-style `high_actor_targets`
@@ -241,7 +245,7 @@ repeats the same reset for the real episode; the captured goal dynamic map has
 Local variants honor top-level `reward_type: sparse | dense` and select the
 corresponding reward-typed dataset directory. Remote Minari variants have fixed
 reward types and reject incompatible overrides. Training over mixed reward
-types is rejected unless `allow_mixed_reward_types: true` is explicit. BC does
+types is rejected unless `allow_mixed_reward_types: true` is explicit. BC and GCBC do
 not optimize stored rewards, while TD3+BC, IQL, and ReBRAC do. CRL, HIQL, and QRL construct their
 goal-conditioned learning targets from relabeled state-goal pairs rather than
 using the stored environment reward as their objective.
@@ -273,6 +277,10 @@ micromamba run -n llm_offline_gcrl python baseline_train.py --config \
 micromamba run -n llm_offline_gcrl python baseline_train.py --config \
   baselines/configs/base.pointmaze.yaml baselines/configs/qrl.yaml \
   baselines/tests/fixtures/smoke.gcrl.local.yaml --experiment_id smoke-qrl
+
+micromamba run -n llm_offline_gcrl python baseline_train.py --config \
+  baselines/configs/base.pointmaze.yaml baselines/configs/gcbc.yaml \
+  baselines/tests/fixtures/smoke.gcrl.local.yaml --experiment_id smoke-gcbc
 ```
 
 Rollout output keeps aggregate and per-variant success/return/length metrics

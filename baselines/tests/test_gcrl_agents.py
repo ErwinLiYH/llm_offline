@@ -241,6 +241,34 @@ class GCRLAgentTest(unittest.TestCase):
                     (8, 2),
                 )
 
+    def test_gcbc_update_predict_and_checkpoint_roundtrip(self):
+        observations, goals, actions = self._base_batch()
+        agent = create_agent(
+            "gcbc",
+            seed=1,
+            example_observations=observations[:2],
+            example_goals=goals[:2],
+            example_actions=actions[:2],
+            config=self._config(),
+        )
+        batch = {
+            "observations": observations,
+            "next_observations": observations,
+            "actions": actions,
+            "value_goals": goals,
+            "actor_goals": goals,
+            "rewards": jnp.zeros(8),
+            "masks": jnp.ones(8),
+        }
+        updated, info = agent.update(batch)
+        self.assertTrue(bool(jnp.isfinite(info["actor/actor_loss"])))
+        self.assertEqual(updated.predict_actions(observations, goals).shape, (8, 2))
+        restored = flax.serialization.from_bytes(
+            updated,
+            flax.serialization.to_bytes(updated),
+        )
+        self.assertEqual(restored.network.step, updated.network.step)
+
     def test_point_ant_all_gcrl_dynamic_map_update_and_rollout(self):
         for env_family, action_dim in (("pointmaze", 2), ("antmaze", 8)):
             baseline_config = normalize_baseline_config(
@@ -269,7 +297,7 @@ class GCRLAgentTest(unittest.TestCase):
                 )
                 goals = jnp.stack([goal + index * 1e-3 for index in range(4)])
                 actions = jnp.zeros((4, action_dim), dtype=jnp.float32)
-                for algorithm in ("crl", "hiql", "qrl"):
+                for algorithm in ("crl", "hiql", "qrl", "gcbc"):
                     with self.subTest(env_family=env_family, algorithm=algorithm):
                         agent = create_agent(
                             algorithm,
@@ -291,7 +319,7 @@ class GCRLAgentTest(unittest.TestCase):
                             ),
                             "masks": jnp.ones(4),
                         }
-                        if algorithm in {"crl", "qrl"}:
+                        if algorithm in {"crl", "qrl", "gcbc"}:
                             batch["actor_goals"] = goals
                         if algorithm == "hiql":
                             batch.update(

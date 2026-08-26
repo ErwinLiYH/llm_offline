@@ -309,13 +309,18 @@ class BaselineConfigTest(unittest.TestCase):
             {"continuing_task": False, "reset_target": False},
         )
 
-    def test_qrl_defaults_are_normalized(self):
+    def test_qrl_and_gcbc_defaults_are_normalized(self):
         qrl = normalize_baseline_config(
             {"algorithm": "qrl", "train_variants": ["umaze"]}
         )
         self.assertEqual(qrl["algorithm_config"]["quasimetric_type"], "iqe")
         self.assertEqual(qrl["algorithm_config"]["actor_loss"], "ddpgbc")
         self.assertEqual(qrl["algorithm_config"]["value_p_randomgoal"], 1.0)
+        gcbc = normalize_baseline_config(
+            {"algorithm": "gcbc", "train_variants": ["umaze"]}
+        )
+        self.assertEqual(gcbc["algorithm_config"]["batch_size"], 1024)
+        self.assertEqual(gcbc["algorithm_config"]["actor_p_trajgoal"], 1.0)
 
     def test_qrl_parameterization_validation(self):
         with self.assertRaisesRegex(ValueError, "quasimetric_type"):

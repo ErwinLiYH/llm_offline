@@ -444,6 +444,86 @@ class QRLAgent(flax.struct.PyTreeNode):
         )
 
 
+class GCBCAgent(flax.struct.PyTreeNode):
+    """Goal-conditioned behavioral cloning adapted from OGBench."""
+
+    rng: Any
+    network: TrainState
+    config: Any = nonpytree_field()
+
+    def actor_loss(self, batch, grad_params):
+        distribution = self.network.select("actor")(
+            batch["observations"],
+            batch["actor_goals"],
+            params=grad_params,
+        )
+        log_prob = distribution.log_prob(batch["actions"])
+        actor_loss = -log_prob.mean()
+        return actor_loss, {
+            "actor_loss": actor_loss,
+            "bc_log_prob": log_prob.mean(),
+            "mse": jnp.mean((distribution.mode() - batch["actions"]) ** 2),
+            "std": jnp.mean(distribution.scale_diag),
+        }
+
+    @jax.jit
+    def total_loss(self, batch, grad_params, rng=None):
+        del rng
+        actor_loss, actor_info = self.actor_loss(batch, grad_params)
+        return actor_loss, {
+            f"actor/{key}": value for key, value in actor_info.items()
+        }
+
+    @jax.jit
+    def update(self, batch):
+        new_rng, _ = jax.random.split(self.rng)
+
+        def loss_fn(params):
+            return self.total_loss(batch, params)
+
+        network, info = self.network.apply_loss_fn(loss_fn)
+        return self.replace(rng=new_rng, network=network), info
+
+    @jax.jit
+    def predict_actions(self, observations, goals):
+        distribution = self.network.select("actor")(observations, goals)
+        return jnp.clip(distribution.mode(), -1.0, 1.0)
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        seed: int,
+        example_observations,
+        example_goals,
+        example_actions,
+        config: dict,
+    ) -> "GCBCAgent":
+        rng = jax.random.PRNGKey(seed)
+        rng, init_rng = jax.random.split(rng)
+        actor = GoalConditionedActor(
+            hidden_dims=tuple(config["hidden_dims"]),
+            action_dim=example_actions.shape[-1],
+            activation=config["activation"],
+            constant_std=config["const_std"],
+        )
+        model_def = ModuleDict({"actor": actor})
+        params = model_def.init(
+            init_rng,
+            actor=(example_observations, example_goals),
+        )["params"]
+        network = TrainState.create(
+            model_def,
+            params,
+            optax.adam(learning_rate=config["learning_rate"]),
+        )
+        return cls(
+            rng=rng,
+            network=network,
+            config=flax.core.FrozenDict(config),
+        )
+
+
 class HIQLAgent(flax.struct.PyTreeNode):
     rng: Any
     network: TrainState
@@ -713,6 +793,7 @@ def create_agent(
         "crl": CRLAgent,
         "hiql": HIQLAgent,
         "qrl": QRLAgent,
+        "gcbc": GCBCAgent,
     }.get(algorithm)
     if agent_class is None:
         raise ValueError(f"Unsupported GCRL algorithm: {algorithm!r}")
