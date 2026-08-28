@@ -1,0 +1,10 @@
+Move the ant torso to the target xy position while keeping the robot stable.
+
+Visual map (# = wall, . = open, C = current, G = goal, S = current and goal):
+{dmap}
+
+Predict the eight continuous joint torques in [-1, 1], ordered as back-right
+hip/ankle, front-left hip/ankle, front-right hip/ankle, and back-left hip/ankle.
+
+Current observation:
+{obs_text}
