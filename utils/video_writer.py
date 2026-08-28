@@ -33,7 +33,21 @@ def resolve_video_save_max_pending(config: dict, workers: int) -> int:
     return max_pending
 
 
-def save_video(frames: list[np.ndarray], output_path: str, fps: int) -> None:
+def resolve_video_macro_block_size(config: dict) -> int:
+    macro_block_size = int(config.get("video_macro_block_size", 16))
+    if macro_block_size < 1:
+        raise ValueError(
+            f"video_macro_block_size must be >= 1, got {macro_block_size}"
+        )
+    return macro_block_size
+
+
+def save_video(
+    frames: list[np.ndarray],
+    output_path: str,
+    fps: int,
+    macro_block_size: int = 16,
+) -> None:
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     ext = os.path.splitext(output_path)[1].lower()
     if ext == ".gif":
@@ -47,7 +61,12 @@ def save_video(frames: list[np.ndarray], output_path: str, fps: int) -> None:
         return
 
     try:
-        imageio.mimsave(output_path, frames, fps=fps)
+        imageio.mimsave(
+            output_path,
+            frames,
+            fps=fps,
+            macro_block_size=macro_block_size,
+        )
     except Exception as exc:
         raise RuntimeError(
             f"Failed to save video to {output_path}. mp4 output requires a working "
@@ -59,6 +78,7 @@ class VideoSaveManager:
     def __init__(self, config: dict):
         self.workers = resolve_video_save_workers(config)
         self.max_pending = resolve_video_save_max_pending(config, self.workers)
+        self.macro_block_size = resolve_video_macro_block_size(config)
         self._executor = (
             ThreadPoolExecutor(
                 max_workers=self.workers,
@@ -83,13 +103,19 @@ class VideoSaveManager:
         if self._closed:
             raise RuntimeError("Cannot submit video after VideoSaveManager.close()")
         if self._executor is None:
-            save_video(frames, output_path, fps)
+            save_video(frames, output_path, fps, self.macro_block_size)
             return
 
         while len(self._pending) >= self.max_pending:
             self._wait_for_one()
         self._pending.add(
-            self._executor.submit(save_video, frames, output_path, fps)
+            self._executor.submit(
+                save_video,
+                frames,
+                output_path,
+                fps,
+                self.macro_block_size,
+            )
         )
 
     def _wait_for_one(self) -> None:

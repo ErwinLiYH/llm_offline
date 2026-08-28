@@ -304,7 +304,7 @@ class EvalParallelTest(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def blocking_save(frames, output_path, fps):
+        def blocking_save(frames, output_path, fps, macro_block_size):
             started.set()
             release.wait(timeout=5)
 
@@ -320,6 +320,21 @@ class EvalParallelTest(unittest.TestCase):
             self.assertTrue(manager.asynchronous)
             release.set()
             manager.close()
+
+    def test_video_save_manager_passes_configured_macro_block_size(self):
+        manager = VideoSaveManager(
+            {
+                "video_save_workers": 0,
+                "video_macro_block_size": 1,
+            }
+        )
+        with mock.patch("utils.video_writer.save_video") as save_mock:
+            manager.submit([], "/tmp/video.mp4", 30)
+        save_mock.assert_called_once_with([], "/tmp/video.mp4", 30, 1)
+
+    def test_video_save_manager_rejects_invalid_macro_block_size(self):
+        with self.assertRaisesRegex(ValueError, "video_macro_block_size"):
+            VideoSaveManager({"video_macro_block_size": 0})
 
     def test_video_save_manager_propagates_background_error(self):
         manager = VideoSaveManager(
@@ -341,7 +356,7 @@ class EvalParallelTest(unittest.TestCase):
         release = threading.Event()
         third_submit_returned = threading.Event()
 
-        def blocking_save(frames, output_path, fps):
+        def blocking_save(frames, output_path, fps, macro_block_size):
             started.set()
             release.wait(timeout=5)
 
