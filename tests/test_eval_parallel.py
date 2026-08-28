@@ -300,6 +300,40 @@ class EvalParallelTest(unittest.TestCase):
             env,
         )
 
+    def test_explicit_eval_prompt_template_path_preserves_prompt_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            prompt_path = Path(temp_dir) / "legacy-prompt.txt"
+            prompt_path.write_text("Legacy {obs_text}\n", encoding="utf-8")
+            config = {
+                "resolved_eval_prompt_name": "parallel_full_sensing",
+                "eval_prompt_template_path": str(prompt_path),
+            }
+
+            template = evaluate.load_eval_prompt_template(
+                config,
+                "antmaze",
+                "parallel_full_sensing",
+            )
+
+        self.assertEqual(template, "Legacy {obs_text}\n")
+        self.assertEqual(
+            config["resolved_eval_prompt_template_path"],
+            str(prompt_path.resolve()),
+        )
+        self.assertEqual(len(config["resolved_eval_prompt_template_sha256"]), 64)
+        self.assertEqual(
+            config["resolved_eval_prompt_name"],
+            "parallel_full_sensing",
+        )
+
+    def test_explicit_eval_prompt_template_path_must_exist(self):
+        with self.assertRaisesRegex(FileNotFoundError, "Prompt template file not found"):
+            evaluate.load_eval_prompt_template(
+                {"eval_prompt_template_path": "/tmp/missing-eval-prompt.txt"},
+                "antmaze",
+                "parallel_full_sensing",
+            )
+
     def test_video_save_manager_submits_without_waiting(self):
         started = threading.Event()
         release = threading.Event()

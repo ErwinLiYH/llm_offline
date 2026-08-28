@@ -48,6 +48,21 @@ def load_named_templates(env_family: str, prompt_names: list[str]) -> list[str]:
     return [templates_by_name[name] for name in prompt_names]
 
 
+def load_template_file(path: str) -> tuple[str, str]:
+    """Load one explicitly configured prompt file and return text plus real path."""
+    if not isinstance(path, str) or not path.strip():
+        raise ValueError("Prompt template path must be a non-empty string")
+
+    resolved_path = os.path.realpath(os.path.expanduser(path.strip()))
+    if not os.path.isfile(resolved_path):
+        raise FileNotFoundError(f"Prompt template file not found: {resolved_path}")
+    with open(resolved_path, "r", encoding="utf-8") as f:
+        template = f.read()
+    if not template.strip():
+        raise ValueError(f"Prompt template file is empty: {resolved_path}")
+    return template, resolved_path
+
+
 def render_template(template: str, prompt_vars: dict, **extra_vars) -> str:
     """Render a prompt template with strict missing-variable validation."""
     values = dict(prompt_vars)

@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import uuid
@@ -53,7 +54,7 @@ from utils.model_path_glob import resolve_trailing_wildcard_path
 from utils.obs_tag import (
     apply_checkpoint_random_obs_tag_config as _apply_checkpoint_random_obs_tag_config,
 )
-from utils.prompt_loader import load_named_templates, load_template_names
+from utils.prompt_loader import load_named_templates, load_template_file, load_template_names
 from utils.rollout.evaluate_runner import run_evaluate_variant
 from utils.sensing_config import apply_checkpoint_sensing_config as _apply_checkpoint_sensing_config
 from utils.seed_map_config import seed_map_section_enabled
@@ -394,6 +395,20 @@ def apply_checkpoint_prompt_config(config: dict, *, assume_yes: bool) -> dict:
     return merged
 
 
+def load_eval_prompt_template(config: dict, env_family: str, prompt_name: str) -> str:
+    """Load the named shared prompt or an explicit eval-only template file."""
+    configured_path = config.get("eval_prompt_template_path")
+    if configured_path is None:
+        return load_named_templates(env_family, [prompt_name])[0]
+
+    template, resolved_path = load_template_file(configured_path)
+    config["resolved_eval_prompt_template_path"] = resolved_path
+    config["resolved_eval_prompt_template_sha256"] = hashlib.sha256(
+        template.encode("utf-8")
+    ).hexdigest()
+    return template
+
+
 
 def get_results_base_dir(config: dict) -> str:
     """Build the base results directory from model/training context only."""
@@ -691,7 +706,12 @@ def main():
         if prompt_name is None:
             prompt_name = load_template_names(env_family)[0]
             config["resolved_eval_prompt_name"] = prompt_name
-        template = load_named_templates(env_family, [prompt_name])[0]
+        template = load_eval_prompt_template(config, env_family, prompt_name)
+        if dist_context.is_main_process and "resolved_eval_prompt_template_path" in config:
+            print(
+                "[eval] Using explicit prompt template file: "
+                f"{config['resolved_eval_prompt_template_path']}"
+            )
         config["eval_config_source"] = (
             args.config[0] if len(args.config) == 1 else list(args.config)
         )
