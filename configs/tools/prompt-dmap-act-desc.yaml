@@ -1,0 +1,2 @@
+# AntMaze seed-map prompt ablation: dmap-minimal plus the v2 action description.
+prompt_templete_index: ["dmap-act-desc"]

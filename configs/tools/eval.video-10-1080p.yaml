@@ -1,0 +1,25 @@
+# Record ten 1080p rollout videos sequentially.
+# Layer this file last so these display-video settings override the base eval config.
+
+num_episodes: 10
+
+parallel_backend: single
+rollout_worker_num: 1
+eval_distribute_variants: false
+
+record_video: true
+record_all: true
+video_fps: 30
+video_format: mp4
+
+# Disable imageio's default 16-pixel macroblock resize (1080 -> 1088).
+video_macro_block_size: 1
+
+# Encode synchronously as well, so neither rollout nor video saving runs in parallel.
+video_save_workers: 0
+video_save_max_pending: 0
+mujoco_gl: egl
+
+env_kwargs:
+  width: 1920
+  height: 1080

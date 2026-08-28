@@ -15,6 +15,6 @@ variants:
   - umaze
   - medium
   - large
-num_episodes: 100
+num_episodes: 50
 
 eval_start_goal_mode: random-start-goal

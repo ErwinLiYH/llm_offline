@@ -17,6 +17,6 @@ variants:
   - medium-diverse
   - large-diverse
   - ultra
-num_episodes: 100
+num_episodes: 50
 
 eval_start_goal_mode: fix-start-goal
