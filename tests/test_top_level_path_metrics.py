@@ -159,6 +159,72 @@ class TopLevelPathMetricsTest(unittest.TestCase):
         self.assertGreater(result.difficulty.path_count_component, 0.0)
         self.assertEqual(result.to_dict()["difficulty"]["version"], "v3.3")
 
+    def test_generated_antmaze_static_difficulty_bands(self):
+        from crossmaze.variants import ANTMAZE_ENV_FACTS
+        from utils.maze_metrics import choose_farthest_free_pair, compute_maze_metrics
+
+        expected_bands = {
+            **{
+                f"test-layout-{index:02d}": (40.0, 50.0)
+                for index in range(5, 9)
+            },
+            **{
+                f"test-layout-{index:02d}": (57.0, 63.0)
+                for index in range(9, 11)
+            },
+        }
+        max_rows = max(
+            len(facts["maze_map"]) for facts in ANTMAZE_ENV_FACTS.values()
+        )
+        max_cols = max(
+            len(facts["maze_map"][0]) for facts in ANTMAZE_ENV_FACTS.values()
+        )
+        self.assertEqual((max_rows, max_cols), (12, 16))
+
+        for name, (lower, upper) in expected_bands.items():
+            with self.subTest(variant=name):
+                facts = ANTMAZE_ENV_FACTS[name]
+                maze_map = facts["maze_map"]
+                start, goal = choose_farthest_free_pair(maze_map)
+                metrics = compute_maze_metrics(maze_map, start=start, goal=goal)
+                self.assertGreaterEqual(metrics.static_difficulty, lower)
+                self.assertLessEqual(metrics.static_difficulty, upper)
+                self.assertLessEqual(len(maze_map), max_rows)
+                self.assertLessEqual(len(maze_map[0]), max_cols)
+                self.assertEqual(facts["env_paras"]["max_episode_steps"], 1000)
+
+    def test_generated_pointmaze_v2_static_difficulty_bands(self):
+        from utils.maze_metrics import choose_farthest_free_pair, compute_maze_metrics
+
+        expected_bands = {
+            "test-layoutV2-07": (40.0, 50.0),
+            "test-layoutV2-08": (60.0, 70.0),
+            "test-layoutV2-09": (60.0, 70.0),
+            "test-layoutV2-10": (78.0, 83.0),
+        }
+        max_rows = max(
+            len(facts["maze_map"]) for facts in POINTMAZE_ENV_FACTS.values()
+        )
+        max_cols = max(
+            len(facts["maze_map"][0]) for facts in POINTMAZE_ENV_FACTS.values()
+        )
+        self.assertEqual((max_rows, max_cols), (15, 15))
+
+        for name, (lower, upper) in expected_bands.items():
+            with self.subTest(variant=name):
+                facts = POINTMAZE_ENV_FACTS[name]
+                maze_map = facts["maze_map"]
+                start, goal = choose_farthest_free_pair(maze_map)
+                metrics = compute_maze_metrics(maze_map, start=start, goal=goal)
+                self.assertGreaterEqual(metrics.static_difficulty, lower)
+                self.assertLessEqual(metrics.static_difficulty, upper)
+                self.assertLessEqual(len(maze_map), max_rows)
+                self.assertLessEqual(len(maze_map[0]), max_cols)
+                self.assertEqual(
+                    facts["env_paras"]["max_episode_steps"],
+                    6 * len(maze_map) * len(maze_map[0]),
+                )
+
     def test_pointmaze_v3_3_ordering_contract(self):
         names = [
             "open",
@@ -166,7 +232,7 @@ class TopLevelPathMetricsTest(unittest.TestCase):
             "medium",
             "large",
             *[f"local-layoutV2-{index:02d}" for index in range(1, 13)],
-            *[f"test-layoutV2-{index:02d}" for index in range(1, 7)],
+            *[f"test-layoutV2-{index:02d}" for index in range(1, 11)],
         ]
         scores = {
             name: compute_top_level_path_difficulty(

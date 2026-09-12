@@ -93,6 +93,10 @@ def _build_local_variant(
 
 
 _POINTMAZE_V2_DESCS = {
+    "40-50": (
+        "A generated V2 PointMaze layout in the 40-50 static-difficulty band, with broad alternate routes and comparatively light bottlenecks.",
+        "一个生成的 V2 PointMaze 布局，静态难度位于 40-50 档，包含较多替代路线和相对较轻的瓶颈。",
+    ),
     "55-60": (
         "A generated V2 PointMaze layout in the 55-60 static-difficulty band, with moderate branches and bottlenecks.",
         "一个生成的 V2 PointMaze 布局，静态难度位于 55-60 档，包含中等数量的分支和瓶颈。",
@@ -104,6 +108,10 @@ _POINTMAZE_V2_DESCS = {
     "65-70": (
         "A generated V2 PointMaze layout in the 65-70 static-difficulty band, with long routes, dead ends, and repeated bottlenecks.",
         "一个生成的 V2 PointMaze 布局，静态难度位于 65-70 档，包含长路线、死路和重复瓶颈。",
+    ),
+    "78-83": (
+        "A generated V2 PointMaze layout in the 78-83 static-difficulty band, with a long high-turn route, many dead ends, and strong bottlenecks.",
+        "一个生成的 V2 PointMaze 布局，静态难度位于 78-83 档，包含高转弯率长路线、多条死路和强瓶颈。",
     ),
 }
 
@@ -365,6 +373,30 @@ POINTMAZE_VARIANTS = {
         env_name="PointMaze Test Layout V2 06",
         structure_desc_en=_POINTMAZE_V2_DESCS["65-70"][0],
         structure_desc_zh=_POINTMAZE_V2_DESCS["65-70"][1],
+    ),
+    "test-layoutV2-07": _build_local_variant(
+        variant_name="test-layoutV2-07",
+        env_name="PointMaze Test Layout V2 07",
+        structure_desc_en=_POINTMAZE_V2_DESCS["40-50"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["40-50"][1],
+    ),
+    "test-layoutV2-08": _build_local_variant(
+        variant_name="test-layoutV2-08",
+        env_name="PointMaze Test Layout V2 08",
+        structure_desc_en=_POINTMAZE_V2_DESCS["60-65"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["60-65"][1],
+    ),
+    "test-layoutV2-09": _build_local_variant(
+        variant_name="test-layoutV2-09",
+        env_name="PointMaze Test Layout V2 09",
+        structure_desc_en=_POINTMAZE_V2_DESCS["65-70"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["65-70"][1],
+    ),
+    "test-layoutV2-10": _build_local_variant(
+        variant_name="test-layoutV2-10",
+        env_name="PointMaze Test Layout V2 10",
+        structure_desc_en=_POINTMAZE_V2_DESCS["78-83"][0],
+        structure_desc_zh=_POINTMAZE_V2_DESCS["78-83"][1],
     ),
     "local-EXturn": _build_local_variant(
         variant_name="local-EXturn",

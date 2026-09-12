@@ -1,4 +1,4 @@
-"""Generate AntMaze grid layouts with design-centric topology targets."""
+"""Generate AntMaze and PointMaze grid layouts with topology targets."""
 
 from __future__ import annotations
 
@@ -55,6 +55,70 @@ PROFILES = {
         min_junctions=14,
         max_open_2x2=0,
     ),
+    # PointMaze test-layoutV2 profiles.  Every bound is at most the current
+    # PointMaze registry maximum of 15 rows by 15 columns.
+    "pointmaze-v2-40-50": Profile(
+        name="pointmaze-v2-40-50",
+        row_range=(9, 11),
+        col_range=(9, 13),
+        free_density_range=(0.42, 0.58),
+        loop_chance_range=(0.30, 0.55),
+        shortest_path_range=(12, 24),
+        static_difficulty_range=(40.0, 50.0),
+        min_deadends=0,
+        min_junctions=3,
+        max_open_2x2=6,
+    ),
+    "pointmaze-v2-60-70": Profile(
+        name="pointmaze-v2-60-70",
+        row_range=(13, 15),
+        col_range=(11, 15),
+        free_density_range=(0.42, 0.58),
+        loop_chance_range=(0.04, 0.15),
+        shortest_path_range=(25, 50),
+        static_difficulty_range=(60.0, 70.0),
+        min_deadends=3,
+        min_junctions=6,
+        max_open_2x2=2,
+    ),
+    "pointmaze-v2-78-83": Profile(
+        name="pointmaze-v2-78-83",
+        row_range=(15, 15),
+        col_range=(15, 15),
+        free_density_range=(0.42, 0.58),
+        loop_chance_range=(0.0, 0.02),
+        shortest_path_range=(45, 80),
+        static_difficulty_range=(78.0, 83.0),
+        min_deadends=5,
+        min_junctions=4,
+        max_open_2x2=0,
+    ),
+    # AntMaze held-out extension profiles.  Every bound is at most the
+    # pre-existing AntMaze registry maximum of 12 rows by 16 columns.
+    "antmaze-test-40-50": Profile(
+        name="antmaze-test-40-50",
+        row_range=(9, 12),
+        col_range=(11, 16),
+        free_density_range=(0.42, 0.58),
+        loop_chance_range=(0.22, 0.48),
+        shortest_path_range=(14, 28),
+        static_difficulty_range=(40.0, 50.0),
+        min_deadends=0,
+        min_junctions=5,
+        max_open_2x2=6,
+    ),
+    "antmaze-test-57-63": Profile(
+        name="antmaze-test-57-63",
+        row_range=(11, 12),
+        col_range=(14, 16),
+        free_density_range=(0.42, 0.58),
+        loop_chance_range=(0.0, 0.06),
+        shortest_path_range=(30, 55),
+        static_difficulty_range=(57.0, 63.0),
+        min_deadends=3,
+        min_junctions=4,
+        max_open_2x2=2,
+    ),
 }
 
 
@@ -63,13 +127,24 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--mode",
-        choices=("suite", "candidates"),
+        choices=(
+            "suite",
+            "candidates",
+            "pointmaze-v2-suite",
+            "antmaze-test-extension-suite",
+        ),
         default="suite",
-        help="suite generates 9 local + 4 test layouts; candidates generates generic layouts.",
+        help=(
+            "suite generates 9 local + 4 AntMaze test layouts; candidates "
+            "generates generic layouts; pointmaze-v2-suite generates four "
+            "bounded PointMaze test-layoutV2 candidates; "
+            "antmaze-test-extension-suite generates six bounded AntMaze "
+            "test-layout candidates."
+        ),
     )
     parser.add_argument(
         "--profile",
-        choices=("large-like", "hard", "mixed"),
+        choices=(*PROFILES, "mixed"),
         default="mixed",
         help="Profile used in candidates mode.",
     )
@@ -87,6 +162,40 @@ def _suite_specs() -> list[tuple[str, str]]:
     specs.extend((f"test-layout-{idx:02d}", "large-like") for idx in range(1, 3))
     specs.extend((f"test-layout-{idx:02d}", "hard") for idx in range(3, 5))
     return specs
+
+
+def _pointmaze_v2_suite_specs() -> list[tuple[str, str]]:
+    """Generate the next four held-out PointMaze V2 layouts.
+
+    The requested static-difficulty bands are one 40-50 map, two 60-70 maps,
+    and one 78-83 map.  The associated profile bounds never exceed 15x15.
+    """
+
+    return [
+        ("test-layoutV2-07", "pointmaze-v2-40-50"),
+        ("test-layoutV2-08", "pointmaze-v2-60-70"),
+        ("test-layoutV2-09", "pointmaze-v2-60-70"),
+        ("test-layoutV2-10", "pointmaze-v2-78-83"),
+    ]
+
+
+def _antmaze_test_extension_suite_specs() -> list[tuple[str, str]]:
+    """Generate the current held-out AntMaze test-layout extension.
+
+    The requested static-difficulty bands are four 40-50 maps and two 57-63
+    maps.  The associated profile bounds never exceed 12 rows by 16 columns.
+    """
+
+    return [
+        *[
+            (f"test-layout-{index:02d}", "antmaze-test-40-50")
+            for index in range(5, 9)
+        ],
+        *[
+            (f"test-layout-{index:02d}", "antmaze-test-57-63")
+            for index in range(9, 11)
+        ],
+    ]
 
 
 def _candidate_specs(count: int, profile_name: str) -> list[tuple[str, str]]:
@@ -479,7 +588,15 @@ def main():
     specs = (
         _suite_specs()
         if args.mode == "suite"
-        else _candidate_specs(args.count, args.profile)
+        else (
+            _pointmaze_v2_suite_specs()
+            if args.mode == "pointmaze-v2-suite"
+            else (
+                _antmaze_test_extension_suite_specs()
+                if args.mode == "antmaze-test-extension-suite"
+                else _candidate_specs(args.count, args.profile)
+            )
+        )
     )
     layouts = _emit_layouts(specs, args)
     _print_layouts(layouts)

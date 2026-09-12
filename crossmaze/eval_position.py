@@ -492,6 +492,12 @@ def _build_antmaze_eval_positions() -> dict[str, dict[str, Any]]:
         "test-layout-02": ((7, 1), (1, 11)),
         "test-layout-03": ((7, 1), (7, 11)),
         "test-layout-04": ((7, 1), (5, 7)),
+        "test-layout-05": ((1, 1), (1, 13)),
+        "test-layout-06": ((3, 13), (7, 1)),
+        "test-layout-07": ((9, 7), (1, 11)),
+        "test-layout-08": ((7, 1), (7, 13)),
+        "test-layout-09": ((5, 3), (7, 11)),
+        "test-layout-10": ((9, 11), (9, 1)),
         "ultra": ((1, 1), (10, 14)),
     }
     missing = set(ANTMAZE_ENV_FACTS) - set(fixed_cells)

@@ -141,7 +141,8 @@ step_eval_skip: 1         # 1 = every step eval is full; n = only every nth per-
 eval_mode: all           # optional; defaults to following train_mode
 eval_variants: [
   test-layoutV2-01, test-layoutV2-02, test-layoutV2-03, test-layoutV2-04,
-  test-layoutV2-05, test-layoutV2-06,
+  test-layoutV2-05, test-layoutV2-06, test-layoutV2-07, test-layoutV2-08,
+  test-layoutV2-09, test-layoutV2-10,
   open, umaze, medium, large,
   local-layoutV2-01, local-layoutV2-02, local-layoutV2-03, local-layoutV2-04,
   local-layoutV2-05, local-layoutV2-06, local-layoutV2-07, local-layoutV2-08,

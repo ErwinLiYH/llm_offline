@@ -17,11 +17,11 @@
 
 ### PointMaze 变种完整列表
 
-定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中。当前 registry 包含 8 个 remote D4RL 变种、`local-medium`、`local-layout-01..13` 和 `test-layout-01..03`；remote 使用 `dataset_id` / `env_id`，local/test 使用 `dataset_path` / `env_paras`，全部通过 `prompt_vars` 提供 prompt metadata。
+定义在 `data/pointmaze/variants.py` 的 `POINTMAZE_VARIANTS` 字典中。当前 registry 包含 8 个 remote D4RL 变种、`local-medium`、legacy `local-layout-01..13` / `test-layout-01..03`、formal V2 `local-layoutV2-01..12` / `test-layoutV2-01..10`，以及 `local-EXturn` / `test-EXturn` / `local-EXturn-simple`；remote 使用 `dataset_id` / `env_id`，local/test 使用 `dataset_path` / `env_paras`，全部通过 `prompt_vars` 提供 prompt metadata。
 
 `maze_map` 和 `reward_type` 现在收在每个变种的 `prompt_vars` 中，供共享 prompt 渲染使用。
 
-以下代码块列出 8 个 remote D4RL 基础变种；local/test 地图以 `_LOCAL_LAYOUT_*` / `_TEST_LAYOUT_*` 常量和 `_build_local_variant()` 注册：
+以下代码块列出 8 个 remote D4RL 基础变种；local/test 地图布局与环境事实分别由 `crossmaze/maps.py` 和 `crossmaze/variants.py` 维护，`data/pointmaze/variants.py` 通过 `_build_local_variant()` 补充 prompt metadata：
 
 ```python
 POINTMAZE_VARIANTS = {
@@ -155,7 +155,7 @@ POINTMAZE_VARIANTS = {
 
 AntMaze 必须保持 Minari metadata 中的 v4 数据契约：`observation` 为 27 维本体状态，另有 2 维 `achieved_goal` / `desired_goal`，action 为 8 维关节 torque。不能直接替换成 v5 默认环境，因为 v5 默认包含 contact-force observation，会改变输入维度。环境事实由 `crossmaze.variants` 维护：每个 variant 的 env 参数使用 plain 0/1 collection map、稀疏奖励、horizon 对应的 continuing/reset 语义；训练期或 standalone eval 可用配置中的 `env_kwargs` 覆盖兼容参数。普通 eval 起终点由 `crossmaze.eval_position` 维护：AntMaze rollout eval 使用与 offline 数据采集一致的地图，固定评测起点/终点记录为 `fix_start_goal`，由 `CrossMazeEnv.reset(options=...)` 自动应用；UMaze 的这组 cell 是官方 eval r/g cell 在 collection map 上的镜像位置。formatter 仍会从已实例化 env 刷新 prompt map、visual map 和 `maze_size_scaling`，作为 env/prompt 几何一致性的保护。
 
-本地 AntMaze 变种也注册在同一个 `ANTMAZE_VARIANTS` 字典中，目前包含 `local-layout-01..12`、`test-layout-01..04` 和实验性 `ultra`。local/test/ultra 变种使用 `varient_type: local`、`dataset_path: local_datasets/antmaze-<variant>-v0`，并保存 plain 0/1 地图；`eval_reset_cell` / `eval_goal_cell` 作为从 `crossmaze.eval_position` 派生的兼容字段暴露，不再作为 `crossmaze.variants` 的源数据，也不在地图中写入 `r/g` 标记。`ultra` 使用 Farama D4RL PR #220 中尚未正式合并的 AntMaze-Ultra 地图，并保持本地数据集路径语义而不是官方 Minari 数据集语义。训练时 `data/antmaze/dataset.py` 会从本地 Minari/HDF5 数据目录读取 episode；缺失数据时需要先运行 `local_antmaze_gen.py` 生成。训练配置可用 `local_dataset_root` 覆盖 local dataset 根目录，指向包含多个 local dataset 的父目录或单个 variant dataset 目录；未配置或为 `null` 时使用 `dataset_path` 默认值。
+除 6 个 remote D4RL 数据集变种外，`ANTMAZE_VARIANTS` 当前还包含 `local-layout-01..12`、`test-layout-01..10` 和 official 地图组的 `ultra`。在数据访问层，local/test/ultra 变种使用 `varient_type: local`、`dataset_path: local_datasets/antmaze-<variant>-v0`，并保存 plain 0/1 地图；`eval_reset_cell` / `eval_goal_cell` 作为从 `crossmaze.eval_position` 派生的兼容字段暴露，不再作为 `crossmaze.variants` 的源数据，也不在地图中写入 `r/g` 标记。`ultra` 使用 Farama D4RL PR #220 中尚未正式合并的 AntMaze-Ultra 地图，并保持本地数据集路径语义而不是官方 Minari 数据集语义。训练时 `data/antmaze/dataset.py` 会从本地 Minari/HDF5 数据目录读取 episode；缺失数据时需要先运行 `local_antmaze_gen.py` 生成。训练配置可用 `local_dataset_root` 覆盖 local dataset 根目录，指向包含多个 local dataset 的父目录或单个 variant dataset 目录；未配置或为 `null` 时使用 `dataset_path` 默认值。
 
 AntMaze local layout 的随机生成和静态拓扑评分是辅助工具，不是官方 D4RL normalized score。简要入口见下方 “Local/custom maze generation and topology scoring”，详细设计、指标公式和引用见 `docs/maze_generation_topology.md`。`score.py` 仍是 PointMaze-only；AntMaze 当前支持训练和普通 return/success-rate rollout eval。
 
@@ -687,7 +687,7 @@ PointMaze 和 AntMaze 的 local 生成脚本都支持 `--use-seed-map`，用于�
 
 ### Local/custom maze generation and topology scoring
 
-AntMaze local/test layout 由 `generate_antmaze_layouts.py` 生成候选，并按 `utils/maze_metrics.py` 中的静态拓扑指标筛选。当前实现借鉴 design-centric maze generation 的思路：先给定期望的拓扑 profile，再从候选中选择满足路径长度、岔路、死胡同、空间覆盖和开放块约束的地图。它不是论文方法的完整复现，而是适配 AntMaze 网格、rollout 和 prompt 的工程化版本。
+AntMaze local/test layout 和 PointMaze V2 test layout 由 `generate_antmaze_layouts.py` 生成候选，并按 `utils/maze_metrics.py` 中的静态拓扑指标筛选。当前实现借鉴 design-centric maze generation 的思路：先给定期望的拓扑 profile，再从候选中选择满足路径长度、岔路、死胡同、空间覆盖和开放块约束的地图。它不是论文方法的完整复现，而是适配 CrossMaze 网格、rollout 和 prompt 的工程化版本。
 
 ```bash
 python generate_antmaze_layouts.py \
@@ -776,7 +776,7 @@ local_eval_maps:
 
 reference 生成会用 seeded random policy 估计 `ref_min_score`，用 Farama `WaypointController(..., maze_solver="QIteration")` 且无动作噪声估计 `ref_max_score`。默认写入 `local_references/pointmaze/<variant>.json`，文件包含 reference 分数、seed、episode count、horizon、goal cell、reward type、env fingerprint 和 method metadata。后续 local `mode: score` 会校验 reference 文件存在且 env fingerprint 与当前 `score.yaml` 一致，不匹配时拒绝打分。
 
-仓库提供 `reference.yaml` 作为本地 reference 生成示例，默认列出 `local-layout-01` 到 `local-layout-09` 的固定 goal cell；`score.yaml` 则作为模型评分示例，包含 checkpoint、variant、local reference root 和可选录像配置。虽然训练/eval registry 还包含 `local-layout-10..13` 和 `test-layout-01..03`，这些新增地图尚未在示例 YAML 中配置 local score goal cell；对其运行 official-style local score 前需要补充 goal cell 并生成 fingerprint 匹配的 reference。两者都通过 `python score.py --config <yaml>` 运行。
+仓库提供 `reference.yaml` 作为本地 reference 生成示例，默认列出 `local-layout-01` 到 `local-layout-09` 的固定 goal cell；`score.yaml` 则作为模型评分示例，包含 checkpoint、variant、local reference root 和可选录像配置。PointMaze registry 中除这 9 张示例地图外的其他 local/test variant 尚未在示例 YAML 中配置 local score goal cell；对其运行 official-style local score 前需要补充 goal cell 并生成 fingerprint 匹配的 reference。两者都通过 `python score.py --config <yaml>` 运行。
 
 ---
 
@@ -809,7 +809,7 @@ project/
 ├── estimate_dataset.py          # 训练数据 step/batch 与 tokenized cache 大小预估入口
 ├── local_pointmaze_gen.py        # local PointMaze Minari 数据生成入口
 ├── local_antmaze_gen.py          # local AntMaze Minari 数据生成入口
-├── generate_antmaze_layouts.py   # AntMaze local/test layout 候选生成与筛选
+├── generate_antmaze_layouts.py   # AntMaze local/test 与 PointMaze V2 test layout 候选生成/筛选
 ├── inspect_antmaze_layouts.py    # AntMaze layout 拓扑指标检查入口
 ├── checkpoints/
 ├── results/

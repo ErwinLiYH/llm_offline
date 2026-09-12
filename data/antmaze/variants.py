@@ -203,6 +203,42 @@ ANTMAZE_VARIANTS = {
         structure_desc_en="A held-out compact generated AntMaze layout in the 50 static-difficulty band.",
         dataset_style="held-out local reset and goal trajectories",
     ),
+    "test-layout-05": _build_local_variant(
+        variant_name="test-layout-05",
+        env_name="AntMaze Test Layout 05",
+        structure_desc_en="A held-out generated AntMaze layout in the 40-50 static-difficulty band, with several alternate corridor routes and light bottlenecks.",
+        dataset_style="held-out local reset and goal trajectories",
+    ),
+    "test-layout-06": _build_local_variant(
+        variant_name="test-layout-06",
+        env_name="AntMaze Test Layout 06",
+        structure_desc_en="A held-out generated AntMaze layout in the 40-50 static-difficulty band, with several alternate corridor routes and light bottlenecks.",
+        dataset_style="held-out local reset and goal trajectories",
+    ),
+    "test-layout-07": _build_local_variant(
+        variant_name="test-layout-07",
+        env_name="AntMaze Test Layout 07",
+        structure_desc_en="A held-out generated AntMaze layout in the 40-50 static-difficulty band, with several alternate corridor routes and light bottlenecks.",
+        dataset_style="held-out local reset and goal trajectories",
+    ),
+    "test-layout-08": _build_local_variant(
+        variant_name="test-layout-08",
+        env_name="AntMaze Test Layout 08",
+        structure_desc_en="A held-out generated AntMaze layout in the 40-50 static-difficulty band, with several alternate corridor routes and light bottlenecks.",
+        dataset_style="held-out local reset and goal trajectories",
+    ),
+    "test-layout-09": _build_local_variant(
+        variant_name="test-layout-09",
+        env_name="AntMaze Test Layout 09",
+        structure_desc_en="A held-out generated AntMaze layout in the 57-63 static-difficulty band, with long constrained routes, repeated turns, and strong bottlenecks.",
+        dataset_style="held-out local reset and goal trajectories",
+    ),
+    "test-layout-10": _build_local_variant(
+        variant_name="test-layout-10",
+        env_name="AntMaze Test Layout 10",
+        structure_desc_en="A held-out generated AntMaze layout in the 57-63 static-difficulty band, with long constrained routes, repeated turns, and strong bottlenecks.",
+        dataset_style="held-out local reset and goal trajectories",
+    ),
     "ultra": _build_local_variant(
         variant_name="ultra",
         env_name="AntMaze Ultra",

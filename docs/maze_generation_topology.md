@@ -1,8 +1,9 @@
 # Maze Generation and Topology Difficulty
 
 This document describes the local maze-layout generation and static topology
-difficulty tools used for custom AntMaze layouts. The same metric code can also
-be applied to PointMaze maps, but the current inspection CLI is AntMaze-focused.
+difficulty tools used for custom AntMaze layouts and generated PointMaze V2
+test layouts. The same metric code can also be applied to all registered maps,
+while the current inspection CLI is AntMaze-focused.
 
 ## Reference
 
@@ -30,7 +31,7 @@ workflow in a simpler engineering form suitable for AntMaze:
 
 ## Files
 
-- `generate_antmaze_layouts.py`: candidate generator and profile-based selector.
+- `generate_antmaze_layouts.py`: candidate generator and profile-based selector; it also exposes the bounded `pointmaze-v2-suite`.
 - `utils/maze_metrics.py`: graph metrics and `static_difficulty` computation.
 - `inspect_antmaze_layouts.py`: CLI for registered AntMaze layout metrics.
 - `data/antmaze/variants.py`: official and local/test AntMaze variant registry.
@@ -42,7 +43,9 @@ workflow in a simpler engineering form suitable for AntMaze:
 
 ## Layout Profiles
 
-`generate_antmaze_layouts.py` currently defines two profiles.
+`generate_antmaze_layouts.py` defines two historical AntMaze profiles, two
+bounded AntMaze test-extension profiles, and three bounded PointMaze V2
+profiles.
 
 `large-like` targets maps around the official AntMaze large scale. It allows
 moderate loops and a small number of room-like open blocks so the maps do not
@@ -63,6 +66,16 @@ Historical seed-42 suite profile split:
 The current registry additionally includes compact `local-layout-10..12` maps.
 They were selected under a `10x13` maximum-size constraint, with one layout in
 the approximate 45 static-difficulty band and two in the approximate 50 band.
+
+The AntMaze held-out extension profiles constrain every output to at most
+`12x16`, the maximum rows/columns of the pre-existing AntMaze registry. They
+target four `40-50` maps and two `57-63` maps under legacy
+`static_difficulty`.
+
+The PointMaze V2 suite profiles use the same candidate algorithm, but constrain
+every output to at most `15x15`, the maximum rows/columns of the pre-existing
+PointMaze registry. They target one `40-50` map, two `60-70` maps, and one
+`78-83` map under legacy `static_difficulty`.
 
 ## Generation Algorithm
 
@@ -110,7 +123,27 @@ python generate_antmaze_layouts.py \
   --seed 2027
 ```
 
-The generated Python output is a copy/paste aid for `data/antmaze/variants.py`;
+Reproduce the registered PointMaze held-out V2 additions (`07..10`):
+
+```bash
+python generate_antmaze_layouts.py \
+  --mode pointmaze-v2-suite \
+  --seed 2026 \
+  --candidates-per-layout 1000 \
+  --json-output generated_pointmaze_test_layouts_v2_seed2026.json
+```
+
+Reproduce the registered AntMaze held-out extension (`05..10`):
+
+```bash
+python generate_antmaze_layouts.py \
+  --mode antmaze-test-extension-suite \
+  --seed 2027 \
+  --candidates-per-layout 1000 \
+  --json-output generated_antmaze_test_layouts_extension_seed2027.json
+```
+
+The generated Python output is a copy/paste aid for a variant registry;
 the generator does not edit the registry automatically.
 
 ## Topology Metrics
@@ -225,6 +258,12 @@ test-layout-01   44.99
 test-layout-02   33.61
 test-layout-03   49.30
 test-layout-04   49.92
+test-layout-05   44.91
+test-layout-06   44.92
+test-layout-07   44.95
+test-layout-08   45.10
+test-layout-09   61.63
+test-layout-10   59.80
 
 ultra            50.30
 ```

@@ -1,4 +1,4 @@
-# override the default evaluation mode to run all test varients only
+# override the default evaluation mode to run all formal V2 test variants only
 eval_mode: all
 variants:
 - test-layoutV2-01
@@ -7,3 +7,7 @@ variants:
 - test-layoutV2-04
 - test-layoutV2-05
 - test-layoutV2-06
+- test-layoutV2-07
+- test-layoutV2-08
+- test-layoutV2-09
+- test-layoutV2-10
