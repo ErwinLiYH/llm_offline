@@ -261,6 +261,18 @@ _NETWORK_DEFAULTS = {
     "critic_use_layer_norm": None,
     "value_use_layer_norm": None,
     "dropout_rate": None,
+    "spatial": None,
+}
+
+_SPATIAL_DEFAULTS = {
+    "cnn_channels": [32, 64, 64],
+    "map_dim": 256,
+    "vector_hidden_units": [128, 128],
+    "fusion_hidden_units": [256],
+    "transformer_dim": 128,
+    "transformer_layers": 4,
+    "transformer_heads": 4,
+    "transformer_ffn_dim": 512,
 }
 
 _OBSERVATION_DEFAULTS = {
@@ -395,14 +407,12 @@ def _normalize_network(value) -> dict:
     if not isinstance(architecture, str) or not architecture.strip():
         raise ValueError("network.architecture must be a non-empty string")
     architecture = architecture.strip()
-    if architecture not in {"legacy_mlp", "plain_mlp", "residual_mlp"}:
-        raise ValueError(
-            "network.architecture must be one of legacy_mlp, plain_mlp, or residual_mlp"
-        )
+    if architecture not in {"legacy_mlp", "plain_mlp", "residual_mlp", "cnn_map", "transformer_map"}:
+        raise ValueError("Unknown network.architecture")
     network["architecture"] = architecture
 
     hidden_units = network["hidden_units"]
-    if architecture == "legacy_mlp":
+    if architecture in {"legacy_mlp", "cnn_map", "transformer_map"}:
         if (
             not isinstance(hidden_units, list)
             or not hidden_units
@@ -453,7 +463,7 @@ def _normalize_network(value) -> dict:
         if not 0.0 <= dropout_rate < 1.0:
             raise ValueError("network.dropout_rate must be in [0, 1)")
         network["dropout_rate"] = dropout_rate
-    if architecture != "legacy_mlp":
+    if architecture in {"plain_mlp", "residual_mlp"}:
         if any(
             network[field] is not None
             for field in (
@@ -484,6 +494,27 @@ def _normalize_network(value) -> dict:
             raise ValueError(
                 "residual_mlp network.body_depth must be divisible by network.block_size"
             )
+    if architecture in {"cnn_map", "transformer_map"}:
+        spatial = copy.deepcopy(_SPATIAL_DEFAULTS)
+        supplied = _mapping(network["spatial"], "network.spatial")
+        if set(supplied) - set(spatial):
+            raise ValueError("Unknown network.spatial keys")
+        spatial.update(supplied)
+        for key in ("cnn_channels", "vector_hidden_units", "fusion_hidden_units"):
+            if not isinstance(spatial[key], list) or not spatial[key]:
+                raise ValueError(f"network.spatial.{key} must be a non-empty list")
+            spatial[key] = [_positive_int(x, f"network.spatial.{key}") for x in spatial[key]]
+        for key in ("map_dim", "transformer_dim", "transformer_layers", "transformer_heads", "transformer_ffn_dim"):
+            spatial[key] = _positive_int(spatial[key], f"network.spatial.{key}")
+        if spatial["transformer_dim"] % 4 or spatial["transformer_dim"] % spatial["transformer_heads"]:
+            raise ValueError("transformer_dim must be divisible by 4 and transformer_heads")
+        if network["use_batch_norm"] or network["dropout_rate"] is not None:
+            raise ValueError("Spatial encoders require use_batch_norm=false and dropout_rate=null")
+        if network["activation"] not in {"relu", "gelu", "tanh", "swish"}:
+            raise ValueError("Spatial activation must be relu, gelu, tanh, or swish")
+        network["spatial"] = spatial
+    elif network["spatial"] is not None:
+        raise ValueError("network.spatial requires cnn_map or transformer_map")
     return network
 
 
@@ -948,12 +979,18 @@ def normalize_baseline_config(raw_config: dict) -> dict:
 
     normalized_network = _normalize_network(raw.get("network"))
     if (
-        normalized_network["architecture"] != "legacy_mlp"
+        normalized_network["architecture"] in {"plain_mlp", "residual_mlp"}
         and algorithm != "mlp_bc"
     ):
         raise ValueError(
             "plain_mlp/residual_mlp are currently supported only by algorithm=mlp_bc"
         )
+    if normalized_network["architecture"] in {"cnn_map", "transformer_map"}:
+        if algorithm not in {"mlp_bc", "td3_bc", "iql", "rebrac", "crl"}:
+            raise ValueError("Spatial encoders currently support BC/TD3+BC/IQL/ReBRAC/CRL only")
+        observation = _normalize_observation(raw.get("observation"))
+        if not (observation["include_map"] or observation["include_dynamic_map"]):
+            raise ValueError("Spatial encoders require include_map or include_dynamic_map")
     if algorithm in _GCRL_DEFAULTS:
         if any(
             normalized_network[field] is not None

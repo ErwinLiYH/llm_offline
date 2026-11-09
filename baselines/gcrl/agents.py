@@ -143,19 +143,35 @@ class CRLAgent(flax.struct.PyTreeNode):
     ) -> "CRLAgent":
         rng = jax.random.PRNGKey(seed)
         rng, init_rng = jax.random.split(rng)
-        critic = GoalConditionedBilinearValue(
-            hidden_dims=tuple(config["hidden_dims"]),
-            latent_dim=config["latent_dim"],
-            activation=config["activation"],
-            layer_norm=config["layer_norm"],
-            ensemble=True,
-        )
+        spatial = config.get("spatial_layout")
+        if spatial:
+            from baselines.gcrl.spatial import SpatialBilinearValue, SpatialPairEncoder
+            critic = SpatialBilinearValue(
+                layout=spatial, architecture=config["architecture"], settings=config["spatial"],
+                hidden_dims=tuple(config["hidden_dims"]), latent_dim=config["latent_dim"],
+                activation=config["activation"], layer_norm=config["layer_norm"],
+            )
+            actor_encoder = SpatialPairEncoder(
+                spatial, config["architecture"], config["spatial"],
+                config["activation"], config["layer_norm"],
+            )
+        else:
+            actor_encoder = None
+            critic = GoalConditionedBilinearValue(
+                hidden_dims=tuple(config["hidden_dims"]),
+                latent_dim=config["latent_dim"],
+                activation=config["activation"],
+                layer_norm=config["layer_norm"],
+                ensemble=True,
+            )
         actor = GoalConditionedActor(
             hidden_dims=tuple(config["hidden_dims"]),
             action_dim=example_actions.shape[-1],
             activation=config["activation"],
             constant_std=config["const_std"],
         )
+        if actor_encoder is not None:
+            actor = actor.clone(goal_encoder=actor_encoder)
         model_def = ModuleDict({"critic": critic, "actor": actor})
         model_args = {
             "critic": (

@@ -21,6 +21,8 @@ from d3rlpy.preprocessing import (
 )
 
 from baselines.algorithms.scaling_mlp import ScalingMLPEncoderFactory
+from baselines.algorithms.spatial_encoder import SpatialEncoderFactory, SpatialObservationScaler
+from baselines.data.spatial import SPATIAL_ARCHITECTURES, spatial_layout
 
 
 class InstrumentedBC(BC):
@@ -126,7 +128,16 @@ class GradientClippedBC(InstrumentedBC):
         )
 
 
-def _encoder(network: dict, *, component: str | None = None) -> EncoderFactory:
+def _encoder(network: dict, *, component: str | None = None, layout=None) -> EncoderFactory:
+    if network["architecture"] in SPATIAL_ARCHITECTURES:
+        layer_norm = network["use_layer_norm"]
+        if component and network.get(f"{component}_use_layer_norm") is not None:
+            layer_norm = network[f"{component}_use_layer_norm"]
+        return SpatialEncoderFactory(
+            layout=layout, architecture=network["architecture"],
+            settings=network["spatial"], activation=network["activation"],
+            layer_norm=layer_norm,
+        )
     if network["architecture"] != "legacy_mlp":
         return ScalingMLPEncoderFactory(
             body_type=network["architecture"],
@@ -169,13 +180,16 @@ def create_algorithm(config: dict):
     reward_scaler_config = kwargs.pop("reward_scaler", None)
     global_grad_norm_clip = kwargs.pop("global_grad_norm_clip", None)
     training_diagnostics = config["training_diagnostics"]
+    layout = (spatial_layout(config["env_family"], config["observation"])
+              if network["architecture"] in SPATIAL_ARCHITECTURES else None)
     common = {
-        "observation_scaler": StandardObservationScaler(),
+        "observation_scaler": (SpatialObservationScaler(layout=layout)
+                               if layout else StandardObservationScaler()),
         "reward_scaler": _reward_scaler(reward_scaler_config),
     }
     if algorithm == "mlp_bc":
         algo_config = BCConfig(
-            encoder_factory=_encoder(network),
+            encoder_factory=_encoder(network, layout=layout),
             **common,
             **kwargs,
         )
@@ -200,23 +214,23 @@ def create_algorithm(config: dict):
             )
     elif algorithm == "td3_bc":
         algo_config = TD3PlusBCConfig(
-            actor_encoder_factory=_encoder(network, component="actor"),
-            critic_encoder_factory=_encoder(network, component="critic"),
+            actor_encoder_factory=_encoder(network, component="actor", layout=layout),
+            critic_encoder_factory=_encoder(network, component="critic", layout=layout),
             **common,
             **kwargs,
         )
     elif algorithm == "iql":
         algo_config = IQLConfig(
-            actor_encoder_factory=_encoder(network, component="actor"),
-            critic_encoder_factory=_encoder(network, component="critic"),
-            value_encoder_factory=_encoder(network, component="value"),
+            actor_encoder_factory=_encoder(network, component="actor", layout=layout),
+            critic_encoder_factory=_encoder(network, component="critic", layout=layout),
+            value_encoder_factory=_encoder(network, component="value", layout=layout),
             **common,
             **kwargs,
         )
     elif algorithm == "rebrac":
         algo_config = ReBRACConfig(
-            actor_encoder_factory=_encoder(network, component="actor"),
-            critic_encoder_factory=_encoder(network, component="critic"),
+            actor_encoder_factory=_encoder(network, component="actor", layout=layout),
+            critic_encoder_factory=_encoder(network, component="critic", layout=layout),
             **common,
             **kwargs,
         )

@@ -102,7 +102,7 @@ def _logger_factory(config: dict, run_dir: Path):
 def model_metadata(algo, config: dict) -> dict | None:
     """Return instantiated-model facts that cannot be inferred from YAML alone."""
 
-    if config["algorithm"] != "mlp_bc" or algo.impl is None:
+    if algo.impl is None:
         return None
     policy = algo.impl.policy
     trainable_parameters = [
@@ -115,7 +115,11 @@ def model_metadata(algo, config: dict) -> dict | None:
         ),
         "trainable_parameter_tensor_count": len(trainable_parameters),
         "network_config": config["network"],
+        "parameter_count_scope": "policy",
     }
+    if config["network"]["architecture"] in {"cnn_map", "transformer_map"}:
+        from baselines.data.spatial import spatial_layout
+        metadata["spatial_layout"] = spatial_layout(config["env_family"], config["observation"])
     encoder = policy._encoder
     if isinstance(encoder, ScalingMLPEncoder):
         structure = encoder.structure()

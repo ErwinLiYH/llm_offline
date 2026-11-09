@@ -96,12 +96,24 @@ def _seed_everything(seed: int) -> None:
 
 
 def _agent_config(config: dict) -> dict:
-    return {
+    from baselines.data.spatial import SPATIAL_ARCHITECTURES, spatial_layout
+
+    network = config["network"]
+    result = {
         **config["algorithm_config"],
-        "hidden_dims": tuple(config["network"]["hidden_units"]),
-        "activation": config["network"]["activation"],
-        "layer_norm": config["network"]["use_layer_norm"],
+        "hidden_dims": tuple(network["hidden_units"]),
+        "activation": network["activation"],
+        "layer_norm": network["use_layer_norm"],
     }
+    if network["architecture"] in SPATIAL_ARCHITECTURES:
+        result.update(
+            architecture=network["architecture"],
+            spatial=network["spatial"],
+            spatial_layout=spatial_layout(
+                config["env_family"], config["observation"], goal_conditioned=True
+            ),
+        )
+    return result
 
 
 def _jax_batch(batch: dict[str, np.ndarray]) -> dict[str, jax.Array]:
@@ -322,6 +334,11 @@ def train_gcrl_baseline(config: dict) -> Path:
         normalizer = GCRLNormalizer.identity(
             prepared.train.state_dim
         )
+    if algorithm_config.get("spatial_layout"):
+        from baselines.data.spatial import map_indices
+        indices = map_indices(algorithm_config["spatial_layout"])
+        normalizer.observation_mean[indices] = 0.0
+        normalizer.observation_std[indices] = 1.0
     write_json(run_dir / "normalizer.json", normalizer.to_dict())
 
     _seed_everything(config["seed"])
@@ -352,6 +369,7 @@ def train_gcrl_baseline(config: dict) -> Path:
         "algorithm": config["algorithm"],
         "observation_schema": prepared.manifest["observation_schema"],
         "observation_config": dict(config["observation"]),
+        "network_config": config["network"],
         "observation_dimension": prepared.train.state_dim,
         "action_dimension": prepared.train.action_dim,
     }
@@ -364,6 +382,13 @@ def train_gcrl_baseline(config: dict) -> Path:
             example_actions=jnp.asarray(example_batch["actions"]),
             config=algorithm_config,
         )
+        parameters = jax.tree_util.tree_leaves(agent.network.params)
+        write_json(run_dir / "model_metadata.json", {
+            "network_config": config["network"],
+            "spatial_layout": algorithm_config.get("spatial_layout"),
+            "trainable_parameter_count": int(sum(value.size for value in parameters)),
+            "parameter_count_scope": "all_network_parameters",
+        })
         print(
             f"[baseline:gcrl] training {config['algorithm']} for {config['n_steps']} "
             f"updates ({total_epochs} epochs x {config['n_steps_per_epoch']} updates) "

@@ -200,6 +200,79 @@ spec, actual topology `map_hash`, reward type, and horizon as provenance. See
 [`../docs/seed_map.md`](../docs/seed_map.md) for the corpus format, half-open
 range rules, and data-generation commands.
 
+### CNN / Transformer 地图编码器
+
+BC、TD3+BC、IQL、ReBRAC 和 CRL 支持 `network.architecture: cnn_map | transformer_map`。
+BC 的算法标识仍为 `mlp_bc`，区分模型时应同时记录 `network.architecture`。
+其他 JAX 算法暂不支持空间编码器，配置校验会直接报错。
+
+```bash
+# PyTorch：算法配置也可以换成 td3_bc.yaml、iql.yaml 或 rebrac.yaml。
+micromamba run -n llm_offline_baselines python baseline_train.py \
+  --config baselines/configs/base.pointmaze.yaml baselines/configs/mlp_bc.yaml baselines/configs/encoder.cnn.yaml
+
+# JAX CRL：CNN 和 Transformer 都可使用。
+micromamba run -n llm_offline_gcrl python baseline_train.py \
+  --config baselines/configs/base.antmaze.yaml baselines/configs/crl.yaml baselines/configs/encoder.transformer.yaml
+```
+
+两个 encoder 配置都是末尾加载的覆盖文件，仅开启动态地图，不主动开启静态地图或 sensing。
+从已有实验配置继承的 observation 开关仍然有效，做架构对照时应核对最终配置的信息一致性。
+至少开启 `observation.include_map` 或 `include_dynamic_map`，否则拒绝启动。
+
+观测在存储和 rollout 接口中仍是展平向量，网络依据 observation schema 恢复地图并拆分其他特征。
+静态地图转换为 wall 通道，动态地图转换为 wall/current/goal 通道，并额外提供一个 valid 通道。
+动态地图的代码 `4` 同时激活 current 和 goal，padding `-1` 不作为可通行格子。
+地图类别及 padding 保持原值，仅非地图数值分量使用训练集统计量标准化。
+标准化规则和地图布局随模型或 run artifacts 保存，评估不重新拟合。
+
+CNN 默认使用三个 `3×3`、stride=1 的卷积层，通道为 `[32, 64, 64]`。
+每层卷积后屏蔽无效区域，然后按空间顺序展平并投影为地图特征，不使用全局平均池化。
+Transformer 默认每格一个 token，使用固定二维 sin/cos 位置编码、padding attention mask 和可学习的 CLS 汇聚 token。
+Transformer 使用 pre-LayerNorm、GELU FFN 和零 dropout，从头训练，不使用语言模型预训练。
+
+```yaml
+network:
+  architecture: transformer_map  # 或 cnn_map
+  spatial:
+    cnn_channels: [32, 64, 64]
+    map_dim: 256
+    vector_hidden_units: [128, 128]
+    fusion_hidden_units: [256]
+    transformer_dim: 128
+    transformer_layers: 4
+    transformer_heads: 4
+    transformer_ffn_dim: 512
+```
+
+地图分支默认输出 256 维，状态、目标和已启用 sensing 的数值分支默认使用 `[128, 128]` MLP。
+两个分支拼接后经过 `[256]` 融合 MLP，再送入原算法的动作头或价值网络。
+`transformer_dim` 必须同时被 4 和 head 数整除。
+`network.activation` 控制 CNN、数值分支和融合 MLP，`use_layer_norm` 控制数值分支和融合 MLP 的 LayerNorm。
+Transformer 内部的 LayerNorm 始终开启，不受该开关影响。
+空间编码器不支持 BatchNorm 或配置 dropout，PyTorch 保留 actor/critic/value 的 LayerNorm 独立覆盖设置。
+PyTorch 的空间编码器使用 `network.spatial` 指定 MLP 维度，不使用 `network.hidden_units`。
+CRL 的 `network.hidden_units` 仍用于空间融合之后的 actor 和双线性 critic MLP。
+
+TD3+BC、IQL 和 ReBRAC 的 critic 在观测融合后拼接 action，再经过非线性层，保留状态与动作的交互能力。
+IQL 的 value 网络也使用空间编码器，各网络默认不共享编码器参数。
+CRL 的 actor 分别编码 state 和 goal，critic 的 state-action 与 goal 分支分别编码地图，两个 critic 成员也拥有独立空间编码器。
+CRL 保持原有对比损失、goal relabeling 和 `full_observation_v1` 语义，不重绘 relabeled goal 的动态地图。
+
+PointMaze、AntMaze 和 seed-map 使用解析后的固定 padded `map_shape`，离线数据和在线 rollout 必须保持同一布局。
+CNN 的展平投影依赖该形状，不能把已保存模型直接用于更大的输入槽位。
+Transformer 也按 checkpoint 的布局校验输入，不承诺自动跨输入尺寸加载。
+`model_metadata.json` 记录网络配置和参数量；PyTorch 的计数范围是 policy，JAX 的计数范围是所有网络参数，比较前应核对 scope。
+
+```bash
+micromamba run -n llm_offline_baselines python -m unittest baselines.tests.test_spatial_encoders
+JAX_PLATFORMS=cpu micromamba run -n llm_offline_gcrl python -m unittest baselines.tests.test_gcrl_spatial
+```
+
+测试覆盖两类环境的更新与保存加载、PyTorch checkpoint 续训、地图通道和数值分支梯度，以及基于小型 seed-map corpus 的完整训练和真实环境短 rollout。
+这些是 CPU 功能测试，不代表正式训练收敛或成功率结论。
+CRL 会多次编码 state/goal，Transformer 的显存开销明显高于 MLP；正式实验应先用小 batch 检查显存，再确定并记录训练预算。
+
 ### BC scaling encoder
 
 `mlp_bc` also supports the paper-style scaling encoders used by Wang et al.,

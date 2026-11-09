@@ -1,0 +1,16 @@
+# 在环境和算法配置之后加载；仅启用动态地图，不额外提供 sensing 信息。
+observation:
+  include_dynamic_map: true
+
+network:
+  architecture: cnn_map
+  width: null
+  body_depth: null
+  activation: relu
+  use_batch_norm: false
+  dropout_rate: null
+  spatial:
+    cnn_channels: [32, 64, 64]
+    map_dim: 256
+    vector_hidden_units: [128, 128]
+    fusion_hidden_units: [256]
