@@ -382,6 +382,62 @@ class CrossMazePackageTest(unittest.TestCase):
 class MapUnificationTest(unittest.TestCase):
     """AntMaze eval uses collection maps + coordinate start/goal, no r/g maps."""
 
+    def test_antmaze_promoted_linshi_maps_and_endpoints(self):
+        from crossmaze import maps
+        from crossmaze.eval_position import eval_reset_options
+        from crossmaze.variants import ANTMAZE_ENV_FACTS
+
+        expected = {
+            4: (1, (1, 11), [
+                "#############", "#...........#", "#.###.#####.#",
+                "#.....#.....#", "#.#.#.#.###.#", "#.#.#...#...#",
+                "#.#.#.#####.#", "#.........#.#", "#############",
+            ]),
+            5: (2, (7, 7), [
+                "#############", "#...........#", "###.#.#.#.#.#",
+                "#...#.....#.#", "#.###.#####.#", "#.........#.#",
+                "#.#.#.###.#.#", "#.#...#.....#", "#############",
+            ]),
+            6: (3, (4, 11), [
+                "#############", "#...........#", "#.###.###.###",
+                "#...#...#...#", "#.#.#.#.#.#.#", "#.#.#.......#",
+                "#.#.#.#.###.#", "#.#.....#...#", "#############",
+            ]),
+            7: (5, (1, 11), [
+                "#############", "#.#.........#", "#.#.#.#.###.#",
+                "#.....#.#...#", "#.#.#.#.#.#.#", "#.#.......#.#",
+                "#.#.#.#.#.#.#", "#...#.#...#.#", "#############",
+            ]),
+        }
+        expected[8] = (9, (1, 11), [
+            "#############", "#.......#...#", "#####.###.#.#",
+            "#.........#.#", "#.#########.#", "#.#.........#",
+            "#.###.###.#.#", "#.....#.....#", "#############",
+        ])
+        expected[9] = (11, (3, 11), [
+            "#############", "#.......#...#", "#.#.#.###.#.#",
+            "#.........#.#", "#.#.#.#####.#", "#...#...#...#",
+            "#.#.###.#.###", "#.#.........#", "#############",
+        ])
+        expected[10] = (15, (7, 11), [
+            "#############", "#.#.......#.#", "#.#.#.###.#.#",
+            "#...#.......#", "#.#.###.###.#", "#.......#...#",
+            "#.###.#.#.#.#", "#.....#...#.#", "#############",
+        ])
+        for index, (old_index, goal, rows) in expected.items():
+            variant = f"test-layout-{index:02d}"
+            removed = f"linshi-layout-{old_index:02d}"
+            with self.subTest(variant=variant):
+                self.assertNotIn(removed, ANTMAZE_ENV_FACTS)
+                self.assertNotIn(removed, ANTMAZE_VARIANTS)
+                self.assertFalse(hasattr(maps, f"ANTMAZE_LINSHI_LAYOUT_{old_index:02d}"))
+                maze_map = [[int(cell == "#") for cell in row] for row in rows]
+                self.assertEqual(ANTMAZE_ENV_FACTS[variant]["maze_map"], maze_map)
+                self.assertEqual(ANTMAZE_VARIANTS[variant]["prompt_vars"]["maze_map"], maze_map)
+                options = eval_reset_options("antmaze", variant)
+                self.assertEqual(options["reset_cell"], [1, 1] if index == 10 else [7, 1])
+                self.assertEqual(options["goal_cell"], list(goal))
+
     def test_no_marker_cells_anywhere_in_variant_registries(self):
         for family_variants in (POINTMAZE_VARIANTS, ANTMAZE_VARIANTS):
             for variant, meta in family_variants.items():
